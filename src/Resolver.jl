@@ -38,18 +38,17 @@ function resolve(
 
     # working data structures
     n = length(packages)
-    order = collect(0:n)         # indices into packages, zero is skipped
-    assigned = zeros(Int, n)     # indices into choices
-    conflicted = [1]             # previously conflicted packages
-    prioritized = Int[]          # previously prioritized packages
+    order = collect(0:n)     # indices into packages, zero is skipped
+    assigned = zeros(Int, n) # indices into choices
+    conflicted = [1]         # previously conflicted packages
+    prioritized = 0          # already-prioritied packages, index into conflicted
 
     # output data
     solutions = Vector{Pair{String,VersionNumber}}[]
 
-    while !isempty(conflicted)
-        p₀ = popfirst!(conflicted)
+    while prioritized < length(conflicted)
+        p₀ = conflicted[prioritized += 1]
         order[1], order[p₀+1] = order[p₀+1], order[1]
-        push!(prioritized, p₀)
         feasible = true
         for (i, p) in enumerate(order)
             p == 0 && continue
@@ -62,8 +61,7 @@ function resolve(
                     break
                 end
                 # for k > 2 this will already have been done
-                if k ≤ 2 && choices[p][k] ≠ no_version &&
-                    p ∉ prioritized && p ∉ conflicted
+                if k ≤ 2 && choices[p][k] ≠ no_version && p ∉ conflicted
                     push!(conflicted, p)
                 end
             end

@@ -8,7 +8,7 @@ function resolve(
     required::Vector{String},
     versions::Dict{String,Vector{VersionNumber}},
     dependencies::Dict{PkgVer,Vector{String}},
-    conflicts::Set{Tuple{PkgVer,PkgVer}},
+    conflicts::Set{Tuple{PkgVer,PkgVer}} = Set(NTuple{2,PkgVer}[]),
 )
     no_version = typemin(VersionNumber)
     packages = sort!(collect(keys(versions)), by = p->(p ∉ required, p))

@@ -1,0 +1,4 @@
+name = "Resolver"
+uuid = "ecd60e94-5748-11e9-04dc-1fe0f95e4121"
+authors = ["Stefan Karpinski <stefan@karpinski.org>"]
+version = "0.1.0"

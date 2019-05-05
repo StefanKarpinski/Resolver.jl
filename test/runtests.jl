@@ -8,11 +8,11 @@ using Test
         "B" => [v"2", v"1"],
     )
     dependencies = Dict(
-        PkgVer("A", v"1") => ["B"],
-        PkgVer("A", v"2") => ["B"],
+        ("A" => v"1") => ["B"],
+        ("A" => v"2") => ["B"],
     )
     conflicts = Set([
-        (PkgVer("A", v"2"), PkgVer("B", v"2")),
+        ("A" => v"2", "B" => v"2"),
     ])
     @test resolve(required, versions, dependencies, conflicts) == [
         ["A" => v"2", "B" => v"1"],
@@ -30,16 +30,16 @@ end
         "E" => [v"2", v"1"],
     )
     dependencies = Dict(
-        PkgVer("A", v"1") => ["B"],
-        PkgVer("A", v"2") => ["B", "D"],
-        PkgVer("B", v"1") => ["C"],
-        PkgVer("B", v"2") => ["C"],
-        PkgVer("C", v"2") => ["E"],
+        ("A" => v"1") => ["B"],
+        ("A" => v"2") => ["B", "D"],
+        ("B" => v"1") => ["C"],
+        ("B" => v"2") => ["C"],
+        ("C" => v"2") => ["E"],
     )
     conflicts = Set([
-        (PkgVer("A", v"2"), PkgVer("B", v"2")),
-        (PkgVer("A", v"2"), PkgVer("C", v"2")),
-        (PkgVer("B", v"2"), PkgVer("C", v"2")),
+        ("A" => v"2", "B" => v"2"),
+        ("A" => v"2", "C" => v"2"),
+        ("B" => v"2", "C" => v"2"),
     ])
     @test resolve(required, versions, dependencies, conflicts) == [
         ["A" => v"2", "B" => v"1", "C" => v"1", "D" => v"2"],

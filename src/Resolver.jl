@@ -1,11 +1,8 @@
 module Resolver
 
-export resolve, PkgVer
+export resolve
 
-struct PkgVer
-    package::String
-    version::VersionNumber
-end
+const PkgVer = Pair{String,VersionNumber}
 
 function resolve(
     required::Vector{String},
@@ -25,8 +22,8 @@ function resolve(
         depends(v::PkgVer, d::String) =
             haskey(dependencies, v) && d in dependencies[v]
         (a, b) in conflicts || (b, a) in conflicts ||
-        b.version == no_version && depends(a, b.package) ||
-        a.version == no_version && depends(b, a.package)
+        b[2] == no_version && depends(a, b[1]) ||
+        a[2] == no_version && depends(b, a[1])
     end
 
     function conflict(i::Int, j::Int)

@@ -2,7 +2,6 @@ using Resolver
 using Test
 
 @testset "0-conflict example" begin
-    required = ["A"]
     versions = Dict(
         "A" => [v"2", v"1"],
         "B" => [v"2", v"1"],
@@ -11,7 +10,8 @@ using Test
         ("A" => v"1") => String[],
         ("A" => v"2") => ["B"],
     )
-    @test resolve(required, versions, dependencies) == [
+    @test resolve(String[], versions, dependencies) |> isempty
+    @test resolve(["A"], versions, dependencies) == [
         ["A" => v"2", "B" => v"2"],
     ]
 end

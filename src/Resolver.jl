@@ -10,6 +10,10 @@ function resolve(
     dependencies::Dict{PkgVer,Vector{String}},
     conflicts::Set{Tuple{PkgVer,PkgVer}} = Set(NTuple{2,PkgVer}[]),
 )
+    # output data
+    solutions = Vector{Pair{String,VersionNumber}}[]
+    isempty(required) && return solutions
+
     no_version = typemin(VersionNumber)
     packages = sort!(collect(keys(versions)), by = p->(p ∉ required, p))
     choices = [copy(versions[p]) for p in packages]
@@ -39,9 +43,6 @@ function resolve(
     assigned = zeros(Int, n) # indices into choices
     conflicted = [1]         # previously conflicted packages
     prioritized = 0          # already-prioritied packages, index into conflicted
-
-    # output data
-    solutions = Vector{Pair{String,VersionNumber}}[]
 
     while prioritized < length(conflicted)
         p₀ = conflicted[prioritized += 1]

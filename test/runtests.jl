@@ -1,7 +1,7 @@
 using Resolver
 using Test
 
-@testset "0-conflict example" begin
+@testset "0-conflict examples" begin
     versions = Dict(
         "A" => [v"2", v"1"],
         "B" => [v"2", v"1"],
@@ -14,10 +14,25 @@ using Test
     @test resolve(["A"], versions, dependencies) == [
         ["A" => v"2", "B" => v"2"],
     ]
+    @test resolve(["B"], versions, dependencies) == [
+        ["B" => v"2"],
+    ]
+    @test resolve(["A", "B"], versions, dependencies) == [
+        ["A" => v"2", "B" => v"2"],
+    ]
+    dependencies["B" => v"2"] = ["A"]
+    @test resolve(["A"], versions, dependencies) == [
+        ["A" => v"2", "B" => v"2"],
+    ]
+    @test resolve(["B"], versions, dependencies) == [
+        ["B" => v"2", "A" => v"2"],
+    ]
+    @test resolve(["A", "B"], versions, dependencies) == [
+        ["A" => v"2", "B" => v"2"],
+    ]
 end
 
-@testset "simple, 1-conflict example" begin
-    required = ["A"]
+@testset "1-conflict examples" begin
     versions = Dict(
         "A" => [v"2", v"1"],
         "B" => [v"2", v"1"],
@@ -29,7 +44,29 @@ end
     conflicts = Set([
         ("A" => v"2", "B" => v"2"),
     ])
-    @test resolve(required, versions, dependencies, conflicts) == [
+    @test resolve(["A"], versions, dependencies, conflicts) == [
+        ["A" => v"2", "B" => v"1"],
+        ["A" => v"1", "B" => v"2"],
+    ]
+    @test resolve(["B"], versions, dependencies, conflicts) == [
+        ["B" => v"2"],
+    ]
+    @test resolve(["A", "B"], versions, dependencies, conflicts) == [
+        ["A" => v"2", "B" => v"1"],
+        ["A" => v"1", "B" => v"2"],
+    ]
+    dependencies = Dict(
+        ("A" => v"2") => ["B"],
+        ("B" => v"1") => ["A"],
+    )
+    @test_broken resolve(["A"], versions, dependencies, conflicts) == [
+        ["A" => v"2", "B" => v"1"],
+        ["A" => v"1"],
+    ]
+    @test resolve(["B"], versions, dependencies, conflicts) == [
+        ["B" => v"2"],
+    ]
+    @test resolve(["A", "B"], versions, dependencies, conflicts) == [
         ["A" => v"2", "B" => v"1"],
         ["A" => v"1", "B" => v"2"],
     ]
@@ -62,40 +99,3 @@ end
         ["A" => v"1", "B" => v"1", "C" => v"2", "E" => v"2"],
     ]
 end
-
-#=
-A B
-
-A[1] B
-A[2] B C
-A[3] B C
-A[4] B D
-
-B[1] C
-B[2] C D E
-B[3] A D
-B[4] A C D
-
-C[1] A
-C[2] D
-C[3] B D
-C[4] D
-
-D[1] C
-D[2]
-D[3] B
-D[4] E
-
-E[1]
-E[2]
-=#
-
-#=
-m1 = a2 b c
-m2 = a2 b c d
-m3 = a1 b
-
-a1: B
-a2: B C
-=#
-

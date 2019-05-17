@@ -99,7 +99,7 @@ end
     ]
 end
 
-@testset "3-conflict overcommit example" begin
+@testset "2-conflict overcommit example" begin
     versions = Dict(
         "A" => [v"2", v"1"],
         "B" => [v"2", v"1"],
@@ -111,7 +111,6 @@ end
         ("A" => v"2") => ["B", "C", "D"],
     )
     conflicts = Set([
-        ("A" => v"2", "B" => v"2"),
         ("A" => v"2", "C" => v"1"),
         ("B" => v"2", "D" => v"1"),
     ])

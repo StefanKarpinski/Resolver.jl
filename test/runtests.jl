@@ -73,7 +73,6 @@ end
 end
 
 @testset "3-conflict example" begin
-    required = ["A"]
     versions = Dict(
         "A" => [v"2", v"1"],
         "B" => [v"2", v"1"],
@@ -93,7 +92,7 @@ end
         ("A" => v"2", "C" => v"2"),
         ("B" => v"2", "C" => v"2"),
     ])
-    @test resolve(required, versions, dependencies, conflicts) == [
+    @test resolve(["A"], versions, dependencies, conflicts) == [
         ["A" => v"2", "B" => v"1", "C" => v"1", "D" => v"2"],
         ["A" => v"1", "B" => v"2", "C" => v"1"],
         ["A" => v"1", "B" => v"1", "C" => v"2", "E" => v"2"],

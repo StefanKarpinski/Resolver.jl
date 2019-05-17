@@ -98,3 +98,24 @@ end
         ["A" => v"1", "B" => v"1", "C" => v"2", "E" => v"2"],
     ]
 end
+
+@testset "3-conflict overcommit example" begin
+    versions = Dict(
+        "A" => [v"2", v"1"],
+        "B" => [v"2", v"1"],
+        "C" => [v"1"],
+        "D" => [v"1"],
+    )
+    dependencies = Dict(
+        ("A" => v"1") => ["B", "C", "D"],
+        ("A" => v"2") => ["B", "C", "D"],
+    )
+    conflicts = Set([
+        ("A" => v"2", "B" => v"2"),
+        ("A" => v"2", "C" => v"1"),
+        ("B" => v"2", "D" => v"1"),
+    ])
+    @test_broken resolve(["A"], versions, dependencies, conflicts) == [
+        ["A" => v"1", "B" => v"1", "C" => v"1", "D" => v"1"],
+    ]
+end

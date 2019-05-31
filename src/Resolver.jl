@@ -19,7 +19,8 @@ function resolve(
     choices = [copy(versions[p]) for p in packages]
 
     for (i, pkg) in enumerate(packages)
-        (pkg in required ? push! : pushfirst!)(choices[i], no_version)
+        pkg in required && continue
+        pushfirst!(choices[i], no_version)
     end
 
     function conflict(a::PkgVer, b::PkgVer)
@@ -38,44 +39,54 @@ function resolve(
     function search!(i::Int)
         reached[i, :] .= false
         for p = 1:n
-            # skip already reached package versions
-            reached[i, p] && continue
+            @show i, p
             # skip already assigned packages
             any(p == package[j] for j = 1:i-1) && continue
-            # record package order
+            # skip already reached package versions
+            reached[i, p] && continue
+            # record ith package choice
             package[i] = p
-            @show i, p
-            if i < n
+            if i == n
+                done = true
+            else
                 # optimal still-compatible version of p
                 v = version[i, p]
                 # optimal still-compatbile next versions
+                done = false
                 for q = 1:n
                     version[i+1, q] = 0
                     for w = version[i, q]:length(choices[q])
-                        if v > 0 && w > 0
-                            a = PkgVer(packages[p], choices[p][v])
-                            b = PkgVer(packages[q], choices[q][w])
-                            conflict(a, b) && continue
-                        end
+                        a = PkgVer(packages[p], choices[p][v])
+                        b = PkgVer(packages[q], choices[q][w])
+                        @show(conflict(a, b)) && continue
                         version[i+1, q] = w
                         break
                     end
+                    (done |= version[i+1, q] == 0) && break
                 end
-                search!(i+1)
-            else
-                # update reached
-                for i = 1:n, p = 1:n
-                    reached[i, p] |= version[i, p] == version[n, p]
+            end
+            if done
+                # updated reached versions
+                for (j, p) in enumerate(package)
+                    j ≤ i || break
+                    for k = 1:i
+                        reached[k, p] |= version[k, p] == version[i, p]
+                    end
                 end
                 @show package version reached
-                # record solution
-                any(version[n, p] == 0 for p = 1:n) && return
-                solution = Pair{String,VersionNumber}[]
-                for p = 1:n
-                    v = choices[p][version[n, p]]
-                    v ≠ no_version && push!(solution, packages[p] => v)
+                if i == n
+                    # record solution
+                    solution = Pair{String,VersionNumber}[]
+                    for p = 1:n
+                        v = choices[p][version[i, p]]
+                        v ≠ no_version && push!(solution, packages[p] => v)
+                    end
+                    @show solution
+                    push!(solutions, solution)
+                    return # last p is unique
                 end
-                push!(solutions, solution)
+            else
+                search!(i+1)
             end
         end
     end

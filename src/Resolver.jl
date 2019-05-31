@@ -30,50 +30,56 @@ function resolve(
         a[2] == no_version && depends(b, a[1])
     end
 
-    function conflict(i::Int, j::Int)
-        i > 0 && j > 0 || return false
-        a = PkgVer(packages[i], choices[i][assigned[i]])
-        b = PkgVer(packages[j], choices[j][assigned[j]])
-        return conflict(a, b)
-    end
-
-    # working data structures
     n = length(packages)
-    order = collect(0:n)     # indices into packages, zero is skipped
-    assigned = zeros(Int, n) # indices into choices
-    conflicted = [1]         # previously conflicted packages
-    prioritized = 0          # already-prioritied packages, index into conflicted
+    package = fill(0, n)        # i    : package assigned at index i
+    version = fill(1, n, n)     # i, p : best version of p still possible
+    reached = fill(false, n, n) # i, p : optimal[i,p] already reached
 
-    while prioritized < length(conflicted)
-        p₀ = conflicted[prioritized += 1]
-        order[1], order[p₀+1] = order[p₀+1], order[1]
-        feasible = true
-        for (i, p) in enumerate(order)
-            p == 0 && continue
-            k₁ = 1 + (i == 1 && choices[p][1] == no_version)
-            found = false
-            for k = k₁:length(choices[p])
-                assigned[p] = k
-                if !any(conflict(p, order[j]) for j=1:i-1)
-                    found = true
-                    break
+    function search!(i::Int)
+        reached[i, :] .= false
+        for p = 1:n
+            # skip already reached package versions
+            reached[i, p] && continue
+            # skip already assigned packages
+            any(p == package[j] for j = 1:i-1) && continue
+            # record package order
+            package[i] = p
+            @show i, p
+            if i < n
+                # optimal still-compatible version of p
+                v = version[i, p]
+                # optimal still-compatbile next versions
+                for q = 1:n
+                    version[i+1, q] = 0
+                    for w = version[i, q]:length(choices[q])
+                        if v > 0 && w > 0
+                            a = PkgVer(packages[p], choices[p][v])
+                            b = PkgVer(packages[q], choices[q][w])
+                            conflict(a, b) && continue
+                        end
+                        version[i+1, q] = w
+                        break
+                    end
                 end
-                # for k > 2 this will already have been done
-                if k ≤ 2 && choices[p][k] ≠ no_version && p ∉ conflicted
-                    push!(conflicted, p)
+                search!(i+1)
+            else
+                # update reached
+                for i = 1:n, p = 1:n
+                    reached[i, p] |= version[i, p] == version[n, p]
                 end
+                @show package version reached
+                # record solution
+                any(version[n, p] == 0 for p = 1:n) && return
+                solution = Pair{String,VersionNumber}[]
+                for p = 1:n
+                    v = choices[p][version[n, p]]
+                    v ≠ no_version && push!(solution, packages[p] => v)
+                end
+                push!(solutions, solution)
             end
-            (feasible &= found) || break
         end
-        order[1], order[p₀+1] = order[p₀+1], order[1]
-        feasible || continue
-        solution = Pair{String,VersionNumber}[]
-        for i = 1:n
-            v = choices[i][assigned[i]]
-            v ≠ no_version && push!(solution, packages[i] => v)
-        end
-        push!(solutions, solution)
     end
+    search!(1)
 
     return solutions
 end

@@ -90,6 +90,8 @@ function solutions(
     N::Vector{Vector{Int}},
 )
     S = Vector{Int}[]
+
+    # find dominating independent kernels
     function BronKerbosch(R::Vector{Int}, P::Vector{Int}, X::Vector{Int})
         if isempty(P) && isempty(X)
             push!(S, R)
@@ -99,16 +101,36 @@ function solutions(
         while !isempty(P)
             v = pop!(P)
             if BronKerbosch(R ∪ [v], P \ N[v], X \ N[v])
+                # don't consider non-dominating solutions
                 filter!(P) do w
-                    w[1] != v[1] || w[2] == 0
+                    V[w][1] != V[v][1] || V[w][2] == 0
                 end
                 found = true
             end
+            # require at least one version of each package
+            V[v][2] == 0 && !any(V[w][1] == V[v][1] for w in R) && break
             push!(X, v)
         end
         return found
     end
     BronKerbosch(Int[], collect(1:length(V)), Int[])
+    foreach(sort!, S)
+
+    # expand each kernel maximal independent set
+    function expand!(s::Vector{Int})
+        nodes = collect(1:length(V))
+        for v in s
+            setdiff!(nodes, N[v])
+        end
+        while !isempty(nodes)
+            v = pop!(nodes)
+            push!(s, v)
+            setdiff!(nodes, N[v])
+        end
+        return nodes
+    end
+    foreach(expand!, S)
+
     return S
 end
 

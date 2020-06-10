@@ -22,8 +22,8 @@ parse_vers(list::AbstractString) = parse_list(parse_ver, list)
 
 function add_node!(nodes::Vector{Node}, node::Node)
     node in nodes || push!(nodes, node)
-    not = (node[1], 0)
-    not in nodes || push!(nodes, not)
+    node′ = (node[1], 0)
+    node′ in nodes || push!(nodes, node′)
 end
 
 function add_edge!(
@@ -54,9 +54,11 @@ function graph(
     nodes = Node[]
     edges = Tuple{Node,Node}[]
     for (vers, deps) in dependencies
-        for ver in parse_vers(vers),
-            pkg in parse_pkgs(deps)
-            add_edge!(nodes, edges, ver => pkg)
+        for ver in parse_vers(vers)
+            add_node!(nodes, ver)
+            for pkg in parse_pkgs(deps)
+                add_edge!(nodes, edges, ver => pkg)
+            end
         end
     end
     for (vers1, vers2) in conflicts
@@ -81,21 +83,12 @@ function graph(
     return nodes, N
 end
 
-function resolve(
+const \ = setdiff
+
+function solutions(
     V::Vector{Node},
     N::Vector{Vector{Int}},
 )
-    pkgs = parse_pkgs(pkg_list)
-    # by(v::Node) = (v[1], v[2] == 0 && v[1] ∉ pkgs ? typemin(Int) : -v[2])
-    # p = sortperm(V; by)
-    # q = invperm(p)
-    # S = solutions(V[p], [q[I] for I in N[p]])
-    S = solutions(V, N)
-end
-
-const \ = setdiff
-
-function solutions(V::Vector{Node}, N::Vector{Vector{Int}})
     S = Vector{Int}[]
     function BronKerbosch(R::Vector{Int}, P::Vector{Int}, X::Vector{Int})
         if isempty(P) && isempty(X)
@@ -103,12 +96,13 @@ function solutions(V::Vector{Node}, N::Vector{Vector{Int}})
             return true
         end
         found = false
-        for v in P
+        while !isempty(P)
+            v = pop!(P)
             if BronKerbosch(R ∪ [v], P \ N[v], X \ N[v])
-                filter!(w -> w[1] == v[1], P)
+                filter!(P) do w
+                    w[1] != v[1] || w[2] == 0
+                end
                 found = true
-            else
-                filter!(!=(v), P)
             end
             push!(X, v)
         end

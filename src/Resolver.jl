@@ -21,32 +21,29 @@ parse_pkgs(list::AbstractString) = parse_list(parse_pkg, list)
 parse_vers(list::AbstractString) = parse_list(parse_ver, list)
 
 function add_node!(nodes::Vector{Node}, node::Node)
-    node in nodes && return
+    node in nodes || push!(nodes, node)
     not = (node[1], 0)
     not in nodes || push!(nodes, not)
-    push!(nodes, node)
-    return
 end
 
 function add_edge!(
     nodes::Vector{Node},
     edges::Vector{Tuple{Node,Node}},
-    edge::Tuple{Node,Node},
+    (a, b)::Tuple{Node,Node},
 )
-    edge in edges && return
-    add_node!(nodes, edge[1])
-    add_node!(nodes, edge[2])
-    push!(edges, edge)
-    push!(edges, reverse(edge))
-    return
+    (a, b) in edges && return
+    add_node!(nodes, a)
+    add_node!(nodes, b)
+    push!(edges, (a, b))
+    push!(edges, (b, a))
 end
 
 function add_edge!(
     nodes::Vector{Node},
     edges::Vector{Tuple{Node,Node}},
-    edge::Pair{Node,String},
+    (v, p)::Pair{Node,String},
 )
-    add_edge!(nodes, edges, (edge[1], (edge[2], 0)))
+    add_edge!(nodes, edges, (v, (p, 0)))
 end
 
 function graph(

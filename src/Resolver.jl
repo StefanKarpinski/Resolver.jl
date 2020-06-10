@@ -1,5 +1,7 @@
 module Resolver
 
+export graph
+
 const Node = Tuple{String,Int}
 
 function parse_pkg(pkg::AbstractString)::String

@@ -65,7 +65,7 @@ function graph(
             add_edge!(nodes, edges, (v1, v2))
         end
     end
-    sort!(nodes)
+    sort!(nodes, by = v -> (v[1], -v[2]))
     sort!(edges)
 
     # construct the neighbor lists
@@ -79,6 +79,43 @@ function graph(
     end
     foreach(sort!, N)
     return nodes, N
+end
+
+function resolve(
+    V::Vector{Node},
+    N::Vector{Vector{Int}},
+)
+    pkgs = parse_pkgs(pkg_list)
+    # by(v::Node) = (v[1], v[2] == 0 && v[1] ∉ pkgs ? typemin(Int) : -v[2])
+    # p = sortperm(V; by)
+    # q = invperm(p)
+    # S = solutions(V[p], [q[I] for I in N[p]])
+    S = solutions(V, N)
+end
+
+const \ = setdiff
+
+function solutions(V::Vector{Node}, N::Vector{Vector{Int}})
+    S = Vector{Int}[]
+    function BronKerbosch(R::Vector{Int}, P::Vector{Int}, X::Vector{Int})
+        if isempty(P) && isempty(X)
+            push!(S, R)
+            return true
+        end
+        found = false
+        for v in P
+            if BronKerbosch(R ∪ [v], P \ N[v], X \ N[v])
+                filter!(w -> w[1] == v[1], P)
+                found = true
+            else
+                filter!(!=(v), P)
+            end
+            push!(X, v)
+        end
+        return found
+    end
+    BronKerbosch(Int[], collect(1:length(V)), Int[])
+    return S
 end
 
 end # module

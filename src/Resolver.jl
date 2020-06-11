@@ -1,6 +1,6 @@
 module Resolver
 
-export graph, solutions
+export graph, solutions, resolve
 
 const Node = Tuple{String,Int}
 
@@ -47,6 +47,7 @@ function add_edge!(
 end
 
 function graph(
+    requires::Vector{String},
     dependencies::Dict{String,String},
     conflicts::Vector{Tuple{String,String}} = Tuple{String,String}[],
 )
@@ -67,7 +68,8 @@ function graph(
             add_edge!(nodes, edges, (v1, v2))
         end
     end
-    sort!(nodes, by = v -> (v[1], -v[2]))
+    by(v) = (v[1], v[2] == 0 && v[1] ∉ requires ? typemin(Int) : -v[2])
+    sort!(nodes; by)
     sort!(edges)
 
     # construct the neighbor lists
@@ -93,7 +95,7 @@ function solutions(
 
     # find dominating independent kernels
     function BronKerbosch(R::Vector{Int}, P::Vector{Int}, X::Vector{Int})
-        @show R, P, X
+        # @show R, P, X
         if isempty(P) && isempty(X)
             push!(S, R)
             return true
@@ -109,7 +111,7 @@ function solutions(
             if at_least_one && BronKerbosch(R′, P′, X′)
                 # don't consider sub-optimal solutions
                 filter!(P) do w
-                    V[w][1] != V[v][1] || V[w][2] == 0
+                    V[w][1] != V[v][1]
                 end
                 found = true
             end
@@ -140,6 +142,15 @@ function solutions(
     foreach(sort!, S)
 
     [[V[j] for j in J] for J in S]
+end
+
+function resolve(
+    requires::AbstractString,
+    dependencies::Dict{String,String},
+    conflicts::Vector{Tuple{String,String}} = Tuple{String,String}[],
+)
+    V, N = graph(parse_pkgs(requires), dependencies, conflicts)
+    solutions(V, N)
 end
 
 end # module

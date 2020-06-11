@@ -93,7 +93,7 @@ function solutions(
 
     # find dominating independent kernels
     function BronKerbosch(R::Vector{Int}, P::Vector{Int}, X::Vector{Int})
-        # @show R, P, X
+        @show R, P, X
         if isempty(P) && isempty(X)
             push!(S, R)
             return true
@@ -101,7 +101,12 @@ function solutions(
         found = false
         while !isempty(P)
             v = popfirst!(P)
-            if BronKerbosch(R ∪ [v], P \ N[v], X \ N[v])
+            R′, P′, X′ = R ∪ [v], P \ N[v], X \ N[v]
+            at_least_one = all(
+                any(V[w][1] == p for w in R′) ||
+                any(V[w][1] == p for w in P′)
+            for p in unique(V[w][1] for w in N[v]))
+            if at_least_one && BronKerbosch(R′, P′, X′)
                 # don't consider sub-optimal solutions
                 filter!(P) do w
                     V[w][1] != V[v][1] || V[w][2] == 0
@@ -131,8 +136,8 @@ function solutions(
         end
         return nodes
     end
-    # foreach(expand!, S)
-    # foreach(sort!, S)
+    foreach(expand!, S)
+    foreach(sort!, S)
 
     [[V[j] for j in J] for J in S]
 end

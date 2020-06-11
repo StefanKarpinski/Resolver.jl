@@ -34,8 +34,8 @@ end
         "A1" => "B",
         "A2" => "B,D",
         "B1,B2" => "C",
-        "C1" => "",
         "C2" => "E",
+        "C1,D1,D2,E1,E2" => "",
     )
     conflicts = [("A2", "B2,C2"), ("B2","C2")]
     V, N = graph(deps, conflicts)

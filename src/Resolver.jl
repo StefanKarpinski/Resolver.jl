@@ -1,6 +1,6 @@
 module Resolver
 
-export graph
+export graph, solutions
 
 const Node = Tuple{String,Int}
 
@@ -93,28 +93,30 @@ function solutions(
 
     # find dominating independent kernels
     function BronKerbosch(R::Vector{Int}, P::Vector{Int}, X::Vector{Int})
+        # @show R, P, X
         if isempty(P) && isempty(X)
             push!(S, R)
             return true
         end
         found = false
         while !isempty(P)
-            v = pop!(P)
+            v = popfirst!(P)
             if BronKerbosch(R ∪ [v], P \ N[v], X \ N[v])
-                # don't consider non-dominating solutions
+                # don't consider sub-optimal solutions
                 filter!(P) do w
                     V[w][1] != V[v][1] || V[w][2] == 0
                 end
                 found = true
             end
             # require at least one version of each package
-            V[v][2] == 0 && !any(V[w][1] == V[v][1] for w in R) && break
+            p = V[v][1]
+            any(V[w][1] == p for w in R) ||
+            any(V[w][1] == p for w in P) || break
             push!(X, v)
         end
         return found
     end
     BronKerbosch(Int[], collect(1:length(V)), Int[])
-    foreach(sort!, S)
 
     # expand each kernel maximal independent set
     function expand!(s::Vector{Int})
@@ -129,9 +131,10 @@ function solutions(
         end
         return nodes
     end
-    foreach(expand!, S)
+    # foreach(expand!, S)
+    # foreach(sort!, S)
 
-    return S
+    [[V[j] for j in J] for J in S]
 end
 
 end # module

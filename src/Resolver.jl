@@ -72,17 +72,27 @@ function graph(
     sort!(nodes; by)
     sort!(edges)
 
-    # construct the neighbor lists
+    # construct the neighbor lists & graph matrix
     n = length(nodes)
     N = [[i] for i = 1:n]
+    G = zeros(Bool, n, n)
     for (src, dst) in edges
         i = findfirst(==(src), nodes)
         j = findfirst(==(dst), nodes)
         j in N[i] || push!(N[i], j)
         i in N[j] || push!(N[j], i)
+        G[i,j] = true
     end
     foreach(sort!, N)
-    return nodes, N
+
+    return nodes, N, G
+end
+
+function graph(
+    dependencies::Dict{String,String},
+    conflicts::Vector{Tuple{String,String}} = Tuple{String,String}[],
+)
+    graph(String[], dependencies, conflicts)
 end
 
 const \ = setdiff
@@ -110,9 +120,9 @@ function solutions(
             for p in unique(V[w][1] for w in N[v]))
             if at_least_one && BronKerbosch(R′, P′, X′)
                 # don't consider sub-optimal solutions
-                filter!(P) do w
-                    V[w][1] != V[v][1]
-                end
+                # filter!(P) do w
+                #     V[w][1] != V[v][1] || V[w][2] == 0
+                # end
                 found = true
             end
             # require at least one version of each package
@@ -126,20 +136,25 @@ function solutions(
     BronKerbosch(Int[], collect(1:length(V)), Int[])
 
     # expand each kernel maximal independent set
-    function expand!(s::Vector{Int})
-        nodes = collect(1:length(V))
-        for v in s
-            setdiff!(nodes, N[v])
-        end
-        while !isempty(nodes)
-            v = pop!(nodes)
-            push!(s, v)
-            setdiff!(nodes, N[v])
-        end
-        return nodes
+    # function expand!(s::Vector{Int})
+    #     nodes = collect(1:length(V))
+    #     for v in s
+    #         setdiff!(nodes, N[v])
+    #     end
+    #     while !isempty(nodes)
+    #         v = pop!(nodes)
+    #         push!(s, v)
+    #         setdiff!(nodes, N[v])
+    #     end
+    #     return nodes
+    # end
+    # foreach(expand!, S)
+
+    # sort and take best versions
+    for soln in S
+        sort!(soln)
+        unique!(v -> V[v][1], soln)
     end
-    foreach(expand!, S)
-    foreach(sort!, S)
 
     [[V[j] for j in J] for J in S]
 end

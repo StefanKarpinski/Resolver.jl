@@ -1,17 +1,16 @@
-const Block = UInt
-
 function resolve(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
-    conflicts :: AbstractVector{<:AbstractVector{<:Integer}},
+    conflicts :: AbstractVector{Tuple{Integer,Integer}};
+    Block     :: Type{<:Base.BitUnsigned} = UInt,
 )
     # vector of solution vectors
     solutions = Vector{Int}[]
 
     # counts & sizes
-    N = length(packages)    # number of packages
-    M = length(conflicts)   # number of versions
-    d = 8*sizeof(Block)     # size of a version block
-    m = div(M, d, RoundUp)  # number of version blocks
+    N = length(packages)                    # number of packages
+    M = mapreduce(maximum, max, packages)   # number of versions
+    d = 8*sizeof(Block)                     # size of a version block
+    m = div(M, d, RoundUp)                  # number of version blocks
 
     # check packages
     let counts = zeros(Int, M)
@@ -27,11 +26,9 @@ function resolve(
     end
 
     # check conflicts
-    for (v1, conflicts_v1) in enumerate(conflicts), v2 in conflicts_v1
-        1 ≤ v2 ≤ M  ||
-            throw(ArgumentError("invalid version index: $v2"))
-        v1 ∈ conflicts[v2] ||
-            throw(ArgumentError("asymmetrical conflict for $v1, $v2"))
+    for (v1, v2) in conflicts
+        1 ≤ v1 ≤ M  || throw(ArgumentError("invalid version index: $v1"))
+        1 ≤ v2 ≤ M  || throw(ArgumentError("invalid version index: $v2"))
     end
 
     # no versions, no solutions
@@ -41,7 +38,7 @@ function resolve(
     P = zeros(Block, m, M)
         # each column is for a version
         # each row is a block of package bitmask
-    for (p, versions) in eunmerate(packages)
+    for (p, versions) in enumerate(packages)
         for v1 in versions, v2 in versions
             b, s = divrem(v2-1, d)
             P[b+1, v1] |= 1 << s
@@ -52,9 +49,12 @@ function resolve(
     X = zeros(Block, m, M)
         # each column is for a version
         # each row is a block of conflict bitmask
-    for v1 = 1:M, b = 0:m-1, s = 0:d-1
-        b*d + s ≥ M && break
-        P[b+1, v1] |= 1 << s
+    for (v1, v2) in conflicts
+        # conflicts are symmetrized
+        b1, s1 = divrem(v1-1, d)
+        b2, s2 = divrem(v2-1, d)
+        X[b1+1, v2] |= 1 << s1
+        X[b2+1, v1] |= 1 << s2
     end
 
     # allocate candidates matrix
@@ -90,12 +90,12 @@ function resolve(
                 s = trailing_zeros(c)
             end
             v = b*d + s + 1
-            v < M || break
+            v ≤ M || break
             # viable candidate found
             S[r] = v
             # recurse or record
             if r < N
-                # setup recursive candidates
+                # compute iterative & recursive candidates
                 for i = 1:m
                     c = C[i, r]
                     p = P[i, v]
@@ -105,17 +105,20 @@ function resolve(
                     # recursion: skip same package & conflicting versions
                     C[i, r+1] = c & ~p & ~x
                 end
+                # do recursive search
                 if search!(r+1)
+                    # skip worse versions of the same package
                     for i = 1:m
                         c = C[i, r]
                         p = P[i, v]
-                        # itertion: skip same package versions (found already)
+                        # itertion: skip same package versions
                         C[i, r] = c & ~p
                     end
+                    found = true
                 end
             else # record complete solution
                 push!(solutions, copy(S))
-                found |= true
+                found = true
             end
             # next candidate
             s += 1

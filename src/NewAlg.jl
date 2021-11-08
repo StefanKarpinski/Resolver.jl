@@ -61,21 +61,21 @@ function resolve(
     # (this shouldn't happen; we could error instead)
     @. X &= ~P
 
-    # allocate recursion candidates matrix
-    R = zeros(Block, m, N)
+    # allocate iteration candidates matrix
+    C = zeros(Block, m, N)
         # each column is for a recursion level
         # each row is a block of candidate bitmask
     # turn all candidates on in first column
     for i = 1:m-1
-        R[i, 1] = typemax(Block)
+        C[i, 1] = typemax(Block)
     end
     # except the extra bits in the last block
     let s = mod(-M, d)
-        R[m, 1] = typemax(Block) << s >> s
+        C[m, 1] = typemax(Block) << s >> s
     end
 
-    # allocate iteration candidates matrix 
-    C = zeros(Block, m, N)
+    # allocate recursion candidates matrix 
+    R = zeros(Block, m, N-1)
         # each column is for a recursion level
         # each row is a block of candidate bitmask
 
@@ -85,8 +85,8 @@ function resolve(
     function search!(r::Int=1)
         b = s = 0
         found = false
-        # copy iteration candidates from recursion candidates
-        @. C[:, r] = R[:, r]
+        # copy recursion candidates from iteration candidates
+        r < N && (@. R[:, r] = C[:, r])
         while true
             # look for the next candidate
             let c = C[b+1, r]
@@ -109,7 +109,7 @@ function resolve(
             # recurse or save solution
             if r < N
                 # next recursion: skip this package and conflicts
-                @. R[:, r+1] = R[:, r] & ~P[:, v] & ~X[:, v]
+                @. C[:, r+1] = R[:, r] & ~P[:, v] & ~X[:, v]
                 # do recursive search
                 if search!(r+1)
                     # next iteration: only conflicting
@@ -121,7 +121,7 @@ function resolve(
                 end
             else # record complete solution
                 push!(solutions, copy(S))
-                return true
+                return true # found
             end
             # next candidate
             s += 1

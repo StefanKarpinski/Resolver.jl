@@ -58,8 +58,8 @@ function resolve(
     end
 
     # remove conflicts within a package
-    # (this shouldn't happen, could error instead)
-    @. X = ~P
+    # (this shouldn't happen; we could error instead)
+    @. X &= ~P
 
     # allocate recursion candidates matrix
     R = zeros(Block, m, N)
@@ -98,28 +98,30 @@ function resolve(
                         b += 1
                     end
                 end
-                s = trailing_zeros(c) # shift for the candidate
+                # shift for next candidate
+                s += trailing_zeros(c >> s)
             end
             v = b*d + s + 1
             v ≤ M || break
+            @assert C[b+1, r] & (1 << s) != 0
             # record candidate version
             S[r] = v
             # recurse or save solution
-            if r ≤ N
+            if r < N
                 # next recursion: skip this package and conflicts
                 @. R[:, r+1] = R[:, r] & ~P[:, v] & ~X[:, v]
                 # do recursive search
                 if search!(r+1)
-                    found = true
                     # next iteration: only conflicting
                     @. C[:, r] &= X[:, v]
+                    found = true
                 else
-                    # next iteration: only conflicting or this package
+                    # next iteration: only conflicting or same package
                     @. C[:, r] &= X[:, v] | P[:, v]
                 end
             else # record complete solution
-                found = true
                 push!(solutions, copy(S))
+                return true
             end
             # next candidate
             s += 1
@@ -130,3 +132,11 @@ function resolve(
 
     return solutions
 end
+
+# debugging...
+
+packages = [1:2, 3:6, 7:10]
+conflicts = [(1,3), (1,7), (3,7), (2, 10)]
+Block = UInt8
+
+dd(A::AbstractArray) = map(reverse∘bitstring, permutedims(A))

@@ -1,6 +1,6 @@
 function resolve(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
-    conflicts :: AbstractVector{Tuple{Integer,Integer}};
+    conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
     Block     :: Type{<:Base.BitUnsigned} = UInt,
 )
     # vector of solution vectors
@@ -57,68 +57,69 @@ function resolve(
         X[b2+1, v1] |= 1 << s2
     end
 
-    # allocate candidates matrix
-    C = zeros(Block, m, N)
+    # remove conflicts within a package
+    # (this shouldn't happen, could error instead)
+    @. X = ~P
+
+    # allocate recursion candidates matrix
+    R = zeros(Block, m, N)
         # each column is for a recursion level
         # each row is a block of candidate bitmask
     # turn all candidates on in first column
     for i = 1:m-1
-        C[i, 1] = typemax(Block)
+        R[i, 1] = typemax(Block)
     end
     # except the extra bits in the last block
     let s = mod(-M, d)
-        C[m, 1] = typemax(Block) << s >> s
+        R[m, 1] = typemax(Block) << s >> s
     end
+
+    # allocate iteration candidates matrix 
+    C = zeros(Block, m, N)
+        # each column is for a recursion level
+        # each row is a block of candidate bitmask
 
     # allocate selections vector
     S = zeros(Int, N)
 
     function search!(r::Int=1)
-        found = false
         b = s = 0
+        found = false
+        # copy iteration candidates from recursion candidates
+        @. C[:, r] = R[:, r]
         while true
             # look for the next candidate
             let c = C[b+1, r]
-                if c >> s == 0
-                    b += 1
+                if c >> s == 0 # no more candidates in current block
+                    b += 1 # next block
                     while b < m
-                        c = C[b+1, r]
-                        c != 0 && break
+                        c = C[b+1, r] # candidates bitmask
+                        c != 0 && break # there's one in this block
                         b += 1
                     end
                 end
-                s = trailing_zeros(c)
+                s = trailing_zeros(c) # shift for the candidate
             end
             v = b*d + s + 1
             v ≤ M || break
-            # viable candidate found
+            # record candidate version
             S[r] = v
-            # recurse or record
-            if r < N
-                # compute iterative & recursive candidates
-                for i = 1:m
-                    c = C[i, r]
-                    p = P[i, v]
-                    x = X[i, v]
-                    # itertion: skip non-conflicting versions
-                    C[i, r] = c & x
-                    # recursion: skip same package & conflicting versions
-                    C[i, r+1] = c & ~p & ~x
-                end
+            # recurse or save solution
+            if r ≤ N
+                # next recursion: skip this package and conflicts
+                @. R[:, r+1] = R[:, r] & ~P[:, v] & ~X[:, v]
                 # do recursive search
                 if search!(r+1)
-                    # skip worse versions of the same package
-                    for i = 1:m
-                        c = C[i, r]
-                        p = P[i, v]
-                        # itertion: skip same package versions
-                        C[i, r] = c & ~p
-                    end
                     found = true
+                    # next iteration: only conflicting
+                    @. C[:, r] &= X[:, v]
+                else
+                    # next iteration: only conflicting or this package
+                    @. C[:, r] &= X[:, v] | P[:, v]
                 end
             else # record complete solution
-                push!(solutions, copy(S))
                 found = true
+                push!(solutions, copy(S))
             end
             # next candidate
             s += 1

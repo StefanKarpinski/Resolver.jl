@@ -34,17 +34,6 @@ function resolve(
     # no versions, no solutions
     M == 0 && return solution
 
-    # construct blocked packages matrix
-    P = zeros(Block, m, M)
-        # each column is for a version
-        # each row is a block of package bitmask
-    for (p, versions) in enumerate(packages)
-        for v1 in versions, v2 in versions
-            b, s = divrem(v2-1, d)
-            P[b+1, v1] |= 1 << s
-        end
-    end
-
     # construct blocked conflicts matrix
     X = zeros(Block, m, M)
         # each column is for a version
@@ -57,9 +46,14 @@ function resolve(
         X[b2+1, v1] |= 1 << s2
     end
 
-    # remove conflicts within a package
-    # (this shouldn't happen; we could error instead)
-    @. X &= ~P
+    # construct blocked conflicts | packages matrix
+    Y = copy(X)
+    for (p, versions) in enumerate(packages)
+        for v1 in versions, v2 in versions
+            b, s = divrem(v2-1, d)
+            Y[b+1, v1] |= 1 << s
+        end
+    end
 
     # allocate iteration candidates matrix
     C = zeros(Block, m, N)
@@ -103,21 +97,20 @@ function resolve(
             end
             v = b*d + s + 1
             v ≤ M || break
-            @assert C[b+1, r] & (1 << s) != 0
             # record candidate version
             S[r] = v
             # recurse or save solution
             if r < N
-                # next recursion: skip this package and conflicts
-                @. C[:, r+1] = R[:, r] & ~P[:, v] & ~X[:, v]
+                # next recursion: skip conflicts or same package
+                @. C[:, r+1] = R[:, r] & ~Y[:, v]
                 # do recursive search
                 if search!(r+1)
-                    # next iteration: only conflicting
+                    # next iteration: only conflict
                     @. C[:, r] &= X[:, v]
                     found = true
                 else
-                    # next iteration: only conflicting or same package
-                    @. C[:, r] &= X[:, v] | P[:, v]
+                    # next iteration: only conflict or same package
+                    @. C[:, r] &= Y[:, v]
                 end
             else # record complete solution
                 push!(solutions, copy(S))

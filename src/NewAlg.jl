@@ -34,25 +34,49 @@ function resolve(
     # no versions, no solutions
     M == 0 && return solution
 
+    # construct blocked preference matrix
+    P = zeros(Block, m, M)
+        # each column is for a version
+        # each row is a block of preference bitmask
+
+    # earlier versions of the same package are preferred
+    for (p, versions) in enumerate(packages)
+        for v2 in versions, v1 in versions
+            v1 < v2 || continue
+            # v1 strictly preferred to v2
+            b, s = divrem(v1-1, d)
+            P[b+1, v2] |= 1 << s
+        end
+        # TODO: must be a simpler way to do this?
+        for (p′, versions′) in enumerate(packages)
+            p == p′ && continue
+            for v2 in versions′, v1 in versions
+                b, s = divrem(v1-1, d)
+                P[b+1, v2] |= 1 << s
+            end
+        end
+    end
+
     # construct blocked conflicts matrix
     X = zeros(Block, m, M)
         # each column is for a version
         # each row is a block of conflict bitmask
+
+    # different versions of the same package are incompatible
+    for (p, versions) in enumerate(packages)
+        for v2 in versions, v1 in versions
+            b, s = divrem(v1-1, d)
+            X[b+1, v2] |= 1 << s
+        end
+    end
+
+    # explicit conflicts are incompatible too, of course
     for (v1, v2) in conflicts
         # conflicts are symmetrized
         b1, s1 = divrem(v1-1, d)
         b2, s2 = divrem(v2-1, d)
         X[b1+1, v2] |= 1 << s1
         X[b2+1, v1] |= 1 << s2
-    end
-
-    # construct blocked conflicts | packages matrix
-    Y = copy(X)
-    for (p, versions) in enumerate(packages)
-        for v1 in versions, v2 in versions
-            b, s = divrem(v2-1, d)
-            Y[b+1, v1] |= 1 << s
-        end
     end
 
     # allocate iteration candidates matrix
@@ -101,20 +125,24 @@ function resolve(
             S[r] = v
             # recurse or save solution
             if r < N
-                # next recursion: skip conflicts or same package
-                @. C[:, r+1] = R[:, r] & ~Y[:, v]
+                # next recursion: skip conflicts
+                @. C[:, r+1] = R[:, r] & ~X[:, v]
+                # next iteration: only conflicts
+                @. C[:, r] &= X[:, v]
                 # do recursive search
-                if search!(r+1)
-                    # next iteration: only conflict
-                    @. C[:, r] &= X[:, v]
-                    found = true
-                else
-                    # next iteration: only conflict or same package
-                    @. C[:, r] &= Y[:, v]
+                search!(r+1)
+            else # complete solution
+                # for each version in our solution set, we skip versions of the
+                # same package that aren't strictly better at the same or higher
+                # level of recursion. reasoning: when we prioritize the package
+                # higher, we only care if it allows us to find a better version.
+                # this only works since we toss out the iteration candidate set
+                # after recursion rewinds back past each recursion level.
+                for r′ = 1:N, r′′ = 1:r′
+                    @. C[:, r′′] &= P[:, S[r′]]
                 end
-            else # record complete solution
+                # record solution
                 push!(solutions, copy(S))
-                return true # found
             end
             # next candidate
             s += 1

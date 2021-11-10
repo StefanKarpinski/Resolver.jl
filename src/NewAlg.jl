@@ -40,20 +40,12 @@ function resolve(
         # each row is a block of preference bitmask
 
     # earlier versions of the same package are preferred
-    for (p, versions) in enumerate(packages)
-        for v2 in versions, v1 in versions
-            v1 < v2 || continue
-            # v1 strictly preferred to v2
-            b, s = divrem(v1-1, d)
-            P[b+1, v2] |= 1 << s
-        end
-        # TODO: must be a simpler way to do this?
-        for (p′, versions′) in enumerate(packages)
-            p == p′ && continue
-            for v2 in versions′, v1 in versions
-                b, s = divrem(v1-1, d)
-                P[b+1, v2] |= 1 << s
-            end
+    for (p1, versions1) in enumerate(packages),
+        (p2, versions2) in enumerate(packages)
+        for v1 in versions1, v2 in versions2
+            p1 == p2 && v1 <= v2 && continue
+            b, s = divrem(v2-1, d)
+            P[b+1, v1] |= 1 << s
         end
     end
 
@@ -64,9 +56,9 @@ function resolve(
 
     # different versions of the same package are incompatible
     for (p, versions) in enumerate(packages)
-        for v2 in versions, v1 in versions
-            b, s = divrem(v1-1, d)
-            X[b+1, v2] |= 1 << s
+        for v1 in versions, v2 in versions
+            b, s = divrem(v2-1, d)
+            X[b+1, v1] |= 1 << s
         end
     end
 
@@ -101,10 +93,14 @@ function resolve(
     S = zeros(Int, N)
 
     function search!(r::Int=1)
-        b = s = 0
-        found = false
         # copy recursion candidates from iteration candidates
-        r < N && (@. R[:, r] = C[:, r])
+        if r < N
+            for i = 1:m
+                R[i, r] = C[i, r]
+            end
+        end
+        # initial block & shift values
+        b = s = 0
         while true
             # look for the next candidate
             let c = C[b+1, r]
@@ -125,10 +121,13 @@ function resolve(
             S[r] = v
             # recurse or save solution
             if r < N
-                # next recursion: skip conflicts
-                @. C[:, r+1] = R[:, r] & ~X[:, v]
-                # next iteration: only conflicts
-                @. C[:, r] &= X[:, v]
+                for i = 1:m
+                    x = X[i, v]
+                    # next iteration: only conflicts
+                    C[i, r] &= x
+                    # next recursion: skip conflicts
+                    C[i, r+1] = R[i, r] & ~x
+                end
                 # do recursive search
                 search!(r+1)
             else # complete solution
@@ -138,16 +137,16 @@ function resolve(
                 # higher, we only care if it allows us to find a better version.
                 # this only works since we toss out the iteration candidate set
                 # after recursion rewinds back past each recursion level.
-                for r′ = 1:N, r′′ = 1:r′
-                    @. C[:, r′′] &= P[:, S[r′]]
+                for r′ = 1:N, r′′ = 1:r′, i = 1:m
+                    C[i, r′′] &= P[i, S[r′]]
                 end
                 # record solution
                 push!(solutions, copy(S))
+                break
             end
             # next candidate
             s += 1
         end
-        return found
     end
     search!()
 

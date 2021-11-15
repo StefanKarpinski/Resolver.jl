@@ -6,6 +6,7 @@ function resolve(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
     conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
     Block     :: Type{<:Base.BitUnsigned} = UInt,
+    sort      :: Bool = true,
 )
     # vector of solution vectors
     solutions = Vector{Int}[]
@@ -154,6 +155,8 @@ function resolve(
     end
     search!()
 
+    # return sorted vector of sorted solutions
+    sort && sort!(map(sort!, solutions))
     return solutions
 end
 

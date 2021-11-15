@@ -1,21 +1,32 @@
 using Test
 using Resolver
 
-function solutions_brute_force(
-    N::Integer, # number of packages
-    V::Integer, # number of versions per package
-    conflicts::AbstractVector{<:Tuple{Integer,Integer}},
+function resolve_brute_force(
+    packages  :: AbstractVector{<:AbstractVector{<:Integer}},
+    conflicts :: AbstractVector{<:Tuple{Integer,Integer}},
 )
-    log(V, V^N) ≈ N ||
-        throw(ArgumentError("brute force only works with small problems ($N, $V)"))
+    N = length(packages)
+    M = sum(length, packages)
+    Π = prod(length, packages)
+    Π > 0 && log2(Π) ≈ sum(log2∘length, packages) ||
+        throw(ArgumentError("brute force only works for small problems"))
 
+    # generate all conflict-free solutions
+    solution = zeros(Int, N)
     solutions = Vector{Int}[]
-    for S = 0:V^N-1
-        solution = [V*p + ((S ÷ V^p) % V) + 1 for p = 0:N-1]
+    for S = 0:Π-1
+        b = 1
+        for i = 1:N
+            V = length(packages[i])
+            S, r = divrem(S, V)
+            solution[i] = b + r
+            b += V
+        end
         any(v₁ ∈ solution && v₂ ∈ solution for (v₁, v₂) in conflicts) && continue
-        push!(solutions, solution)
+        push!(solutions, copy(solution))
     end
 
+    # filter out sub-optimal solutions
     filter!(solutions) do s₁
         all(solutions) do s₂
             equal = true
@@ -27,5 +38,6 @@ function solutions_brute_force(
         end
     end
 
-    return solutions
+    # return sorted vector of sorted solutions
+    return sort!(map(sort!, solutions))
 end

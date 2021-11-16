@@ -1,4 +1,5 @@
 using Test
+using Random
 using Resolver
 
 function resolve_brute_force(

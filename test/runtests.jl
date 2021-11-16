@@ -20,13 +20,17 @@ include("setup.jl")
             if N + V <= 5
                 for C = 0:2^((N*(N-1)÷2)*V^2)-1
                     conflicts = Tuple{Int,Int}[]
-                    for v₁ = 1:V, v₂ = 1:V, p₁ = 1:N-1, p₂ = p₁+1:N
-                        s  = v₂-1; s *= V
-                        s += v₁-1; s *= V
-                        s += p₁-1; s *= N-1
-                        s += p₂-p₁-1
-                        isodd(C >> s) || continue
-                        push!(conflicts, ((p₁-1)*V + v₁, (p₂-1)*V + v₂))
+                    s = trailing_zeros(C)
+                    while (C >> s) ≠ 0
+                        b = s += trailing_zeros(C >> s)
+                        b, v₂ = divrem(b, V)
+                        b, v₁ = divrem(b, V)
+                        p₂, p₁ = divrem(b, N-1)
+                        p₂ += 1 + p₁
+                        v₁ += 1 + p₁*V
+                        v₂ += 1 + p₂*V
+                        push!(conflicts, (v₁, v₂))
+                        s += 1
                     end
                     @show conflicts
                     solutions = resolve_brute_force(packages, conflicts)

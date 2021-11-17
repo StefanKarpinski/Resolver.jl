@@ -2,6 +2,9 @@ module Resolver
 
 export resolve
 
+# for debugging
+dd(A::AbstractArray) = map(reverse∘bitstring, permutedims(A))
+
 function resolve(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
     conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
@@ -59,21 +62,21 @@ function resolve(
         # each column is for a version
         # each row is a block of conflict bitmask
 
-    # different versions of the same package are incompatible
-    for (p, versions) in enumerate(packages)
-        for v1 in versions, v2 in versions
-            b, s = divrem(v2-1, d)
-            X[b+1, v1] |= 1 << s
-        end
-    end
-
-    # explicit conflicts are incompatible too, of course
+    # explicit conflicts are incompatible, of course
     for (v1, v2) in conflicts
         # conflicts are symmetrized
         b1, s1 = divrem(v1-1, d)
         b2, s2 = divrem(v2-1, d)
         X[b1+1, v2] |= 1 << s1
         X[b2+1, v1] |= 1 << s2
+    end
+
+    # different versions of the same package are incompatible too
+    for (p, versions) in enumerate(packages)
+        for v1 in versions, v2 in versions
+            b, s = divrem(v2-1, d)
+            X[b+1, v1] |= 1 << s
+        end
     end
 
     # allocate iteration candidates matrix

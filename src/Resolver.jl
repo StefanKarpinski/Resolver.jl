@@ -60,6 +60,13 @@ function resolve(
         # each column is for a version
         # each row is a block of conflict bitmask
 
+    # invert the packages matrix
+    @. P = ~P
+    # turn off the extra bits in the last block of each column
+    for j = 1:M
+        P[m, j] &= typemax(Block) >> mod(-M, d)
+    end
+
     # explicit conflicts are also incompatible
     for (v1, v2) in conflicts
         # conflicts are symmetrized
@@ -133,7 +140,7 @@ function resolve(
                 push!(solutions, copy(S))
                 # stop search for each found package
                 for r′ = 1:N, i = 1:m
-                    C[i, r′] &= ~P[i, S[r′]]
+                    C[i, r′] &= P[i, S[r′]]
                 end
                 break
             end

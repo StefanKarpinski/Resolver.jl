@@ -42,38 +42,41 @@ function resolve(
     # no versions, no solutions
     M == 0 && return solution
 
-    # construct blocked package matrix
+    # construct blocked preference matrix
     P = zeros(Block, m, M)
         # each column is for a version
-        # each row is a block of package bitmask
+        # each row is a block of preference bitmask
 
-    # bitmask compressed indicators of same package versions
-    for (p, versions) in enumerate(packages)
-        for v1 in versions, v2 in versions
+    # earlier versions of the same package are preferred
+    for (p1, versions1) in enumerate(packages),
+        (p2, versions2) in enumerate(packages)
+        for v1 in versions1, v2 in versions2
+            p1 == p2 && v1 <= v2 && continue
             b, s = divrem(v2-1, d)
             P[b+1, v1] |= 1 << s
         end
     end
 
     # construct blocked conflicts matrix
-    X = copy(P) # same package versions are incompatible
+    X = zeros(Block, m, M)
         # each column is for a version
         # each row is a block of conflict bitmask
 
-    # invert the packages matrix
-    @. P = ~P
-    # turn off the extra bits in the last block of each column
-    for j = 1:M
-        P[m, j] &= typemax(Block) >> mod(-M, d)
-    end
-
-    # explicit conflicts are also incompatible
+    # explicit conflicts are incompatible, of course
     for (v1, v2) in conflicts
         # conflicts are symmetrized
         b1, s1 = divrem(v1-1, d)
         b2, s2 = divrem(v2-1, d)
         X[b1+1, v2] |= 1 << s1
         X[b2+1, v1] |= 1 << s2
+    end
+
+    # different versions of the same package are incompatible too
+    for (p, versions) in enumerate(packages)
+        for v1 in versions, v2 in versions
+            b, s = divrem(v2-1, d)
+            X[b+1, v1] |= 1 << s
+        end
     end
 
     # allocate iteration candidates matrix
@@ -136,12 +139,17 @@ function resolve(
                 # do recursive search
                 search!(r+1)
             else # complete solution
+                # for each version in our solution set, we skip versions of the
+                # same package that aren't strictly better at the same or higher
+                # level of recursion. reasoning: when we prioritize the package
+                # higher, we only care if it allows us to find a better version.
+                # this only works since we toss out the iteration candidate set
+                # after recursion rewinds back past each recursion level.
+                for r′ = 1:N, r′′ = 1:r′, i = 1:m
+                    C[i, r′′] &= P[i, S[r′]]
+                end
                 # record solution
                 push!(solutions, copy(S))
-                # stop search for each found package
-                for r′ = 1:N, i = 1:m
-                    C[i, r′] &= P[i, S[r′]]
-                end
                 break
             end
             # next candidate

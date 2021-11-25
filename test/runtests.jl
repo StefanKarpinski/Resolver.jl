@@ -34,8 +34,8 @@ include("setup.jl")
                     end
                     @show conflicts
                     solutions = resolve_brute_force(packages, conflicts)
-                    @test solutions ⊆ resolve(packages, conflicts)
-                    @test solutions ⊆ resolve(packages, conflicts; Block = UInt8)
+                    @test solutions == resolve(packages, conflicts)
+                    @test solutions == resolve(packages, conflicts; Block = UInt8)
                 end
             else
                 # try random conflicts

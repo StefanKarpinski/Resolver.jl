@@ -17,8 +17,9 @@ include("setup.jl")
         for N = 2:5, # number of packages
             V = 1:5  # number of versions per package
             packages = [i*V+1:(i+1)*V for i=0:N-1]
-            if N + V <= 5
-                for C = 0:2^(V^2*(N*(N-1)÷2))-1
+            T = V^2*(N*(N-1)÷2)
+            if T <= 12
+                for C = 0:2^T-1
                     conflicts = Tuple{Int,Int}[]
                     for p₁ = 0:N-2, p₂ = p₁+1:N-1
                         p = N*(N-1)÷2 - (N-p₁)*(N-p₁-1)÷2 + (p₂-p₁) - 1

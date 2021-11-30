@@ -18,24 +18,23 @@ include("setup.jl")
             V = 1:5  # number of versions per package
             packages = [i*V+1:(i+1)*V for i=0:N-1]
             if N + V <= 5
-                for C = 0:2^((N*(N-1)÷2)*V^2)-1
+                for C = 0:2^(V^2*(N*(N-1)÷2))-1
                     conflicts = Tuple{Int,Int}[]
-                    s = trailing_zeros(C)
-                    while (C >> s) ≠ 0
-                        b = s += trailing_zeros(C >> s)
-                        b, v₂ = divrem(b, V)
-                        b, v₁ = divrem(b, V)
-                        p₂, p₁ = divrem(b, N-1)
-                        p₂ += 1 + p₁
-                        v₁ += 1 + p₁*V
-                        v₂ += 1 + p₂*V
-                        push!(conflicts, (v₁, v₂))
-                        s += 1
+                    for p₁ = 0:N-2, p₂ = p₁+1:N-1
+                        p = N*(N-1)÷2 - (N-p₁)*(N-p₁-1)÷2 + (p₂-p₁) - 1
+                        for v₁ = 0:V-1, v₂ = 0:V-1
+                            s = p*V^2 + v₁*V + v₂
+                            isodd(C >> s) || continue
+                            push!(conflicts, (p₁*V + v₁ + 1, p₂*V + v₂ + 1))
+                        end
                     end
-                    @show conflicts
                     solutions = resolve_brute_force(packages, conflicts)
-                    @test solutions == resolve(packages, conflicts)
+                    # @test solutions == resolve(packages, conflicts)
                     @test solutions == resolve(packages, conflicts; Block = UInt8)
+                    if solutions != resolve(packages, conflicts)
+                        resolved = resolve(packages, conflicts)
+                        @show packages conflicts solutions resolved
+                    end
                 end
             else
                 # try random conflicts

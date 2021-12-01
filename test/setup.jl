@@ -39,3 +39,19 @@ function resolve_brute_force(
     # return sorted vector of sorted solutions
     return sort!(solutions)
 end
+
+function gen_conflicts(N::I, V::I, C::Integer) where {I<:Integer}
+    conflicts = Tuple{I,I}[]
+    for p₁ = 0:N-2, p₂ = p₁+1:N-1
+        p = N*(N-1)÷2 - (N-p₁)*(N-p₁-1)÷2 + (p₂-p₁) - 1
+        @assert 0 ≤ p < N*(N-1)÷2
+        X = C >> (p*V^2)
+        v = trailing_zeros(X)
+        while v < V^2
+            v₁, v₂ = divrem(v, V)
+            push!(conflicts, (p₁*V + v₁ + 1, p₂*V + v₂ + 1))
+            v += 1; v += trailing_zeros(X >> v)
+        end
+    end
+    return conflicts
+end

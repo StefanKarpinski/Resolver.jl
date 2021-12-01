@@ -152,7 +152,10 @@ function resolve(
     search!()
 
     # return sorted vector of sorted solutions
-    sort && sort!(map(sort!, solutions))
+    if sort
+        foreach(sort!, solutions)
+        sort!(solutions)
+    end
     return solutions
 end
 

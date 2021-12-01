@@ -14,10 +14,12 @@ include("setup.jl")
     end
 
     @testset "comprehensive tests" begin
+        Random.seed!(0xed3c5f374cf4319a)
         for N = 2:5, # number of packages
             V = 1:5  # number of versions per package
             packages = [i*V+1:(i+1)*V for i=0:N-1]
             T = V^2*(N*(N-1)÷2)
+            T ≤ 128 || continue
             for C in (T ≤ 12 ? (0:2^T-1) : [rand(UInt128) for _ = 1:2^12])
                 conflicts = gen_conflicts(N, V, C)
                 @assert length(conflicts) == count_ones(C % 2^T)

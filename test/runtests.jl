@@ -22,16 +22,16 @@ include("setup.jl")
             T ≤ 128 || continue
             for C in (T ≤ 12 ? (0:2^T-1) : [rand(UInt128) for _ = 1:2^12])
                 conflicts = gen_conflicts(N, V, C)
-                @assert length(conflicts) == count_ones(C % 2^T)
+                @assert length(conflicts) == count_ones(C % UInt128(2)^T)
                 solutions = resolve_brute_force(packages, conflicts)
                 @test solutions == resolve(packages, conflicts)
                 @test solutions == resolve(packages, conflicts; Block = UInt8)
                 resolved = resolve(packages, conflicts)
-                if solutions != resolve(packages, conflicts)
-                    resolved = resolve(packages, conflicts)
-                    @show packages conflicts solutions resolved
-                    return
-                end
+                # if solutions != resolve(packages, conflicts)
+                #     resolved = resolve(packages, conflicts)
+                #     @show packages conflicts solutions resolved
+                #     return
+                # end
             end
         end
     end

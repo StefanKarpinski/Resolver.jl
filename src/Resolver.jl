@@ -47,23 +47,19 @@ function resolve(
         push!((x ? X : C)[v1], v2)
     end
 
-    # level vector
-    L = zeros(Int, N)
-
-    # solution vector
+    # level vector, solution vector, solutions set
+    L = ones(Int, N)
     S = zeros(Int, M)
-
-    # vector of solution vectors
     solutions = typeof(S)[]
 
-    function search!(r::Int = 0)
-        @show r, L, S[1:r]
+    function search!(r::Int = 1)
+        @show r, L, S[1:r-1]
         # consider pivot and its incompatibilities
         for i = 1:N
             l = L[i]
             if l == r
-                S[r+1] = i
-                if r+1 == M
+                S[r] = i
+                if r == M
                     push!(solutions, copy(S))
                     continue
                 end
@@ -72,7 +68,7 @@ function resolve(
                 end
                 search!(r + 1)
                 for j in C[i]
-                    L[j] = max(L[j], r)
+                    L[j] = min(L[j], r)
                 end
                 L[i] = r-1
             end

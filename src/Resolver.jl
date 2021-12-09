@@ -15,16 +15,17 @@ function resolve(
     N = mapreduce(maximum, max, packages)   # number of versions
 
     # check packages
-    let counts = zeros(Int, N)
-        for (p, versions) in enumerate(packages), v in versions
-            1 ≤ v ≤ N ||
-                throw(ArgumentError("invalid version index: $v"))
-            counts[v] += 1
-        end
-        for v = 1:N
-            counts[v] == 1 ||
-                throw(ArgumentError("version $v in $(counts[v]) packages"))
-        end
+    P = zeros(Int, N)
+    for (p, versions) in enumerate(packages), v in versions
+        1 ≤ v ≤ N ||
+            throw(ArgumentError("invalid version index: $v"))
+        P[v] == 0 ||
+            throw(ArgumentError("version $v in multiple packages"))
+        P[v] = p
+    end
+    for v = 1:N
+        P[v] > 0 ||
+            throw(ArgumentError("version $v not in any package"))
     end
 
     # check conflicts
@@ -52,35 +53,46 @@ function resolve(
     S = zeros(Int, M)
     solutions = typeof(S)[]
 
-    function search!(r::Int = 1)
+    function search!(r::Int = 1, d::Int = 1)
         # find a pivot vertex
         i = 0
         for j = 1:N
-            l = L[j]
-            if l == r
-                i = j
-                break
-            end
+            # check subgraph inclusion at recursion level
+            L[j] == r || continue
+            i = j
+            break
         end
         i == 0 && return
         # consider each vertex in pivot set
         for j in X[i]
-            l = L[j]
-            if l == r
-                S[r] = j
-                if r == M
-                    push!(solutions, copy(S))
-                    continue
-                end
-                for k in C[j]
-                    L[k] += (L[k] == r)
-                end
-                search!(r + 1)
-                for k in C[j]
-                    L[k] = min(L[k], r)
-                end
-                L[j] = r-1
+            # check subgraph inclusion at recursion level
+            L[j] == r || continue
+            # advance dominance frontier
+            d′ = d
+            while d′ ≤ length(solutions) && j < solutions[d′][P[j]]
+                d′ += 1
             end
+            # check advancement of dominance
+            d < d′ || length(solutions) < d || continue
+            # record version choice
+            S[r] = j
+            if r == M
+                # we have a complete solution
+                push!(solutions, sort(S))
+                break
+            end
+            # restrict next subgraph to neighbors
+            for k in C[j]
+                L[k] += (L[k] == r)
+            end
+            # recursion
+            search!(r + 1, d′)
+            # restore the levels vector
+            for k in C[j]
+                L[k] = min(L[k], r)
+            end
+            # exclude vertex from future iterations
+            L[j] = r-1
         end
     end
     search!()

@@ -54,8 +54,18 @@ function resolve(
 
     function search!(r::Int = 1)
         @show r, L, S[1:r-1]
-        # consider pivot and its incompatibilities
+        # find a pivot vertex, k
+        k = 0
         for i = 1:N
+            l = L[i]
+            if l == r
+                k = i
+                break
+            end
+        end
+        k == 0 && return
+        # consider each vertex in pivot set
+        for i in X[k]
             l = L[i]
             if l == r
                 S[r] = i

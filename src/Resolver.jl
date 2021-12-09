@@ -53,34 +53,33 @@ function resolve(
     solutions = typeof(S)[]
 
     function search!(r::Int = 1)
-        @show r, L, S[1:r-1]
-        # find a pivot vertex, k
-        k = 0
-        for i = 1:N
-            l = L[i]
+        # find a pivot vertex
+        i = 0
+        for j = 1:N
+            l = L[j]
             if l == r
-                k = i
+                i = j
                 break
             end
         end
-        k == 0 && return
+        i == 0 && return
         # consider each vertex in pivot set
-        for i in X[k]
-            l = L[i]
+        for j in X[i]
+            l = L[j]
             if l == r
-                S[r] = i
+                S[r] = j
                 if r == M
                     push!(solutions, copy(S))
                     continue
                 end
-                for j in C[i]
-                    L[j] += (L[j] == r)
+                for k in C[j]
+                    L[k] += (L[k] == r)
                 end
                 search!(r + 1)
-                for j in C[i]
-                    L[j] = min(L[j], r)
+                for k in C[j]
+                    L[k] = min(L[k], r)
                 end
-                L[i] = r-1
+                L[j] = r-1
             end
         end
     end

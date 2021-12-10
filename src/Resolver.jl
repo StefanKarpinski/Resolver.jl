@@ -76,7 +76,10 @@ function resolve(
             @show r, L, S[1:r]
             if r == M
                 # we have a complete solution
-                push!(solutions, sort(S, by = k -> P[k]))
+                if d′ > length(solutions)
+                    # and it's optimal
+                    push!(solutions, sort(S, by = k -> P[k]))
+                end
                 break
             end
             # restrict next subgraph to neighbors

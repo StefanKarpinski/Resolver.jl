@@ -53,21 +53,25 @@ function resolve(
         for j in 1:N
             # check subgraph inclusion at this recursion level
             L[j] == r || continue
-            # advance dominance frontier
-            d′ = d
-            while d′ ≤ length(solutions) && j < solutions[d′][P[j]]
-                d′ += 1
-            end
-            # check advancement of dominance
-            d < d′ || length(solutions) < d || continue
             # record version choice
             S[r] = j
+            # advance dominance frontier (if necessary & possible)
+            d′, l = d, length(solutions)
+            # @show r, d, j, l, L, S[1:r]
+            if d ≤ l
+                # check for advancement
+                j < solutions[d][P[j]] || continue
+                # advance past already-dominated solutions
+                d′ += 1
+                K = S[1:r] # TODO: avoid allocation
+                while d′ ≤ l && any(k < solutions[d′][P[k]] for k in K)
+                    d′ += 1
+                end
+            end
+            # check for a complete solution
             if r == M
-                # we have a complete solution
-                if d′ > length(solutions) # and it's optimal
-                    S′ = sort(S, by = k -> P[k])
-                    k = searchsortedfirst(solutions, S′)
-                    insert!(solutions, k, S′)
+                if d′ > l # it's optimal, save it!
+                    push!(solutions, sort(S, by = k -> P[k]))
                 end
                 break
             end
@@ -82,12 +86,12 @@ function resolve(
                 L[k] = min(L[k], r)
             end
             # exclude vertex from future iterations
-            L[j] = r-1
+            L[j] = r - 1
         end
     end
     search!()
 
-    return solutions
+    return sort!(solutions)
 end
 
 end # module

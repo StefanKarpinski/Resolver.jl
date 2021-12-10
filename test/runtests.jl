@@ -5,8 +5,8 @@ include("setup.jl")
         packages = [1:2, 3:6, 7:10]
         conflicts = [(1,3), (1,7), (3,7), (2, 10)]
         solutions = [[1, 4, 8], [2, 3, 8], [2, 4, 7]]
-        @test solutions == resolve(packages, conflicts)
         @test solutions == resolve_brute_force(packages, conflicts)
+        @test solutions == resolve(packages, conflicts)
     end
 
     @testset "comprehensive tests" begin
@@ -25,7 +25,7 @@ include("setup.jl")
                 if solutions != resolve(packages, conflicts)
                     resolved = resolve(packages, conflicts)
                     @show packages conflicts solutions resolved
-                    # return
+                    return
                 end
             end
         end

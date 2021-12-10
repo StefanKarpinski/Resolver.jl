@@ -31,9 +31,9 @@ function resolve(
     end
 
     # no packages, empty solution
-    M == 0 && return push!(solutions, Int[])
+    M == 0 && return [Int[]]
     # no versions, no solutions
-    N == 0 && return solution
+    N == 0 && return Vector{Int}[]
 
     # compatible adjacency lists
     C = [Int[] for v = 1:N]
@@ -43,6 +43,29 @@ function resolve(
             push!(C[v1], v2)
         end
     end
+
+    # deduplicate nodes by adjacency list
+    keep = Int[]
+    let seen = Set{Tuple{Int,Vector{Int}}}()
+        for (p, V) in enumerate(packages), v in V
+            (p, C[v]) in seen && continue
+            push!(seen, (p, C[v]))
+            push!(keep, v)
+        end
+    end
+    P = P[keep]
+    C = C[keep]
+    let d = Dict(map(reverse, enumerate(keep)))
+        for V in C
+            filter!(V) do v
+                haskey(d, v)
+            end
+            map!(V, V) do v
+                d[v]
+            end
+        end
+    end
+    N = length(keep)
 
     # level vector, solution vector, solutions set
     L = ones(Int, N)
@@ -91,6 +114,13 @@ function resolve(
         end
     end
     search!()
+
+    # map back to original indices
+    for S in solutions
+        map!(S, S) do v
+            keep[v]
+        end
+    end
 
     return sort!(solutions)
 end

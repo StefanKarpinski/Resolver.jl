@@ -44,17 +44,14 @@ function resolve(
     reach = map(first, packages)
     while true
         clean = true
-        function reachable!(v)
-            if v ∉ reach && v ≤ N && P[v] == P[v-1]
-                push!(reach, v)
-                clean = false
-            end
-        end
         for v1 in reach, v2 in reach
             P[v1] == P[v2] && continue
-            if (v1, v2) in conflicts || (v2, v1) in conflicts
-                reachable!(v1 + 1)
-                reachable!(v2 + 1)
+            (v1, v2) in conflicts || (v2, v1) in conflicts || continue
+            for v in (v1 + 1, v2 + 1)
+                if v ∉ reach && v ≤ N && P[v] == P[v-1]
+                    push!(reach, v)
+                    clean = false
+                end
             end
         end
         clean && break

@@ -12,28 +12,34 @@ function resolve(
 
     # check packages
     P = zeros(Int, N)
-    for (p, versions) in enumerate(packages), v in versions
-        1 ≤ v ≤ N ||
-            throw(ArgumentError("invalid version index: $v"))
-        P[v] == 0 ||
-            throw(ArgumentError("version $v in multiple packages"))
-        P[v] = p
+    for (p, V) in enumerate(packages)
+        length(V) > 0 ||
+            throw(ArgumentError("packages: package $p has no versions"))
+        for v in V
+            1 ≤ v ≤ N ||
+                throw(ArgumentError("packages: invalid version index: $v"))
+            P[v] == 0 ||
+                throw(ArgumentError("packages: version $v in multiple packages"))
+            P[v] = p
+        end
     end
+    # check that we haven't skipped any version number
     for v = 1:N
         P[v] > 0 ||
-            throw(ArgumentError("version $v not in any package"))
+            throw(ArgumentError("packages: version $v not in any package"))
     end
 
     # check conflicts
     for (v1, v2) in conflicts
-        1 ≤ v1 ≤ N  || throw(ArgumentError("invalid version index: $v1"))
-        1 ≤ v2 ≤ N  || throw(ArgumentError("invalid version index: $v2"))
+        1 ≤ v1 ≤ N ||
+            throw(ArgumentError("conflicts: invalid version index: $v1"))
+        1 ≤ v2 ≤ N ||
+            throw(ArgumentError("conflicts: invalid version index: $v2"))
     end
 
     # no packages, empty solution
-    M == 0 && return [Int[]]
-    # no versions, no solutions
-    N == 0 && return Vector{Int}[]
+    M > 0 || return [Int[]]
+
 
     # compatible adjacency lists
     C = [UInt32[] for v = 1:N]

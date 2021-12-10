@@ -10,24 +10,22 @@ include("setup.jl")
     end
 
     @testset "comprehensive tests" begin
-        Random.seed!(0xed3c5f374cf4319a)
+        Random.seed!(0x53f3ce0656b85450bbb52b15fc58853f)
+        count = zeros(Int, 12)
         for N = 2:5, # number of packages
             V = 1:5  # number of versions per package
             packages = [i*V+1:(i+1)*V for i=0:N-1]
             T = V^2*(N*(N-1)÷2)
             T ≤ 128 || continue
-            for C in (T ≤ 12 ? (0:2^T-1) : [rand(UInt128) for _ = 1:2^12])
+            for C in (T ≤ 12 ? (0:2^T-1) : [randu128(3-(k%5)%3) for k=1:2^12])
                 conflicts = gen_conflicts(N, V, C)
                 @assert length(conflicts) == count_ones(C % UInt128(2)^T)
                 solutions = resolve_brute_force(packages, conflicts)
                 @test solutions == resolve(packages, conflicts)
-                resolved = resolve(packages, conflicts)
-                if solutions != resolve(packages, conflicts)
-                    resolved = resolve(packages, conflicts)
-                    @show packages conflicts solutions resolved
-                    return
-                end
+                count[length(solutions)+1] += 1
             end
         end
+        # specific to chosen seed (chosen to have some large solution sets)
+        @test count == [6599, 22763, 11355, 4055, 1375, 407, 98, 22, 7, 0, 1, 0]
     end
 end

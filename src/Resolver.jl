@@ -57,7 +57,6 @@ function resolve(
             S[r] = j
             # advance dominance frontier (if necessary & possible)
             d′, l = d, length(solutions)
-            # @show r, d, j, l, L, S[1:r]
             if d ≤ l
                 # check for advancement
                 j < solutions[d][P[j]] || continue

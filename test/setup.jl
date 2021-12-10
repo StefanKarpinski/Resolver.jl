@@ -59,3 +59,12 @@ function gen_conflicts(N::I, V::I, C::Integer) where {I<:Integer}
     end
     return conflicts
 end
+
+function randu128(k::Integer)
+    u = typemax(UInt128)
+    while k > 0
+        u &= rand(UInt128)
+        k -= 1
+    end
+    return u
+end

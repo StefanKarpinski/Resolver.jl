@@ -87,12 +87,8 @@ function resolve(
     C = C[keep]
     let d = Dict(map(reverse, enumerate(keep)))
         for V in C
-            filter!(V) do v
-                haskey(d, v)
-            end
-            map!(V, V) do v
-                d[v]
-            end
+            filter!(v -> haskey(d, v), V)
+            map!(v -> d[v], V, V)
         end
     end
     N = length(keep)

@@ -40,13 +40,36 @@ function resolve(
     # no packages, empty solution
     M > 0 || return [Int[]]
 
+    # compute version "reachability"
+    reach = map(first, packages)
+    while true
+        clean = true
+        function reachable!(v)
+            if v ∉ reach && v ≤ N && P[v] == P[v-1]
+                push!(reach, v)
+                clean = false
+            end
+        end
+        for v1 in reach, v2 in reach
+            P[v1] == P[v2] && continue
+            if (v1, v2) in conflicts || (v2, v1) in conflicts
+                reachable!(v1 + 1)
+                reachable!(v2 + 1)
+            end
+        end
+        clean && break
+    end
+    sort!(reach)
 
     # compatible adjacency lists
     C = [UInt32[] for v = 1:N]
-    for (p1, V1) in enumerate(packages), v1 in V1,
-        (p2, V2) in enumerate(packages), v2 in V2
-        if p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
-            push!(C[v1], v2)
+    for (p1, V1) in enumerate(packages), v1 in V1
+        v1 in reach || continue
+        for (p2, V2) in enumerate(packages), v2 in V2
+            v2 in reach || continue
+            if p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
+                push!(C[v1], v2)
+            end
         end
     end
 
@@ -54,6 +77,7 @@ function resolve(
     keep = UInt32[]
     let seen = Set{Tuple{UInt32,Vector{UInt32}}}()
         for (p, V) in enumerate(packages), v in V
+            v in reach || continue
             (p, C[v]) in seen && continue
             push!(seen, (p, C[v]))
             push!(keep, v)

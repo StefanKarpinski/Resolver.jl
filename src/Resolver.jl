@@ -4,8 +4,7 @@ export resolve
 
 function resolve(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
-    conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
-    sorted    :: Bool = true,
+    conflicts :: AbstractVector{<:Tuple{Integer,Integer}},
 )
     # counts & sizes
     M = length(packages)                    # number of packages
@@ -36,13 +35,13 @@ function resolve(
     # no versions, no solutions
     N == 0 && return solution
 
-    # adjacency lists: incompatible & compatible
-    X = [Int[] for v = 1:N]
+    # compatible adjacency lists
     C = [Int[] for v = 1:N]
     for (p1, V1) in enumerate(packages), v1 in V1,
         (p2, V2) in enumerate(packages), v2 in V2
-        x = p1 == p2 || (v1, v2) ∈ conflicts || (v2, v1) ∈ conflicts
-        push!((x ? X : C)[v1], v2)
+        if p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
+            push!(C[v1], v2)
+        end
     end
 
     # level vector, solution vector, solutions set
@@ -51,18 +50,8 @@ function resolve(
     solutions = typeof(S)[]
 
     function search!(r::Int = 1, d::Int = 1)
-        # find a pivot vertex
-        # i = 0
-        # for j = 1:N
-        #     # check subgraph inclusion at recursion level
-        #     L[j] == r || continue
-        #     i = j
-        #     break
-        # end
-        # i == 0 && return
-        # consider each vertex in pivot set
         for j in 1:N
-            # check subgraph inclusion at recursion level
+            # check subgraph inclusion at this recursion level
             L[j] == r || continue
             # advance dominance frontier
             d′ = d
@@ -73,12 +62,12 @@ function resolve(
             d < d′ || length(solutions) < d || continue
             # record version choice
             S[r] = j
-            # @show r, L, S[1:r]
             if r == M
                 # we have a complete solution
-                if d′ > length(solutions)
-                    # and it's optimal
-                    push!(solutions, sort(S, by = k -> P[k]))
+                if d′ > length(solutions) # and it's optimal
+                    S′ = sort(S, by = k -> P[k])
+                    k = searchsortedfirst(solutions, S′)
+                    insert!(solutions, k, S′)
                 end
                 break
             end
@@ -98,11 +87,6 @@ function resolve(
     end
     search!()
 
-    # return sorted vector of sorted solutions
-    if sorted
-        foreach(sort!, solutions)
-        sort!(solutions)
-    end
     return solutions
 end
 

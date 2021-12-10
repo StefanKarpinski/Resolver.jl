@@ -25,7 +25,7 @@ include("setup.jl")
                 if solutions != resolve(packages, conflicts)
                     resolved = resolve(packages, conflicts)
                     @show packages conflicts solutions resolved
-                    return
+                    # return
                 end
             end
         end

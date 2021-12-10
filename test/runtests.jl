@@ -21,7 +21,9 @@ include("setup.jl")
                 conflicts = gen_conflicts(N, V, C)
                 @assert length(conflicts) == count_ones(C % UInt128(2)^T)
                 solutions = resolve_brute_force(packages, conflicts)
-                @test solutions == resolve(packages, conflicts)
+                resolved = resolve(packages, conflicts)
+                @test resolved isa Vector{Vector{Int}}
+                @test solutions == resolved
                 count[length(solutions)+1] += 1
             end
         end

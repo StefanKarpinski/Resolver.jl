@@ -36,7 +36,7 @@ function resolve(
     N == 0 && return Vector{Int}[]
 
     # compatible adjacency lists
-    C = [Int[] for v = 1:N]
+    C = [UInt32[] for v = 1:N]
     for (p1, V1) in enumerate(packages), v1 in V1,
         (p2, V2) in enumerate(packages), v2 in V2
         if p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
@@ -45,8 +45,8 @@ function resolve(
     end
 
     # deduplicate nodes by adjacency list
-    keep = Int[]
-    let seen = Set{Tuple{Int,Vector{Int}}}()
+    keep = UInt32[]
+    let seen = Set{Tuple{UInt32,Vector{UInt32}}}()
         for (p, V) in enumerate(packages), v in V
             (p, C[v]) in seen && continue
             push!(seen, (p, C[v]))
@@ -68,8 +68,8 @@ function resolve(
     N = length(keep)
 
     # level vector, solution vector, solutions set
-    L = ones(Int, N)
-    S = zeros(Int, M)
+    L = ones(UInt32, N)
+    S = zeros(UInt32, M)
     solutions = typeof(S)[]
 
     function search!(r::Int = 1, d::Int = 1)
@@ -114,15 +114,8 @@ function resolve(
         end
     end
     search!()
-
-    # map back to original indices
-    for S in solutions
-        map!(S, S) do v
-            keep[v]
-        end
-    end
-
-    return sort!(solutions)
+    sort!(solutions)
+    Vector{Int}[Int[keep[v] for v in S] for S in solutions]
 end
 
 end # module

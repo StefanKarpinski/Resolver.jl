@@ -57,7 +57,7 @@ function gen_conflicts(N::I, V::I, C::Integer) where {I<:Integer}
             v += 1; v += trailing_zeros(X >> v)
         end
     end
-    return conflicts
+    return sort!(conflicts)
 end
 
 function randu128(k::Integer)

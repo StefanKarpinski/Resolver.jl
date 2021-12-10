@@ -52,16 +52,16 @@ function resolve(
 
     function search!(r::Int = 1, d::Int = 1)
         # find a pivot vertex
-        i = 0
-        for j = 1:N
-            # check subgraph inclusion at recursion level
-            L[j] == r || continue
-            i = j
-            break
-        end
-        i == 0 && return
+        # i = 0
+        # for j = 1:N
+        #     # check subgraph inclusion at recursion level
+        #     L[j] == r || continue
+        #     i = j
+        #     break
+        # end
+        # i == 0 && return
         # consider each vertex in pivot set
-        for j in X[i]
+        for j in 1:N
             # check subgraph inclusion at recursion level
             L[j] == r || continue
             # advance dominance frontier
@@ -73,7 +73,7 @@ function resolve(
             d < d′ || length(solutions) < d || continue
             # record version choice
             S[r] = j
-            @show r, L, S[1:r]
+            # @show r, L, S[1:r]
             if r == M
                 # we have a complete solution
                 if d′ > length(solutions)

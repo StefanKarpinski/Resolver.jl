@@ -62,10 +62,11 @@ function resolve(
                 # check for advancement
                 j < solutions[d][P[j]] || continue
                 # advance past already-dominated solutions
-                d′ += 1
-                K = S[1:r] # TODO: avoid allocation
-                while d′ ≤ l && any(k < solutions[d′][P[k]] for k in K)
+                while true
                     d′ += 1
+                    d′ ≤ l || break
+                    S′ = solutions[d′]
+                    any(k < S′[P[k]] for r′ = 1:r for k = S[r′]) || break
                 end
             end
             # check for a complete solution

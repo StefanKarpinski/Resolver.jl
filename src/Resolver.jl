@@ -2,13 +2,10 @@ module Resolver
 
 export resolve
 
-# for debugging
-dd(A::AbstractArray) = map(reverse∘bitstring, permutedims(A))
-
 function resolve(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
     conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
-    sort      :: Bool = true,
+    sorted    :: Bool = true,
 )
     # counts & sizes
     M = length(packages)                    # number of packages
@@ -44,7 +41,7 @@ function resolve(
     C = [Int[] for v = 1:N]
     for (p1, V1) in enumerate(packages), v1 in V1,
         (p2, V2) in enumerate(packages), v2 in V2
-        x = p1 == p2 || (v1, v2) ∈ conflicts || (v2, v2) ∈ conflicts
+        x = p1 == p2 || (v1, v2) ∈ conflicts || (v2, v1) ∈ conflicts
         push!((x ? X : C)[v1], v2)
     end
 
@@ -76,9 +73,10 @@ function resolve(
             d < d′ || length(solutions) < d || continue
             # record version choice
             S[r] = j
+            @show r, L, S[1:r]
             if r == M
                 # we have a complete solution
-                push!(solutions, sort(S))
+                push!(solutions, sort(S, by = k -> P[k]))
                 break
             end
             # restrict next subgraph to neighbors
@@ -98,7 +96,7 @@ function resolve(
     search!()
 
     # return sorted vector of sorted solutions
-    if sort
+    if sorted
         foreach(sort!, solutions)
         sort!(solutions)
     end

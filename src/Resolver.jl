@@ -56,7 +56,8 @@ function resolve(
             # record version choice
             S[r] = j
             # advance dominance frontier (if necessary & possible)
-            d′, l = d, length(solutions)
+            l = length(solutions)
+            d′ = d
             if d ≤ l
                 # check for advancement
                 j < solutions[d][P[j]] || continue

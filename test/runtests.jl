@@ -6,7 +6,7 @@ include("setup.jl")
         conflicts = [(1,3), (1,7), (3,7), (2,10)]
         solutions = [[1, 4, 8], [2, 3, 8], [2, 4, 7]]
         @test solutions == resolve_brute_force(packages, conflicts)
-        @test solutions == resolve(packages, conflicts)
+        @test solutions == resolve_core(packages, conflicts)
     end
 
     @testset "comprehensive tests" begin
@@ -21,7 +21,7 @@ include("setup.jl")
                 conflicts = gen_conflicts(N, V, C)
                 @assert length(conflicts) == count_ones(C % UInt128(2)^T)
                 solutions = resolve_brute_force(packages, conflicts)
-                resolved = resolve(packages, conflicts)
+                resolved = resolve_core(packages, conflicts)
                 @test resolved isa Vector{Vector{Int}}
                 @test solutions == resolved
                 count[length(solutions)+1] += 1

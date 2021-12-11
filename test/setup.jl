@@ -1,6 +1,7 @@
 using Test
 using Random
 using Resolver
+using Resolver: resolve_core
 
 function resolve_brute_force(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},

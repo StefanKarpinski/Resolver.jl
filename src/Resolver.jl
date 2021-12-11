@@ -1,8 +1,6 @@
 module Resolver
 
-export resolve
-
-function resolve(
+function resolve_core(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
     conflicts :: AbstractVector{<:Tuple{Integer,Integer}},
 )

@@ -12,13 +12,13 @@ include("setup.jl")
     @testset "comprehensive tests" begin
         Random.seed!(0x53f3ce0656b85450bbb52b15fc58853f)
         count = zeros(Int, 12)
-        for N = 2:5, # number of packages
+        for M = 2:5, # number of packages
             V = 1:5  # number of versions per package
-            packages = [i*V+1:(i+1)*V for i=0:N-1]
-            T = V^2*(N*(N-1)÷2)
+            packages = [i*V+1:(i+1)*V for i=0:M-1]
+            T = V^2*(M*(M-1)÷2)
             T ≤ 128 || continue
             for C in (T ≤ 12 ? (0:2^T-1) : [randu128(3-(k%5)%3) for k=1:2^12])
-                conflicts = gen_conflicts(N, V, C)
+                conflicts = gen_conflicts(M, V, C)
                 @assert length(conflicts) == count_ones(C % UInt128(2)^T)
                 solutions = resolve_brute_force(packages, conflicts)
                 resolved = resolve_core(packages, conflicts)

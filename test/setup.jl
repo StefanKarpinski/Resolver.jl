@@ -8,18 +8,17 @@ function resolve_brute_force(
     conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
     optimal   :: Bool = true,
 )
-    N = length(packages)
-    M = sum(length, packages)
-    Π = prod(length, packages)
-    Π > 0 && log2(Π) ≈ sum(log2∘length, packages) ||
+    M = length(packages)
+    P = prod(length, packages)
+    P > 0 && log2(P) ≈ sum(log2∘length, packages) ||
         throw(ArgumentError("brute force only works for small problems"))
 
     # generate all conflict-free solutions
-    solution = zeros(Int, N)
+    solution = zeros(Int, M)
     solutions = Vector{Int}[]
-    for S = 0:Π-1
+    for S = 0:P-1
         b = 1
-        for i = 1:N
+        for i = 1:M
             V = length(packages[i])
             S, r = divrem(S, V)
             solution[i] = b + r
@@ -45,11 +44,11 @@ function resolve_brute_force(
     return sort!(solutions)
 end
 
-function gen_conflicts(N::I, V::I, C::Integer) where {I<:Integer}
+function gen_conflicts(M::I, V::I, C::Integer) where {I<:Integer}
     conflicts = Tuple{I,I}[]
-    for p₁ = 0:N-2, p₂ = p₁+1:N-1
-        p = N*(N-1)÷2 - (N-p₁)*(N-p₁-1)÷2 + (p₂-p₁) - 1
-        @assert 0 ≤ p < N*(N-1)÷2
+    for p₁ = 0:M-2, p₂ = p₁+1:M-1
+        p = M*(M-1)÷2 - (M-p₁)*(M-p₁-1)÷2 + (p₂-p₁) - 1
+        @assert 0 ≤ p < M*(M-1)÷2
         X = C >> (p*V^2)
         v = trailing_zeros(X)
         while v < V^2

@@ -1,8 +1,56 @@
 module Resolver
 
+function versions_packages_conflicts(
+    compatible :: Function, # ((p1, v1), (p2, v2)) -> Bool
+    package_versions :: AbstractDict{<:AbstractString, <:AbstractVector},
+)
+    # check packages
+    isempty(package_versions) &&
+        throw(ArgumentError("packages: no packages"))
+    package_names = sort!([String(k) for k in keys(package_versions)])
+    for p in package_names
+        isempty(package_versions[p]) &&
+            throw(ArgumentError("packages: package $p has no versions"))
+    end
+
+    # co-compute reachable versions and conflicts between them
+    reachable = [(j, p, 1) for (j, p) in enumerate(package_names)]
+    conflicts = Set{NTuple{2,Int}}()
+    while true
+        clean = true
+        for (i1, (j1, p1, k1)) in enumerate(reachable),
+            (i2, (j2, p2, k2)) in enumerate(reachable)
+            p1 < p2 || continue
+            v1 = package_versions[p1][k1]
+            v2 = package_versions[p2][k2]
+            compatible((p1, v1), (p2, v2)) && continue
+            push!(conflicts, (i1, i2))
+            if k1 < length(package_versions[p1]) && (j1, p1, k1+1) ∉ reachable
+                push!(reachable, (j1, p1, k1+1))
+                clean = false
+            end
+            if k2 < length(package_versions[p2]) && (j2, p2, k2+1) ∉ reachable
+                push!(reachable, (j2, p2, k2+1))
+                clean = false
+            end
+        end
+        clean && break
+    end
+
+    # contruct numeric package versions structure
+    packages = [Int[] for _ in package_names]
+    for (i, (j, p, k)) in enumerate(reachable)
+        push!(packages[j], i)
+    end
+    versions = [(p, package_versions[p][k]) for (j, p, k) in reachable]
+
+    # return them
+    return versions, packages, conflicts
+end
+
 function resolve_core(
     packages  :: AbstractVector{<:AbstractVector{<:Integer}},
-    conflicts :: AbstractVector{<:Tuple{Integer,Integer}},
+    conflicts :: AbstractSet{<:Tuple{Integer,Integer}},
 )
     # counts & sizes
     M = length(packages)                    # number of packages

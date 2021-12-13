@@ -1,28 +1,43 @@
 using Test
 using Random
 using Resolver
-using Resolver: resolve_core
+using Resolver: resolve_core, SetOrVector
 
 function resolve_brute_force(
-    packages  :: AbstractVector{<:AbstractVector{<:Integer}},
-    conflicts :: AbstractVector{<:Tuple{Integer,Integer}};
+    versions  :: AbstractVector,
+    conflicts :: SetOrVector{<:NTuple{2,Integer}};
     optimal   :: Bool = true,
 )
-    M = length(packages)
-    P = prod(length, packages)
-    P > 0 && log2(P) ≈ sum(log2∘length, packages) ||
+    # package indices
+    P = zeros(Int, length(versions))
+    let indices = Dict{eltype(versions), Int}()
+        for (v, p) in enumerate(versions)
+            P[v] = get!(indices, p, length(indices) + 1)
+        end
+    end
+    perm = sortperm(P)
+
+    # package counts
+    M = maximum(P)
+    C = zeros(Int, M)
+    for p in P
+        C[p] += 1
+    end
+
+    # number of possible solutions
+    ∏ = prod(C)
+    log2(∏) ≈ sum(log2, C) ||
         throw(ArgumentError("brute force only works for small problems"))
 
     # generate all conflict-free solutions
     solution = zeros(Int, M)
     solutions = Vector{Int}[]
-    for S = 0:P-1
+    for S = 0:∏-1
         b = 1
         for i = 1:M
-            V = length(packages[i])
-            S, r = divrem(S, V)
-            solution[i] = b + r
-            b += V
+            S, r = divrem(S, C[i])
+            solution[i] = perm[b + r]
+            b += C[i]
         end
         any(v₁ ∈ solution && v₂ ∈ solution for (v₁, v₂) in conflicts) && continue
         push!(solutions, copy(solution))
@@ -41,6 +56,7 @@ function resolve_brute_force(
     end
 
     # return sorted vector of sorted solutions
+    foreach(sort!, solutions)
     return sort!(solutions)
 end
 

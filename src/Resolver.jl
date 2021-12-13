@@ -1,10 +1,12 @@
 module Resolver
 
-function versions_packages_conflicts(
-    compatible :: Function, # ((p1, v1), (p2, v2)) -> Bool
+const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
+
+function conflicts(
+    compatible       :: Function, # ((p1, v1), (p2, v2)) -> Bool
     package_versions :: AbstractDict{<:AbstractString, <:AbstractVector},
 )
-    # check packages
+    # check package versions data structure
     isempty(package_versions) &&
         throw(ArgumentError("packages: no packages"))
     package_names = sort!([String(k) for k in keys(package_versions)])
@@ -14,131 +16,98 @@ function versions_packages_conflicts(
     end
 
     # co-compute reachable versions and conflicts between them
-    reachable = [(j, p, 1) for (j, p) in enumerate(package_names)]
+    reachable = [(p, 1) for p in package_names]
     conflicts = Set{NTuple{2,Int}}()
     while true
         clean = true
-        for (i1, (j1, p1, k1)) in enumerate(reachable),
-            (i2, (j2, p2, k2)) in enumerate(reachable)
+        for (i1, (p1, k1)) in enumerate(reachable),
+            (i2, (p2, k2)) in enumerate(reachable)
             p1 < p2 || continue
             v1 = package_versions[p1][k1]
             v2 = package_versions[p2][k2]
             compatible((p1, v1), (p2, v2)) && continue
             push!(conflicts, (i1, i2))
-            if k1 < length(package_versions[p1]) && (j1, p1, k1+1) ∉ reachable
-                push!(reachable, (j1, p1, k1+1))
+            if k1 < length(package_versions[p1]) && (p1, k1+1) ∉ reachable
+                push!(reachable, (p1, k1+1))
                 clean = false
             end
-            if k2 < length(package_versions[p2]) && (j2, p2, k2+1) ∉ reachable
-                push!(reachable, (j2, p2, k2+1))
+            if k2 < length(package_versions[p2]) && (p2, k2+1) ∉ reachable
+                push!(reachable, (p2, k2+1))
                 clean = false
             end
         end
         clean && break
     end
+    versions = [(p, package_versions[p][k]) for (p, k) in reachable]
 
-    # contruct numeric package versions structure
-    packages = [Int[] for _ in package_names]
-    for (i, (j, p, k)) in enumerate(reachable)
-        push!(packages[j], i)
-    end
-    versions = [(p, package_versions[p][k]) for (j, p, k) in reachable]
-
-    # return them
-    return versions, packages, conflicts
+    return versions, conflicts
 end
 
 function resolve_core(
-    packages  :: AbstractVector{<:AbstractVector{<:Integer}},
-    conflicts :: AbstractSet{<:Tuple{Integer,Integer}},
-)
-    # counts & sizes
-    M = length(packages)                    # number of packages
-    N = mapreduce(maximum, max, packages)   # number of versions
-
-    # check packages
-    P = zeros(Int, N)
-    for (p, V) in enumerate(packages)
-        length(V) > 0 ||
-            throw(ArgumentError("packages: package $p has no versions"))
-        for v in V
-            1 ≤ v ≤ N ||
-                throw(ArgumentError("packages: invalid version index: $v"))
-            P[v] == 0 ||
-                throw(ArgumentError("packages: version $v in multiple packages"))
-            P[v] = p
-        end
-    end
-    # check that we haven't skipped any version number
-    for v = 1:N
-        P[v] > 0 ||
-            throw(ArgumentError("packages: version $v not in any package"))
-    end
-
+    versions  :: AbstractVector{Package},
+    conflicts :: SetOrVector{<:NTuple{2,Integer}},
+) where {Package <: Any}
     # check conflicts
     for (v1, v2) in conflicts
-        1 ≤ v1 ≤ N ||
+        v1 in keys(versions) ||
             throw(ArgumentError("conflicts: invalid version index: $v1"))
-        1 ≤ v2 ≤ N ||
+        v2 in keys(versions) ||
             throw(ArgumentError("conflicts: invalid version index: $v2"))
+        v1 != v2 ||
+            throw(ArgumentError("conflicts: package $(versions[v1]): self-conflict $v1"))
+        versions[v1] != versions[v2] ||
+            throw(ArgumentError("conflicts: package $(versions[v1]): conflict between $v1, $v2"))
     end
-
-    # no packages, empty solution
-    M > 0 || return [Int[]]
-
-    # compute version "reachability"
-    reach = map(first, packages)
-    while true
-        clean = true
-        for v1 in reach, v2 in reach
-            P[v1] == P[v2] && continue
-            (v1, v2) in conflicts || (v2, v1) in conflicts || continue
-            for v in (v1 + 1, v2 + 1)
-                if v ∉ reach && v ≤ N && P[v] == P[v-1]
-                    push!(reach, v)
-                    clean = false
-                end
-            end
-        end
-        clean && break
-    end
-    sort!(reach)
 
     # compatible adjacency lists
-    C = [UInt32[] for v = 1:N]
-    for (p1, V1) in enumerate(packages), v1 in V1
-        v1 in reach || continue
-        for (p2, V2) in enumerate(packages), v2 in V2
-            v2 in reach || continue
-            if p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
-                push!(C[v1], v2)
-            end
-        end
+    C = [UInt32[] for v = 1:length(versions)]
+    for (v1, p1) in enumerate(versions),
+        (v2, p2) in enumerate(versions)
+        compatible = p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
+        compatible && push!(C[v1], v2)
     end
 
     # deduplicate nodes by adjacency list
     keep = UInt32[]
-    let seen = Set{Tuple{UInt32,Vector{UInt32}}}()
-        for (p, V) in enumerate(packages), v in V
-            v in reach || continue
+    let seen = Set{Tuple{eltype(versions), Vector{UInt32}}}()
+        for (v, p) in enumerate(versions)
             (p, C[v]) in seen && continue
             push!(seen, (p, C[v]))
             push!(keep, v)
         end
     end
-    P = P[keep]
     C = C[keep]
-    let d = Dict(map(reverse, enumerate(keep)))
+    let kept = Dict(map(reverse, enumerate(keep)))
         for V in C
-            filter!(v -> haskey(d, v), V)
-            map!(v -> d[v], V, V)
+            filter!(v -> haskey(kept, v), V)
+            map!(v -> kept[v], V, V)
         end
     end
-    N = length(keep)
+    versions = versions[keep]
+
+    # package indices
+    P = zeros(UInt32, length(versions))
+    let indices = Dict{eltype(versions), UInt32}()
+        for (v, p) in enumerate(versions)
+            P[v] = get!(indices, p, length(indices) + 1)
+        end
+    end
+
+    # find all optimal solutions
+    solutions = find_optimal_solutions(P, C)
+
+    # translate back to original version indices
+    Vector{Int}[Int[keep[v] for v in S] for S in solutions]
+end
+
+function find_optimal_solutions(P::Vector{T}, C::Vector{Vector{T}}) where {T<:Integer}
+    # number of packages & versions
+    M = maximum(P)
+    N = length(C)
 
     # level vector, solution vector, solutions set
-    L = ones(UInt32, N)
-    S = zeros(UInt32, M)
+    L = ones(T, N)
+    S = zeros(T, M)
     solutions = typeof(S)[]
 
     function search!(r::Int = 1, d::Int = 1)
@@ -183,8 +152,9 @@ function resolve_core(
         end
     end
     search!()
-    sort!(solutions)
-    Vector{Int}[Int[keep[v] for v in S] for S in solutions]
+
+    foreach(sort!, solutions)
+    return sort!(solutions)
 end
 
 end # module

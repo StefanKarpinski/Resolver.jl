@@ -3,10 +3,10 @@ module Resolver
 const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
 
 function resolve(
-    compat   :: Function, # ((p₁, v₁), (p₂, v₂)) -> Bool
+    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
-    deps     :: AbstractDict{Tuple{P,V}, <:SetOrVector{P}},
+    deps     :: AbstractDict{Pair{P,V}, <:SetOrVector{P}},
 ) where {P,V}
     vertices, conflicts = vertices_and_conflicts(
         compat,
@@ -16,20 +16,20 @@ function resolve(
     )
     packages = P[p for (p, v) in vertices]
     solutions = resolve_core(packages, conflicts)
-    Vector{Tuple{P,V}}[
+    Vector{Pair{P,V}}[
         [vertices[v] for v in S if vertices[v][2] !== nothing]
-        for S in solutions 
+        for S in solutions
     ]
 end
 
 function vertices_and_conflicts(
-    compat   :: Function, # ((p₁, v₁), (p₂, v₂)) -> Bool
+    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
-    deps     :: AbstractDict{Tuple{P,V}, <:SetOrVector{P}},
+    deps     :: AbstractDict{Pair{P,V}, <:SetOrVector{P}},
 ) where {P,V}
     # check compat callback function signature
-    hasmethod(compat, NTuple{2,Tuple{P,V}}) ||
+    hasmethod(compat, NTuple{2,Pair{P,V}}) ||
         throw(ArgumentError("compat: callback takes two package-version pairs"))
 
     # check package versions data structure
@@ -56,7 +56,7 @@ function vertices_and_conflicts(
 
     # co-compute reachable versions and conflicts between them
     package_names = sort!(collect(keys(versions)))
-    reachable = [(p, Int(p in required)) for p in package_names]
+    reachable = [p => Int(p in required) for p in package_names]
     conflicts = Set{NTuple{2,Int}}()
     no_deps = valtype(deps)()
     while true
@@ -67,27 +67,27 @@ function vertices_and_conflicts(
             v₁ = get(versions[p₁], k₁, nothing)
             v₂ = get(versions[p₂], k₂, nothing)
             conflict = if v₁ !== nothing && v₂ !== nothing
-                !compat((p₁, v₁), (p₂, v₂)) ||
-                !compat((p₂, v₂), (p₁, v₁))
+                !compat(p₁ => v₁, p₂ => v₂) ||
+                !compat(p₂ => v₂, p₁ => v₁)
             elseif v₁ === nothing
-                p₁ in get(deps, (p₂, v₂), no_deps)
+                p₁ in get(deps, p₂ => v₂, no_deps)
             elseif v₂ === nothing
-                p₂ in get(deps, (p₁, v₁), no_deps)
+                p₂ in get(deps, p₁ => v₁, no_deps)
             else
                 false
             end
             conflict || continue
             push!(conflicts, minmax(i₁, i₂))
-            for (p, k) in ((p₁, k₁ + 1), (p₂, k₂ + 1))
-                if k ≤ length(versions[p]) + (p ∈ required) && (p, k) ∉ reachable
-                    push!(reachable, (p, k))
+            for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
+                if k ≤ length(versions[p]) + (p ∈ required) && (p => k) ∉ reachable
+                    push!(reachable, p => k)
                     clean = false
                 end
             end
         end
         clean && break
     end
-    vertices = [(p, get(versions[p], k, nothing)) for (p, k) in reachable]
+    vertices = [p => get(versions[p], k, nothing) for (p, k) in reachable]
 
     return vertices, conflicts
 end

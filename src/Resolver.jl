@@ -3,7 +3,7 @@ module Resolver
 const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
 
 function resolve(
-    compat   :: Function, # ((p1, v1), (p2, v2)) -> Bool
+    compat   :: Function, # ((p₁, v₁), (p₂, v₂)) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
     deps     :: AbstractDict{Tuple{P,V}, <:SetOrVector{P}},
@@ -23,7 +23,7 @@ function resolve(
 end
 
 function vertices_and_conflicts(
-    compat   :: Function, # ((p1, v1), (p2, v2)) -> Bool
+    compat   :: Function, # ((p₁, v₁), (p₂, v₂)) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
     deps     :: AbstractDict{Tuple{P,V}, <:SetOrVector{P}},
@@ -61,24 +61,24 @@ function vertices_and_conflicts(
     no_deps = valtype(deps)()
     while true
         clean = true
-        for (i1, (p1, k1)) in enumerate(reachable),
-            (i2, (p2, k2)) in enumerate(reachable)
-            p1 < p2 || continue
-            v1 = get(versions[p1], k1, nothing)
-            v2 = get(versions[p2], k2, nothing)
-            conflict = if v1 !== nothing && v2 !== nothing
-                !compat((p1, v1), (p2, v2)) ||
-                !compat((p2, v2), (p1, v1))
-            elseif v1 === nothing
-                p1 in get(deps, (p2, v2), no_deps)
-            elseif v2 === nothing
-                p2 in get(deps, (p1, v1), no_deps)
+        for (i₁, (p₁, k₁)) in enumerate(reachable),
+            (i₂, (p₂, k₂)) in enumerate(reachable)
+            p₁ < p₂ || continue
+            v₁ = get(versions[p₁], k₁, nothing)
+            v₂ = get(versions[p₂], k₂, nothing)
+            conflict = if v₁ !== nothing && v₂ !== nothing
+                !compat((p₁, v₁), (p₂, v₂)) ||
+                !compat((p₂, v₂), (p₁, v₁))
+            elseif v₁ === nothing
+                p₁ in get(deps, (p₂, v₂), no_deps)
+            elseif v₂ === nothing
+                p₂ in get(deps, (p₁, v₁), no_deps)
             else
                 false
             end
             conflict || continue
-            push!(conflicts, minmax(i1, i2))
-            for (p, k) in ((p1, k1 + 1), (p2, k2 + 1))
+            push!(conflicts, minmax(i₁, i₂))
+            for (p, k) in ((p₁, k₁ + 1), (p₂, k₂ + 1))
                 if k ≤ length(versions[p]) + (p ∈ required) && (p, k) ∉ reachable
                     push!(reachable, (p, k))
                     clean = false
@@ -97,23 +97,23 @@ function resolve_core(
     conflicts :: SetOrVector{<:NTuple{2,Integer}},
 )
     # check conflicts
-    for (v1, v2) in conflicts
-        v1 in keys(packages) ||
-            throw(ArgumentError("conflicts: invalid version index: $v1"))
-        v2 in keys(packages) ||
-            throw(ArgumentError("conflicts: invalid version index: $v2"))
-        v1 != v2 ||
-            throw(ArgumentError("conflicts: package $(packages[v1]): self-conflict $v1"))
-        packages[v1] != packages[v2] ||
-            throw(ArgumentError("conflicts: package $(packages[v1]): conflict between $v1, $v2"))
+    for (v₁, v₂) in conflicts
+        v₁ in keys(packages) ||
+            throw(ArgumentError("conflicts: invalid version index: $v₁"))
+        v₂ in keys(packages) ||
+            throw(ArgumentError("conflicts: invalid version index: $v₂"))
+        v₁ != v₂ ||
+            throw(ArgumentError("conflicts: package $(packages[v₁]): self-conflict $v₁"))
+        packages[v₁] != packages[v₂] ||
+            throw(ArgumentError("conflicts: package $(packages[v₁]): conflict between $v₁, $v₂"))
     end
 
     # compatible adjacency lists
     C = [UInt32[] for v = 1:length(packages)]
-    for (v1, p1) in enumerate(packages),
-        (v2, p2) in enumerate(packages)
-        compatible = p1 ≠ p2 && (v1, v2) ∉ conflicts && (v2, v1) ∉ conflicts
-        compatible && push!(C[v1], v2)
+    for (v₁, p₁) in enumerate(packages),
+        (v₂, p₂) in enumerate(packages)
+        compatible = p₁ ≠ p₂ && (v₁, v₂) ∉ conflicts && (v₂, v₁) ∉ conflicts
+        compatible && push!(C[v₁], v₂)
     end
 
     # deduplicate nodes by adjacency list

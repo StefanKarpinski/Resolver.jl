@@ -2,16 +2,16 @@ include("setup.jl")
 
 @testset "core solver" begin
     @testset "basic example" begin
-        versions = [fill(1, 2); fill(2, 4); fill(3, 4)]
+        packages = [fill(1, 2); fill(2, 4); fill(3, 4)]
         conflicts = [(1,3), (1,7), (3,7), (2,10)]
         solutions = [[1, 4, 8], [2, 3, 8], [2, 4, 7]]
-        @test solutions == resolve_brute_force(versions, conflicts)
-        @test solutions == resolve_brute_force(versions, Set(conflicts))
-        @test solutions == resolve_core(versions, conflicts)
-        @test solutions == resolve_core(versions, Set(conflicts))
+        @test solutions == resolve_brute_force(packages, conflicts)
+        @test solutions == resolve_brute_force(packages, Set(conflicts))
+        @test solutions == resolve_core(packages, conflicts)
+        @test solutions == resolve_core(packages, Set(conflicts))
         @testset "permutations" for _ = 1:100
             # permute the versions, conflicts and solutions
-            versions′ = shuffle(versions)
+            versions′ = shuffle(packages)
             p = sortperm(versions′)
             conflicts′ = [(p[c[1]], p[c[2]]) for c in conflicts]
             solutions′ = [p[solution] for solution in solutions]
@@ -29,13 +29,13 @@ include("setup.jl")
             V = 1:5  # number of versions per package
             T = V^2*(M*(M-1)÷2)
             T ≤ 128 || continue
-            versions = shuffle!([p for _=1:V for p=1:M])
-            p = sortperm(versions)
+            packages = shuffle!([p for _=1:V for p=1:M])
+            p = sortperm(packages)
             for C in (T ≤ 12 ? (0:2^T-1) : [randu128(3-(k%5)%3) for k=1:2^12])
                 conflicts = Tuple{Int,Int}[(p[c[1]], p[c[2]]) for c in gen_conflicts(M, V, C)]
                 @assert length(conflicts) == count_ones(C % UInt128(2)^T)
-                solutions = resolve_brute_force(versions, conflicts)
-                resolved = resolve_core(versions, conflicts)
+                solutions = resolve_brute_force(packages, conflicts)
+                resolved = resolve_core(packages, conflicts)
                 @test resolved isa Vector{Vector{Int}}
                 @test solutions == resolved
                 count[length(solutions)+1] += 1

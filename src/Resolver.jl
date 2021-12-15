@@ -6,13 +6,11 @@ function resolve(
     compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
-    deps     :: AbstractDict{Pair{P,V}, <:SetOrVector{P}},
 ) where {P,V}
     vertices, conflicts = vertices_and_conflicts(
         compat,
         versions,
         required,
-        deps,
     )
     packages = P[p for (p, v) in vertices]
     solutions = resolve_core(packages, conflicts)
@@ -26,10 +24,10 @@ function vertices_and_conflicts(
     compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
-    deps     :: AbstractDict{Pair{P,V}, <:SetOrVector{P}},
 ) where {P,V}
     # check compat callback function signature
-    hasmethod(compat, NTuple{2,Pair{P,V}}) ||
+    hasmethod(compat, Tuple{Pair{P,V}, Pair{P,V}}) &&
+    hasmethod(compat, Tuple{Pair{P,V}, Pair{P,Nothing}}) ||
         throw(ArgumentError("compat: callback takes two package-version pairs"))
 
     # check package versions data structure
@@ -44,21 +42,10 @@ function vertices_and_conflicts(
             throw(ArgumentError("required: package $p not in versions"))
     end
 
-    # check deps data structure
-    for ((p, v), D) in deps, d in D
-        p in keys(versions) ||
-            throw(ArgumentError("deps: package $p not in versions"))
-        d in keys(versions) ||
-            throw(ArgumentError("deps: package $d not in versions"))
-        v in versions[p] ||
-            throw(ArgumentError("deps: version $v of $p not in versions"))
-    end
-
     # co-compute reachable versions and conflicts between them
     package_names = sort!(collect(keys(versions)))
     reachable = [p => Int(p in required) for p in package_names]
     conflicts = Set{NTuple{2,Int}}()
-    no_deps = valtype(deps)()
     while true
         clean = true
         for (i₁, (p₁, k₁)) in enumerate(reachable),
@@ -66,17 +53,8 @@ function vertices_and_conflicts(
             p₁ < p₂ || continue
             v₁ = get(versions[p₁], k₁, nothing)
             v₂ = get(versions[p₂], k₂, nothing)
-            conflict = if v₁ !== nothing && v₂ !== nothing
-                !compat(p₁ => v₁, p₂ => v₂) ||
-                !compat(p₂ => v₂, p₁ => v₁)
-            elseif v₁ === nothing
-                p₁ in get(deps, p₂ => v₂, no_deps)
-            elseif v₂ === nothing
-                p₂ in get(deps, p₁ => v₁, no_deps)
-            else
-                false
-            end
-            conflict || continue
+            (v₁ === nothing || compat(p₁ => v₁, p₂ => v₂)) &&
+            (v₂ === nothing || compat(p₂ => v₂, p₁ => v₁)) && continue
             push!(conflicts, minmax(i₁, i₂))
             for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
                 if k ≤ length(versions[p]) + (p ∈ required) && (p => k) ∉ reachable

@@ -48,26 +48,31 @@ include("setup.jl")
 end
 
 @testset "resolver API" begin
-	compat((p1, v1), (p2, v2)) = !(p1 == "A" && p2 == "B" && (
-        v1 in (v"3", v"1")  && v2 == v"2"         ||
-        v1 == v"2"          && v2 == v"2"         ||
-        v1 == v"0"          && v2 in (v"2", v"0")
-    ))
 	versions = Dict(
         "A" => [v"3", v"2", v"1", v"0"],
         "B" => [v"2", v"1", v"0"],
     )
-	required = ["A"]
-	deps = Dict(
+    deps = Dict(
         ("A" => v"3") => ["B"],
         ("A" => v"2") => ["B"],
         ("B" => v"1") => ["A"],
     )
+    conflicts = Dict(
+        ("A", "B") => [
+            (v"3", v"2")
+            (v"2", v"2")
+            (v"1", v"2")
+            (v"0", v"2")
+            (v"0", v"0")
+        ]
+    )
+    required = ["A"]
 	solutions = [
         ["A" => v"3.0.0", "B" => v"1.0.0"],
         ["A" => v"1.0.0"],
     ]
-    resolved = Resolver.resolve(compat, versions, required, deps)
+    compat = gen_compat(deps, conflicts)
+    resolved = Resolver.resolve(compat, versions, required)
     @test typeof(resolved) == typeof(solutions)
     @test resolved == solutions
 end

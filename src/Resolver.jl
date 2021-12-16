@@ -154,7 +154,7 @@ end
 
 function optimal_solutions(P::Vector{T}, C::Vector{Vector{T}}) where {T<:Integer}
     # number of packages & versions
-    M = maximum(P)
+    M = maximum(P, init=0)
     N = length(C)
 
     # level vector, solution vector, solutions set

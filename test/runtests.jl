@@ -2,7 +2,7 @@ include("setup.jl")
 
 @testset "core resolver" begin
     @testset "basic example" begin
-        packages = [fill(1, 2); fill(2, 4); fill(3, 4)]
+        packages = [fill("A", 2); fill("B", 4); fill("C", 4)]
         conflicts = [(1,3), (1,7), (3,7), (2,10)]
         solutions = [[1, 4, 8], [2, 3, 8], [2, 4, 7]]
         @test solutions == resolve_brute_force(packages, conflicts)
@@ -44,6 +44,21 @@ include("setup.jl")
         end
         # specific to chosen seed (chosen to have some large solution sets)
         @test count == [6563, 22938, 11289, 4032, 1343, 382, 104, 25, 4, 2]
+    end
+
+    @testset "edge cases" begin
+        @testset "zero packages" begin
+            packages = []
+            conflicts = Tuple{Int,Int}[]
+            @test resolve_core(packages, conflicts) == []
+        end
+        @testset "one package" begin
+            for V = 1:3
+                packages = fill("Only", V)
+                conflicts = Tuple{Int,Int}[]
+                @test resolve_core(packages, conflicts) == [[1]]
+            end
+        end
     end
 end
 

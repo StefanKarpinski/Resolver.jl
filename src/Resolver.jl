@@ -31,15 +31,23 @@ function vertices_and_conflicts(
         throw(ArgumentError("compat: callback takes two package-version pairs"))
 
     # check package versions data structure
-    for p in keys(versions)
-        isempty(versions[p]) &&
-            throw(ArgumentError("versions: package $p has no versions"))
+    let seen = Set{V}()
+        for (p, vers) in versions
+            isempty(vers) &&
+                throw(ArgumentError("versions: package $p: no versions"))
+            for v in vers
+                v in seen &&
+                    throw(ArgumentError("versions: package $p: duplicate version $v"))
+                push!(seen, v)
+            end
+            empty!(seen)
+        end
     end
 
     # check required packages set
     for p in required
         p in keys(versions) ||
-            throw(ArgumentError("required: package $p not in versions"))
+            throw(ArgumentError("required: package $p: not in versions"))
     end
 
     # co-compute reachable versions and conflicts between them

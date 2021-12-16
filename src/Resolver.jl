@@ -14,10 +14,14 @@ function resolve(
     )
     packages = P[p for (p, v) in vertices]
     solutions = resolve_core(packages, conflicts)
-    Vector{Pair{P,V}}[
+    # TODO: handle empty solution set
+    resolved = Vector{Pair{P,V}}[
         [vertices[v] for v in S if vertices[v][2] !== nothing]
         for S in solutions
     ]
+    # only keep the most satisfying solutions
+    sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
+    resolved = resolved[sat .≥ maximum(sat)]
 end
 
 function vertices_and_conflicts(

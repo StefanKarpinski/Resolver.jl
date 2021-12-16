@@ -1,9 +1,9 @@
 include("setup.jl")
 
-@testset "core resolver" begin
+@testset "core solver" begin
     @testset "basic example" begin
         packages = [fill("A", 2); fill("B", 4); fill("C", 4)]
-        conflicts = [(1,3), (1,7), (3,7), (2,10)]
+        conflicts = [(1, 3), (1, 7), (3, 7), (2, 10)]
         solutions = [[1, 4, 8], [2, 3, 8], [2, 4, 7]]
         @test solutions == resolve_brute_force(packages, conflicts)
         @test solutions == resolve_brute_force(packages, Set(conflicts))
@@ -63,31 +63,56 @@ include("setup.jl")
 end
 
 @testset "resolver API" begin
-	versions = Dict(
-        "A" => [v"3", v"2", v"1", v"0"],
-        "B" => [v"2", v"1", v"0"],
-    )
-    deps = Dict(
-        ("A" => v"3") => ["B"],
-        ("A" => v"2") => ["B"],
-        ("B" => v"1") => ["A"],
-    )
-    conflicts = Dict(
-        ("A", "B") => [
-            (v"3", v"2")
-            (v"2", v"2")
-            (v"1", v"2")
-            (v"0", v"2")
-            (v"0", v"0")
+    @testset "basic example 1" begin
+        versions = Dict(
+            "A" => [1, 2],
+            "B" => [1, 2],
+        )
+        deps = Dict(
+            ("A" => 1) => ["B"],
+            ("A" => 2) => ["B"],
+        )
+        conflicts = Dict(
+            ("A", "B") => [(1, 1)]
+        )
+        required = ["A"]
+        solutions = [
+            ["A" => 1, "B" => 2],
+            ["A" => 2, "B" => 1],
         ]
-    )
-    required = ["A"]
-	solutions = [
-        ["A" => v"3.0.0", "B" => v"1.0.0"],
-        ["A" => v"1.0.0"],
-    ]
-    compat = gen_compat(deps, conflicts)
-    resolved = Resolver.resolve(compat, versions, required)
-    @test typeof(resolved) == typeof(solutions)
-    @test resolved == solutions
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test typeof(resolved) == typeof(solutions)
+        @test resolved == solutions
+    end
+
+    @testset "basic example 2" begin
+        versions = Dict(
+            "A" => [v"3", v"2", v"1", v"0"],
+            "B" => [v"2", v"1", v"0"],
+        )
+        deps = Dict(
+            ("A" => v"3") => ["B"],
+            ("A" => v"2") => ["B"],
+            ("B" => v"1") => ["A"],
+        )
+        conflicts = Dict(
+            ("A", "B") => [
+                (v"3", v"2")
+                (v"2", v"2")
+                (v"1", v"2")
+                (v"0", v"2")
+                (v"0", v"0")
+            ]
+        )
+        required = ["A"]
+        solutions = [
+            ["A" => v"3.0.0", "B" => v"1.0.0"],
+            ["A" => v"1.0.0"],
+        ]
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test typeof(resolved) == typeof(solutions)
+        @test resolved == solutions
+    end
 end

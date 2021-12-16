@@ -55,7 +55,7 @@ include("setup.jl")
         @testset "0 pkgs" begin
             packages = []
             conflicts = Tuple{Int,Int}[]
-            @test resolve_core(packages, conflicts) == []
+            @test resolve_core(packages, conflicts) == [[]]
         end
         @testset "1 pkgs" begin
             for V = 1:3
@@ -75,7 +75,7 @@ end
             required = P[]
             compat = gen_compat()
             resolved = Resolver.resolve(compat, versions, required)
-            @test resolved == []
+            @test resolved == [[]]
             @test eltype(resolved) == Vector{Pair{P,V}}
         end
     end
@@ -237,7 +237,7 @@ end
         ]
     end
 
-    @testset "example: 3 pkgs, 2 deps, 2 conflicts (unsolvable)" begin
+    @testset "example: 3 pkgs, 2 deps, 2 conflicts (partial solutions)" begin
         versions = Dict(
             "A" => 1:1,
             "B" => 1:1,
@@ -258,5 +258,24 @@ end
             ["A" => 1, "C" => 2],
             ["B" => 1, "C" => 1],
         ]
+    end
+
+    @testset "example: 3 pkgs, 2 deps, 1 conflicts (no solutions)" begin
+        versions = Dict(
+            "A" => 1:1,
+            "B" => 1:1,
+            "C" => 1:1,
+        )
+        deps = Dict(
+            ("A" => 1) => ["B"],
+            ("B" => 1) => ["C"],
+        )
+        conflicts = Dict(
+            ("A", "C") => [(1, 1)],
+        )
+        required = ["A"]
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == []
     end
 end

@@ -88,9 +88,29 @@ end
 function gen_compat(
     deps::Dict{Pair{P,V}, <:SetOrVector{P}},
     conflicts::Dict{NTuple{2,P}, <:SetOrVector{NTuple{2,V}}},
-) where {P<:AbstractString, V<:Any}
-    compat((p₁, v₁)::Pair{P,V}, (p₂, v₂)::Pair{P,V}) =
+) where {P, V}
+    compat((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,<:V}) =
         (p₁, p₂) ∉ keys(conflicts) || (v₁, v₂) ∉ conflicts[(p₁, p₂)]
-    compat((p₁, v₁)::Pair{P,V}, (p₂, v₂)::Pair{P,Nothing}) =
+    compat((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,Nothing}) =
         (p₁ => v₁) ∉ keys(deps) || p₂ ∉ deps[p₁ => v₁]
+end
+
+function gen_compat(
+    deps::Dict{Pair{P,V}, <:SetOrVector{P}},
+) where {P, V}
+    compat((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,<:V}) = true
+    compat((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,Nothing}) =
+        (p₁ => v₁) ∉ keys(deps) || p₂ ∉ deps[p₁ => v₁]
+end
+
+function gen_compat(
+    conflicts::Dict{NTuple{2,P}, <:SetOrVector{NTuple{2,V}}},
+) where {P, V}
+    compat((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,<:V}) =
+        (p₁, p₂) ∉ keys(conflicts) || (v₁, v₂) ∉ conflicts[(p₁, p₂)]
+    compat((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,Nothing}) = true
+end
+
+function gen_compat()
+    compat(::Pair, ::Pair) = true
 end

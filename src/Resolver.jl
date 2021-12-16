@@ -21,7 +21,7 @@ function resolve(
     ]
     # only keep the most satisfying solutions
     sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
-    resolved = resolved[sat .≥ maximum(sat)]
+    resolved = resolved[sat .≥ maximum(sat; init=0)]
 end
 
 function vertices_and_conflicts(
@@ -217,6 +217,7 @@ function optimal_solutions(P::Vector{T}, C::Vector{Vector{T}}) where {T<:Integer
     end
     search!()
 
+    # TODO: we should leave these sorted by package
     foreach(sort!, solutions)
     return sort!(solutions)
 end

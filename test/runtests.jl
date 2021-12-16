@@ -63,7 +63,56 @@ include("setup.jl")
 end
 
 @testset "resolver API" begin
-    @testset "basic example 1" begin
+    @testset "example: 0 pkgs" begin
+        # also tests that pacakge and version types flow through
+        for (P, V) in [(String, VersionNumber), (Real, Irrational)]
+            versions = Dict{P,Vector{V}}()
+            required = P[]
+            compat = gen_compat()
+            resolved = Resolver.resolve(compat, versions, required)
+            @test resolved == []
+            @test eltype(resolved) == Vector{Pair{P,V}}
+        end
+    end
+
+    @testset "example: 1 pkg" begin
+        versions = Dict("A" => [1, 2])
+        required = ["A"]
+        compat = gen_compat()
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [["A" => 1]]
+    end
+
+    @testset "example: 2 pkgs, 0 deps, 1 conflicts" begin
+        versions = Dict(
+            "A" => [1, 2],
+            "B" => [1, 2],
+        )
+        conflicts = Dict(
+            ("A", "B") => [(1, 1)]
+        )
+        required = ["A"]
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [["A" => 1]]
+    end
+
+    @testset "example: 2 pkgs, 1 deps, 0 conflicts" begin
+        versions = Dict(
+            "A" => [1, 2],
+            "B" => [1, 2],
+        )
+        deps = Dict(
+            ("A" => 1) => ["B"],
+            ("A" => 2) => ["B"],
+        )
+        required = ["A"]
+        compat = gen_compat(deps)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [["A" => 1, "B" => 1]]
+    end
+
+    @testset "example: 2 pkgs, 1 deps, 1 conflicts" begin
         versions = Dict(
             "A" => [1, 2],
             "B" => [1, 2],
@@ -76,17 +125,35 @@ end
             ("A", "B") => [(1, 1)]
         )
         required = ["A"]
-        solutions = [
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 2, "B" => 1],
         ]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
-        @test typeof(resolved) == typeof(solutions)
-        @test resolved == solutions
     end
 
-    @testset "basic example 2" begin
+    @testset "example: weird types (2/0/1)" begin
+        # package type must be sortable
+        # version type can be anything
+        versions = Dict(
+            :A => [1+0im, 2+0im],
+            :B => [1+0im, 2+0im]
+        )
+        conflicts = Dict(
+            (:A, :B) => [(1+0im, 1+0im)],
+            (:B, :A) => [(2+0im, 2+0im)],
+        )
+        required = [:B, :A]
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [
+            [:A => 1+0im, :B => 2+0im],
+            [:B => 1+0im, :A => 2+0im],
+        ]
+    end
+
+    @testset "example: misc" begin
         versions = Dict(
             "A" => [v"3", v"2", v"1", v"0"],
             "B" => [v"2", v"1", v"0"],
@@ -107,8 +174,8 @@ end
         )
         required = ["A"]
         solutions = [
-            ["A" => v"3.0.0", "B" => v"1.0.0"],
-            ["A" => v"1.0.0"],
+            ["A" => v"3", "B" => v"1"],
+            ["A" => v"1"],
         ]
         compat = gen_compat(deps, conflicts)
         resolved = Resolver.resolve(compat, versions, required)

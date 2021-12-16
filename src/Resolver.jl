@@ -217,7 +217,6 @@ function optimal_solutions(P::Vector{T}, C::Vector{Vector{T}}) where {T<:Integer
     end
     search!()
 
-    # TODO: we should leave these sorted by package
     foreach(sort!, solutions)
     return sort!(solutions)
 end

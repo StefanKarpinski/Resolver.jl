@@ -11,14 +11,19 @@ include("setup.jl")
         @test solutions == resolve_core(packages, Set(conflicts))
         @testset "permutations" for _ = 1:100
             # permute the versions, conflicts and solutions
-            versions′ = shuffle(packages)
-            p = sortperm(versions′)
+            packages′ = shuffle(packages)
+            p = sortperm(packages′)
             conflicts′ = [(p[c[1]], p[c[2]]) for c in conflicts]
             solutions′ = [p[solution] for solution in solutions]
             foreach(sort!, solutions′)
             sort!(solutions′)
-            @test solutions′ == resolve_brute_force(versions′, conflicts′)
-            @test solutions′ == resolve_core(versions′, conflicts′)
+            @test solutions′ == resolve_brute_force(packages′, conflicts′)
+            @test solutions′ == resolve_core(packages′, conflicts′)
+        end
+        @testset "unordered package names" begin
+            packages = [fill(1+0im, 2); fill(2+0im, 4); fill(3+0im, 4)]
+            @test solutions == resolve_brute_force(packages, conflicts)
+            @test solutions == resolve_core(packages, conflicts)
         end
     end
 
@@ -47,12 +52,12 @@ include("setup.jl")
     end
 
     @testset "edge cases" begin
-        @testset "zero packages" begin
+        @testset "0 pkgs" begin
             packages = []
             conflicts = Tuple{Int,Int}[]
             @test resolve_core(packages, conflicts) == []
         end
-        @testset "one package" begin
+        @testset "1 pkgs" begin
             for V = 1:3
                 packages = fill("Only", V)
                 conflicts = Tuple{Int,Int}[]

@@ -70,7 +70,7 @@ end
 @testset "resolver API" begin
     @testset "example: 0 pkgs" begin
         # also tests that pacakge and version types flow through
-        for (P, V) in [(String, VersionNumber), (Real, Irrational)]
+        for (P, V) in [(String, VersionNumber), (Real, Complex{Int})]
             versions = Dict{P,Vector{V}}()
             required = P[]
             compat = gen_compat()
@@ -86,6 +86,14 @@ end
         compat = gen_compat()
         resolved = Resolver.resolve(compat, versions, required)
         @test resolved == [["A" => 1]]
+    end
+
+    @testset "example: 1 pkgs (VersionNumbers)" begin
+        versions = Dict("A" => [v"2", v"1"])
+        required = ["A"]
+        compat = gen_compat()
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [["A" => v"2"]]
     end
 
     @testset "example: 2 pkgs, 1 conflicts" begin

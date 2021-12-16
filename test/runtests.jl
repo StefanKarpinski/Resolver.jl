@@ -228,4 +228,27 @@ end
             ["A" => 2, "B" => 2, "C" => 1, "D" => 1],
         ]
     end
+
+    @testset "example: 3 pkgs, 2 deps, 2 conflicts (unsolvable)" begin
+        versions = Dict(
+            "A" => 1:1,
+            "B" => 1:1,
+            "C" => 1:2,
+        )
+        deps = Dict(
+            ("A" => 1) => ["C"],
+            ("B" => 1) => ["C"],
+        )
+        conflicts = Dict(
+            ("A", "C") => [(1, 1)],
+            ("B", "C") => [(1, 2)],
+        )
+        required = ["A", "B"]
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [
+            ["A" => 1, "C" => 2],
+            ["B" => 1, "C" => 1],
+        ]
+    end
 end

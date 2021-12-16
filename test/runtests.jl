@@ -81,7 +81,7 @@ end
     end
 
     @testset "example: 1 pkgs" begin
-        versions = Dict("A" => [1, 2])
+        versions = Dict("A" => 1:2)
         required = ["A"]
         compat = gen_compat()
         resolved = Resolver.resolve(compat, versions, required)
@@ -90,8 +90,8 @@ end
 
     @testset "example: 2 pkgs, 1 conflicts" begin
         versions = Dict(
-            "A" => [1, 2],
-            "B" => [1, 2],
+            "A" => 1:2,
+            "B" => 1:2,
         )
         conflicts = Dict(
             ("A", "B") => [(1, 1)]
@@ -102,10 +102,10 @@ end
         @test resolved == [["A" => 1]]
     end
 
-    @testset "example: 2 pkgs, 1 deps" begin
+    @testset "example: 2 pkgs, 2 deps" begin
         versions = Dict(
-            "A" => [1, 2],
-            "B" => [1, 2],
+            "A" => 1:2,
+            "B" => 1:2,
         )
         deps = Dict(
             ("A" => 1) => ["B"],
@@ -117,10 +117,10 @@ end
         @test resolved == [["A" => 1, "B" => 1]]
     end
 
-    @testset "example: 2 pkgs, 1 deps, 1 conflicts" begin
+    @testset "example: 2 pkgs, 2 deps, 1 conflicts" begin
         versions = Dict(
-            "A" => [1, 2],
-            "B" => [1, 2],
+            "A" => 1:2,
+            "B" => 1:2,
         )
         deps = Dict(
             ("A" => 1) => ["B"],
@@ -138,12 +138,12 @@ end
         ]
     end
 
-    @testset "example: 2 pkgs, 1 deps, 2 reqs" begin
+    @testset "example: 2 pkgs, 2 conflicts, 2 reqs" begin
         # package type must be sortable
         # version type can be anything
         versions = Dict(
-            "A" => [1, 2],
-            "B" => [1, 2]
+            "A" => 1:2,
+            "B" => 1:2
         )
         conflicts = Dict(
             ("A", "B") => [(1, 1)],
@@ -158,7 +158,7 @@ end
         ]
     end
 
-    @testset "example: weird types (2/0/1)" begin
+    @testset "example: 2 pkgs, 2 conflicts, 2 reqs (weird types)" begin
         # package type must be sortable
         # version type can be anything
         versions = Dict(
@@ -178,33 +178,31 @@ end
         ]
     end
 
-    @testset "example: misc" begin
+    @testset "example: 2 pkgs, 3 deps, 5 conflicts" begin
         versions = Dict(
-            "A" => [v"3", v"2", v"1", v"0"],
-            "B" => [v"2", v"1", v"0"],
+            "A" => 1:4,
+            "B" => 1:3,
         )
         deps = Dict(
-            ("A" => v"3") => ["B"],
-            ("A" => v"2") => ["B"],
-            ("B" => v"1") => ["A"],
+            ("A" => 1) => ["B"],
+            ("A" => 2) => ["B"],
+            ("B" => 3) => ["A"],
         )
         conflicts = Dict(
             ("A", "B") => [
-                (v"3", v"2")
-                (v"2", v"2")
-                (v"1", v"2")
-                (v"0", v"2")
-                (v"0", v"0")
+                (1, 1)
+                (2, 1)
+                (3, 1)
+                (4, 1)
+                (4, 3)
             ]
         )
         required = ["A"]
-        solutions = [
-            ["A" => v"3", "B" => v"1"],
-            ["A" => v"1"],
-        ]
         compat = gen_compat(deps, conflicts)
         resolved = Resolver.resolve(compat, versions, required)
-        @test typeof(resolved) == typeof(solutions)
-        @test resolved == solutions
+        @test resolved == [
+            ["A" => 1, "B" => 2],
+            ["A" => 3],
+        ]
     end
 end

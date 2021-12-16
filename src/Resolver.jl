@@ -14,7 +14,12 @@ function resolve(
     )
     packages = P[p for (p, v) in vertices]
     solutions = resolve_core(packages, conflicts)
-    # TODO: handle empty solution set
+    # sort solutions
+    for S in solutions
+        sort!(S, by = v -> packages[v])
+    end
+    sort!(solutions)
+    # map back to version identifiers
     resolved = Vector{Pair{P,V}}[
         [vertices[v] for v in S if vertices[v][2] !== nothing]
         for S in solutions

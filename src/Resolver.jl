@@ -6,6 +6,7 @@ function resolve(
     compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
+    allowed  :: Integer = 0,
 ) where {P,V}
     vertices, conflicts = vertices_and_conflicts(
         compat,
@@ -13,7 +14,8 @@ function resolve(
         required,
     )
     packages = P[p for (p, v) in vertices]
-    solutions = resolve_core(packages, conflicts)
+    dummies = Bool[isnothing(v) for (p, v) in vertices]
+    solutions = resolve_core(packages, conflicts, allowed, dummies)
     # sort solutions
     for S in solutions
         sort!(S, by = v -> packages[v])
@@ -90,6 +92,8 @@ end
 function resolve_core(
     packages  :: AbstractVector,
     conflicts :: SetOrVector{<:NTuple{2,Integer}},
+    allowed   :: Integer = 0,
+    dummies   :: Vector{Bool} = fill(false, length(packages)),
 )
     # check conflicts
     for (v₁, v₂) in conflicts
@@ -103,29 +107,25 @@ function resolve_core(
             throw(ArgumentError("conflicts: package $(packages[v₁]): conflict between $v₁, $v₂"))
     end
 
-    # compatible adjacency lists
-    C = [UInt32[] for v = 1:length(packages)]
+    # conflict count matrix
+    N = length(packages)
+    X = zeros(UInt32, N, N)
     for (v₁, p₁) in enumerate(packages),
         (v₂, p₂) in enumerate(packages)
-        compatible = p₁ ≠ p₂ && (v₁, v₂) ∉ conflicts && (v₂, v₁) ∉ conflicts
-        compatible && push!(C[v₁], v₂)
+        x = (v₁, v₂) ∈ conflicts || (v₂, v₁) ∈ conflicts
+        d = x && (dummies[v₁] || dummies[v₂])
+        X[v₁, v₂] = X[v₂, v₁] = p₁ == p₂ ? allowed + 2 : d ? allowed + 1 : x
     end
 
-    # deduplicate nodes by adjacency list
+    # deduplicate nodes by conflict sets
     keep = UInt32[]
-    seen = Set{Tuple{eltype(packages), Vector{UInt32}}}()
+    seen = Set{Vector{UInt32}}()
     for (v, p) in enumerate(packages)
-        (p, C[v]) in seen && continue
-        push!(seen, (p, C[v]))
+        X[:, v] in seen && continue
+        push!(seen, X[:, v])
         push!(keep, v)
     end
-    C = C[keep]
-    let kept = Dict(map(reverse, enumerate(keep)))
-        for V in C
-            filter!(v -> haskey(kept, v), V)
-            map!(v -> kept[v], V, V)
-        end
-    end
+    X = X[keep, keep]
     packages = packages[keep]
 
     # package indices
@@ -137,7 +137,7 @@ function resolve_core(
     end
 
     # find all optimal solutions
-    solutions = optimal_solutions(P, C)
+    solutions = optimal_solutions(P, X, Int(allowed))
 
     # translate back to original version indices
     Vector{Int}[Int[keep[v] for v in S] for S in solutions]
@@ -169,21 +169,23 @@ end
 # conflict with that solution since otherwise it wouldn't be optimal. So rather
 # than pivoting around a node, we are pivoting around an entire solution.
 
-function optimal_solutions(P::Vector{T}, C::Vector{Vector{T}}) where {T<:Integer}
+function optimal_solutions(P::Vector{T}, X::Matrix{T}, c::Int = 0) where {T<:Integer}
     # number of packages & versions
     M = maximum(P, init=0)
-    N = length(C)
+    L = maximum(X, init=1) + M
+    N = size(X, 1)
 
-    # level vector, solution vector, solutions set
-    L = ones(T, N)
+    # conflict count vector, level vector, solution vector, solutions set
+    C = zeros(T, N)
     S = zeros(T, M)
     solutions = typeof(S)[]
     M == 0 && return push!(solutions, S)
 
-    function search!(r::Int = 1, d::Int = 1)
-        for j in 1:N
-            # check subgraph inclusion at this recursion level
-            L[j] == r || continue
+    function search!(c::Int, r::Int = 1, d::Int = 1)
+        for j = 1:N
+            # check subgraph inclusion at this level
+            c′ = c - C[j]
+            c′ ≥ 0 || continue
             # record version choice
             S[r] = j
             # advance dominance frontier (if necessary & possible)
@@ -207,21 +209,27 @@ function optimal_solutions(P::Vector{T}, C::Vector{Vector{T}}) where {T<:Integer
                 end
                 break
             end
-            # restrict next subgraph to neighbors
-            for k in C[j]
-                L[k] += (L[k] == r)
+            # restrict next subgraph to neighbors without too many conflicts
+            for k = 1:N
+                C[k] += X[k, j]
             end
             # recursion
-            search!(r + 1, d′)
-            # restore the levels vector
-            for k in C[j]
-                L[k] = min(L[k], r)
+            search!(c′, r + 1, d′)
+            # restore the conflict count & level vectors
+            for k = 1:N
+                C[k] -= X[k, j]
             end
             # exclude vertex from future iterations
-            L[j] = r - 1
+            C[j] += r*L
+        end
+        for j = 1:N
+            dr = divrem(C[j], L)
+            if dr[1] ≥ r
+                C[j] = dr[2]
+            end
         end
     end
-    search!()
+    search!(c)
 
     foreach(sort!, solutions)
     return sort!(solutions)

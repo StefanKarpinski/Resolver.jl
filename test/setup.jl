@@ -7,6 +7,7 @@ function resolve_brute_force(
     versions  :: AbstractVector,
     conflicts :: SetOrVector{<:NTuple{2,Integer}};
     optimal   :: Bool = true,
+    relax     :: Integer = 0,
 )
     # package indices
     P = zeros(Int, length(versions))
@@ -39,8 +40,8 @@ function resolve_brute_force(
             solution[i] = perm[b + r]
             b += C[i]
         end
-        any(v₁ ∈ solution && v₂ ∈ solution for (v₁, v₂) in conflicts) && continue
-        push!(solutions, copy(solution))
+        x = sum(v₁ ∈ solution && v₂ ∈ solution for (v₁, v₂) in conflicts; init = 0)
+        x ≤ relax && push!(solutions, copy(solution))
     end
 
     # filter out sub-optimal solutions

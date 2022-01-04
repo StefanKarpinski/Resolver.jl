@@ -16,8 +16,8 @@ function resolve(
     dummies = Bool[isnothing(v) for (p, v) in vertices]
     let resolved
         M = length(versions)
-        for allowed = 0:M*(M-1)÷2
-            solutions = resolve_core(packages, conflicts, allowed, dummies)
+        for relax = 0:M*(M-1)÷2
+            solutions = resolve_core(packages, conflicts; dummies, relax)
             # sort solutions
             for S in solutions
                 sort!(S, by = v -> packages[v])
@@ -97,9 +97,9 @@ end
 
 function resolve_core(
     packages  :: AbstractVector,
-    conflicts :: SetOrVector{<:NTuple{2,Integer}},
-    allowed   :: Integer = 0,
+    conflicts :: SetOrVector{<:NTuple{2,Integer}};
     dummies   :: Vector{Bool} = fill(false, length(packages)),
+    relax     :: Integer = 0,
 )
     # check conflicts
     for (v₁, v₂) in conflicts
@@ -120,7 +120,7 @@ function resolve_core(
         (v₂, p₂) in enumerate(packages)
         x = (v₁, v₂) ∈ conflicts || (v₂, v₁) ∈ conflicts
         d = x && (dummies[v₁] || dummies[v₂])
-        X[v₁, v₂] = X[v₂, v₁] = p₁ == p₂ ? allowed + 2 : d ? allowed + 1 : x
+        X[v₁, v₂] = X[v₂, v₁] = p₁ == p₂ ? relax + 2 : d ? relax + 1 : x
     end
 
     # deduplicate nodes by conflict sets
@@ -143,7 +143,7 @@ function resolve_core(
     end
 
     # find all optimal solutions
-    solutions = optimal_solutions(P, X, Int(allowed))
+    solutions = optimal_solutions(P, X, Int(relax))
 
     # translate back to original version indices
     Vector{Int}[Int[keep[v] for v in S] for S in solutions]

@@ -9,6 +9,11 @@ include("setup.jl")
         @test solutions == resolve_brute_force(packages, Set(conflicts))
         @test solutions == resolve_core(packages, conflicts)
         @test solutions == resolve_core(packages, Set(conflicts))
+        for relax = 1:5
+            solutions′ = resolve_brute_force(packages, conflicts; relax)
+            resolved′ = resolve_core(packages, conflicts; relax)
+            @test solutions′ == resolved′
+        end
         @testset "permutations" for _ = 1:100
             # permute the versions, conflicts and solutions
             packages′ = shuffle(packages)
@@ -29,7 +34,7 @@ include("setup.jl")
 
     @testset "comprehensive tests" begin
         Random.seed!(0x53f3ce0656b85450bbb52b15fc58853f)
-        count = zeros(Int, 10)
+        count = zeros(Int, 17)
         for M = 2:5, # number of packages
             V = 1:5  # number of versions per package
             T = V^2*(M*(M-1)÷2)
@@ -40,15 +45,20 @@ include("setup.jl")
                 G = gen_conflicts(M, V, C)
                 conflicts = Tuple{Int,Int}[(p[c[1]], p[c[2]]) for c in G]
                 @assert length(conflicts) == count_ones(C % UInt128(2)^T)
-                solutions = resolve_brute_force(packages, conflicts)
-                resolved = resolve_core(packages, conflicts)
-                @test resolved isa Vector{Vector{Int}}
-                @test solutions == resolved
-                count[length(solutions)+1] += 1
+                for relax = 0:M^2
+                    solutions = resolve_brute_force(packages, conflicts; relax)
+                    resolved = resolve_core(packages, conflicts; relax)
+                    @test resolved isa Vector{Vector{Int}}
+                    @test solutions == resolved
+                    count[length(solutions)+1] += 1
+                end
             end
         end
         # specific to chosen seed (chosen to have some large solution sets)
-        @test count == [6563, 22938, 11289, 4032, 1343, 382, 104, 25, 4, 2]
+        @test count == [
+            12693, 605486, 17731, 11964, 5792, 2073,
+            777, 341, 163, 65, 23, 11, 9, 1, 0, 0, 1,
+        ]
     end
 
     @testset "edge cases" begin

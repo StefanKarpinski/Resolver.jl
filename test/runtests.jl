@@ -237,7 +237,7 @@ end
         ]
     end
 
-    @testset "example: 3 pkgs, 2 deps, 2 conflicts (partial solutions)" begin
+    @testset "example: 3 pkgs, 2 deps, 2 conflicts (incomplete)" begin
         versions = Dict(
             "A" => 1:1,
             "B" => 1:1,
@@ -260,7 +260,7 @@ end
         ]
     end
 
-    @testset "example: 3 pkgs, 2 deps, 1 conflicts (no solutions)" begin
+    @testset "example: 3 pkgs, 2 deps, 1 conflicts (incompatible)" begin
         versions = Dict(
             "A" => 1:1,
             "B" => 1:1,
@@ -276,10 +276,28 @@ end
         required = ["A"]
         compat = gen_compat(deps, conflicts)
         resolved = Resolver.resolve(compat, versions, required)
-        @test resolved == []
+        @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
-    @testset "example: 3 pkgs, 2 deps, 1 conflicts (no solutions)" begin
+    @testset "example: 3 pkgs, 2 deps, 1 conflicts (incompatible)" begin
+        versions = Dict(
+            "A" => 1:1,
+            "B" => 1:1,
+            "C" => 1:1,
+        )
+        deps = Dict(
+            ("A" => 1) => ["B", "C"],
+        )
+        conflicts = Dict(
+            ("B", "C") => [(1, 1)],
+        )
+        required = ["A"]
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
+    end
+
+    @testset "example: 3 pkgs, 2 deps, 3 conflicts (incompatible)" begin
         versions = Dict(
             "A" => 1:1,
             "B" => 1:1,
@@ -296,6 +314,29 @@ end
         required = ["A"]
         compat = gen_compat(deps, conflicts)
         resolved = Resolver.resolve(compat, versions, required)
-        @test resolved == []
+        @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
+    end
+
+    @testset "example: 3 pkgs, 2 deps, 2 conflicts (incompatible)" begin
+        versions = Dict(
+            "A" => 1:2,
+            "B" => 1:1,
+            "C" => 1:1,
+        )
+        deps = Dict(
+            ("A" => 1) => ["B"],
+            ("A" => 2) => ["C"],
+        )
+        conflicts = Dict(
+            ("A", "B") => [(1, 1)],
+            ("A", "C") => [(2, 1)],
+        )
+        required = ["A"]
+        compat = gen_compat(deps, conflicts)
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [
+            ["A" => 1, "B" => 1],
+            ["A" => 2, "C" => 1],
+        ]
     end
 end

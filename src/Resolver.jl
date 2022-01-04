@@ -6,7 +6,6 @@ function resolve(
     compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
     required :: SetOrVector{P},
-    allowed  :: Integer = 0,
 ) where {P,V}
     vertices, conflicts = vertices_and_conflicts(
         compat,
@@ -15,20 +14,27 @@ function resolve(
     )
     packages = P[p for (p, v) in vertices]
     dummies = Bool[isnothing(v) for (p, v) in vertices]
-    solutions = resolve_core(packages, conflicts, allowed, dummies)
-    # sort solutions
-    for S in solutions
-        sort!(S, by = v -> packages[v])
+    let resolved
+        M = length(versions)
+        for allowed = 0:M*(M-1)÷2
+            solutions = resolve_core(packages, conflicts, allowed, dummies)
+            # sort solutions
+            for S in solutions
+                sort!(S, by = v -> packages[v])
+            end
+            sort!(solutions)
+            # map back to version identifiers
+            resolved = Vector{Pair{P,V}}[
+                [vertices[v] for v in S if !dummies[v]]
+                for S in solutions
+            ]
+            # only keep the most satisfying solutions
+            sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
+            resolved = resolved[sat .≥ maximum(sat; init = 1-isempty(versions))]
+            !isempty(resolved) && break
+        end
+        resolved
     end
-    sort!(solutions)
-    # map back to version identifiers
-    resolved = Vector{Pair{P,V}}[
-        [vertices[v] for v in S if vertices[v][2] !== nothing]
-        for S in solutions
-    ]
-    # only keep the most satisfying solutions
-    sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
-    resolved = resolved[sat .≥ maximum(sat; init = 1-isempty(versions))]
 end
 
 function vertices_and_conflicts(

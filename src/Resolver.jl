@@ -26,7 +26,7 @@ function resolve(
             # map back to version identifiers
             resolved = Vector{Pair{P,V}}[
                 [vertices[v] for v in S if !dummies[v]]
-                for S in solutions
+                    for S in solutions
             ]
             # only keep the most satisfying solutions
             sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
@@ -69,8 +69,9 @@ function vertices_and_conflicts(
 
     # co-compute reachable versions and conflicts between them
     package_names = sort!(collect(keys(versions)))
-    reachable = [p => Int(p in required) for p in package_names]
+    reachable = Pair{P,Int}[p => Int(p in required) for p in package_names]
     conflicts = Set{NTuple{2,Int}}()
+    conflicted = Set(required)
     while true
         clean = true
         for (i₁, (p₁, k₁)) in enumerate(reachable),
@@ -86,11 +87,15 @@ function vertices_and_conflicts(
                     push!(reachable, p => k)
                     clean = false
                 end
+                push!(conflicted, p)
             end
         end
         clean && break
     end
-    vertices = [p => get(versions[p], k, nothing) for (p, k) in reachable]
+    vertices = Pair{P,Union{V,Nothing}}[
+        p => get(versions[p], k, nothing)
+            for (p, k) in reachable if p in conflicted
+    ]
 
     return vertices, conflicts
 end

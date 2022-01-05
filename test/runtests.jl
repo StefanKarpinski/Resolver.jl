@@ -106,6 +106,17 @@ end
         @test resolved == [["A" => v"2"]]
     end
 
+    @testset "example: 2 pkgs, 0 conflicts" begin
+        versions = Dict(
+            "A" => 1:2,
+            "B" => 1:2,
+        )
+        required = ["A"]
+        compat = gen_compat()
+        resolved = Resolver.resolve(compat, versions, required)
+        @test resolved == [["A" => 1]]
+    end
+
     @testset "example: 2 pkgs, 1 conflicts" begin
         versions = Dict(
             "A" => 1:2,

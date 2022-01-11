@@ -39,7 +39,7 @@ include("setup.jl")
             V = 1:5  # number of versions per package
             T = V^2*(M*(M-1)÷2)
             T ≤ 128 || continue
-            packages = shuffle!([p for _=1:V for p=1:M])
+            packages = shuffle!([p for p=1:M for _=1:V])
             p = sortperm(packages)
             for C in (T ≤ 12 ? (0:2^T-1) : [randu128(3-(k%5)%3) for k=1:2^12])
                 G = gen_conflicts(M, V, C)

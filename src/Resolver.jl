@@ -1,16 +1,31 @@
 module Resolver
 
 const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
+const DepsType = Union{
+    Function, # Pair{P,V} --> SetOrVector{P}
+    AbstractDict{Pair{P,V}, <:SetOrVector{P}} where {P,V},
+}
+
+const NO_CONFLICTS = (::Pair, ::Pair) -> true
+const NO_DEPS = ((::Pair{P},) where P) -> Set{P}()
 
 function resolve(
-    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
-    required :: SetOrVector{P},
+    required :: SetOrVector{P};
+    compat   :: Function = NO_CONFLICTS, # (p₁ => v₁, p₂ => v₂) -> Bool
+    deps     :: DepsType = NO_DEPS,      # (p₁ => v₁) -> SetOrVector{P}
 ) where {P,V}
+    if deps isa AbstractDict
+        deps_dict = deps
+        deps = let no_deps = Set{P}()
+            pv::Pair{P,V} -> get(deps_dict, pv, no_deps)
+        end
+    end
     vertices, conflicts = vertices_and_conflicts(
-        compat,
         versions,
-        required,
+        required;
+        compat,
+        deps,
     )
     packages = P[p for (p, v) in vertices]
     dummies = Bool[isnothing(v) for (p, v) in vertices]
@@ -38,14 +53,18 @@ function resolve(
 end
 
 function vertices_and_conflicts(
-    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     versions :: AbstractDict{P, <:AbstractVector{V}},
-    required :: SetOrVector{P},
+    required :: SetOrVector{P};
+    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
+    deps     :: Function, # (p₁ => v₁) -> SetOrVector{P}
 ) where {P,V}
     # check compat callback function signature
-    hasmethod(compat, Tuple{Pair{P,V}, Pair{P,V}}) &&
-    hasmethod(compat, Tuple{Pair{P,V}, Pair{P,Nothing}}) ||
+    hasmethod(compat, Tuple{Pair{P,V}, Pair{P,V}}) ||
         throw(ArgumentError("compat: callback takes two package-version pairs"))
+
+    # check deps callback function signature
+    hasmethod(deps, Tuple{Pair{P,V}}) ||
+        throw(ArgumentError("deps: callback takes a package-version pair"))
 
     # check package versions data structure
     let seen = Set{V}()
@@ -67,6 +86,13 @@ function vertices_and_conflicts(
             throw(ArgumentError("required: package $p: not in versions"))
     end
 
+    # cache of deps lists
+    deps_cache = Dict{Pair{P,V}, Set{P}}()
+    deps!(pv::Pair{P,V}) = get!(deps_cache, pv) do
+        s = deps(pv)
+        s isa AbstractSet ? s : Set(s)
+    end
+
     # co-compute reachable versions and conflicts between them
     package_names = sort!(collect(keys(versions)))
     reachable = Pair{P,Int}[p => Int(p in required) for p in package_names]
@@ -79,8 +105,16 @@ function vertices_and_conflicts(
             p₁ < p₂ || continue
             v₁ = get(versions[p₁], k₁, nothing)
             v₂ = get(versions[p₂], k₂, nothing)
-            (v₁ === nothing || compat(p₁ => v₁, p₂ => v₂)) &&
-            (v₂ === nothing || compat(p₂ => v₂, p₁ => v₁)) && continue
+            if v₁ !== nothing && v₂ !== nothing
+                compat(p₁ => v₁, p₂ => v₂) &&
+                compat(p₂ => v₂, p₁ => v₁) && continue
+            elseif v₁ === v₂ === nothing
+                continue
+            elseif v₁ === nothing
+                p₁ ∈ deps!(p₂ => v₂) || continue
+            elseif v₂ === nothing
+                p₂ ∈ deps!(p₁ => v₁) || continue
+            end
             push!(conflicts, minmax(i₁, i₂))
             for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
                 if k ≤ length(versions[p]) + (p ∈ required) && (p => k) ∉ reachable

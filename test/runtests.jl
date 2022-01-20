@@ -83,8 +83,7 @@ end
         for (P, V) in [(String, VersionNumber), (Real, Complex{Int})]
             versions = Dict{P,Vector{V}}()
             required = P[]
-            compat = gen_compat()
-            resolved = Resolver.resolve(compat, versions, required)
+            resolved = Resolver.resolve(versions, required)
             @test resolved == [[]]
             @test eltype(resolved) == Vector{Pair{P,V}}
         end
@@ -93,16 +92,14 @@ end
     @testset "example: 1 pkgs" begin
         versions = Dict("A" => 1:2)
         required = ["A"]
-        compat = gen_compat()
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required)
         @test resolved == [["A" => 1]]
     end
 
     @testset "example: 1 pkgs (VersionNumbers)" begin
         versions = Dict("A" => [v"2", v"1"])
         required = ["A"]
-        compat = gen_compat()
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required)
         @test resolved == [["A" => v"2"]]
     end
 
@@ -112,8 +109,7 @@ end
             "B" => 1:2,
         )
         required = ["A"]
-        compat = gen_compat()
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required)
         @test resolved == [["A" => 1]]
     end
 
@@ -127,7 +123,7 @@ end
         )
         required = ["A"]
         compat = gen_compat(conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required; compat)
         @test resolved == [["A" => 1]]
     end
 
@@ -141,8 +137,7 @@ end
             ("A" => 2) => ["B"],
         )
         required = ["A"]
-        compat = gen_compat(deps)
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required; deps)
         @test resolved == [["A" => 1, "B" => 1]]
     end
 
@@ -159,8 +154,8 @@ end
             ("A", "B") => [(1, 1)]
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 2, "B" => 1],
@@ -180,7 +175,7 @@ end
         )
         required = ["B", "A"]
         compat = gen_compat(conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required; compat)
         @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 2, "B" => 1],
@@ -200,7 +195,7 @@ end
         )
         required = [:B, :A]
         compat = gen_compat(conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        resolved = Resolver.resolve(versions, required; compat)
         @test resolved == [
             [:A => 1+0im, :B => 2+0im],
             [:A => 2+0im, :B => 1+0im],
@@ -227,8 +222,8 @@ end
             ]
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 3],
@@ -251,8 +246,8 @@ end
             ("B", "D") => [(1, 1)],
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [
             ["A" => 2, "B" => 2, "C" => 1, "D" => 1],
         ]
@@ -273,8 +268,8 @@ end
             ("B", "C") => [(1, 2)],
         )
         required = ["A", "B"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [
             ["A" => 1, "C" => 2],
             ["B" => 1, "C" => 1],
@@ -295,8 +290,8 @@ end
             ("A", "C") => [(1, 1)],
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
@@ -313,8 +308,8 @@ end
             ("B", "C") => [(1, 1)],
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
@@ -333,8 +328,8 @@ end
             ("B", "C") => [(1, 1)],
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
@@ -353,8 +348,8 @@ end
             ("A", "C") => [(2, 1)],
         )
         required = ["A"]
-        compat = gen_compat(deps, conflicts)
-        resolved = Resolver.resolve(compat, versions, required)
+        compat = gen_compat(conflicts)
+        resolved = Resolver.resolve(versions, required; compat, deps)
         @test resolved == [
             ["A" => 1, "B" => 1],
             ["A" => 2, "C" => 1],

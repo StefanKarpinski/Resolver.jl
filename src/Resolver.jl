@@ -1,36 +1,47 @@
 module Resolver
 
 const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
+
+const VersionsType = Union{
+    AbstractDict{P, <:AbstractVector{V}} where {P,V},
+    Function, # P --> AbstractVector{V}
+}
+
 const DepsType = Union{
-    Function, # Pair{P,V} --> SetOrVector{P}
     AbstractDict{Pair{P,V}, <:SetOrVector{P}} where {P,V},
+    Function, # Pair{P,V} --> SetOrVector{P}
 }
 
 const NO_CONFLICTS = (::Pair, ::Pair) -> true
 const NO_DEPS = ((::Pair{P},) where P) -> Set{P}()
 
 function resolve(
-    versions :: AbstractDict{P, <:AbstractVector{V}},
-    required :: SetOrVector{P};
+    required :: SetOrVector{P},
+    versions :: VersionsType;            # p -> AbstractVector{V}
     compat   :: Function = NO_CONFLICTS, # (p₁ => v₁, p₂ => v₂) -> Bool
     deps     :: DepsType = NO_DEPS,      # (p₁ => v₁) -> SetOrVector{P}
-) where {P,V}
+) where {P}
+    if versions isa AbstractDict
+        versions_dict = versions
+        versions = p::P -> versions_dict[p]
+    end
+    V = isempty(required) ? Union{} : eltype(versions(required[1]))
     if deps isa AbstractDict
         deps_dict = deps
         deps = let no_deps = Set{P}()
-            pv::Pair{P,V} -> get(deps_dict, pv, no_deps)
+            pv::Pair -> get(deps_dict, pv, no_deps)
         end
     end
     vertices, conflicts = vertices_and_conflicts(
+        required,
         versions,
-        required;
         compat,
         deps,
     )
     packages = P[p for (p, v) in vertices]
     dummies = Bool[isnothing(v) for (p, v) in vertices]
     let resolved
-        M = length(versions)
+        M = length(vertices)
         for relax = 0:M*(M-1)÷2
             solutions = resolve_core(packages, conflicts; dummies, relax)
             # sort solutions
@@ -45,7 +56,7 @@ function resolve(
             ]
             # only keep the most satisfying solutions
             sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
-            resolved = resolved[sat .≥ maximum(sat; init = 1-isempty(versions))]
+            resolved = resolved[sat .≥ maximum(sat; init = 1-isempty(vertices))]
             !isempty(resolved) && break
         end
         resolved
@@ -53,58 +64,48 @@ function resolve(
 end
 
 function vertices_and_conflicts(
-    versions :: AbstractDict{P, <:AbstractVector{V}},
-    required :: SetOrVector{P};
+    required :: SetOrVector{P},
+    versions :: Function, # p -> AbstractVector{V}
     compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     deps     :: Function, # (p₁ => v₁) -> SetOrVector{P}
-) where {P,V}
-    # check compat callback function signature
-    hasmethod(compat, Tuple{Pair{P,V}, Pair{P,V}}) ||
-        throw(ArgumentError("compat: callback takes two package-version pairs"))
+) where {P}
+    # get the version type
+    V = isempty(required) ? Union{} : eltype(versions(required[1]))
 
-    # check deps callback function signature
-    hasmethod(deps, Tuple{Pair{P,V}}) ||
-        throw(ArgumentError("deps: callback takes a package-version pair"))
-
-    # check package versions data structure
-    let seen = Set{V}()
-        for (p, vers) in versions
-            isempty(vers) &&
-                throw(ArgumentError("versions: package $p: no versions"))
-            for v in vers
-                v in seen &&
-                    throw(ArgumentError("versions: package $p: duplicate version $v"))
-                push!(seen, v)
-            end
-            empty!(seen)
-        end
-    end
-
-    # check required packages set
-    for p in required
-        p in keys(versions) ||
-            throw(ArgumentError("required: package $p: not in versions"))
+    # cache of package versions
+    versions_cache = Dict{P, Vector{V}}()
+    versions!(p::P) = get!(versions_cache, p) do
+        versions(p)
     end
 
     # cache of deps lists
     deps_cache = Dict{Pair{P,V}, Set{P}}()
-    deps!(pv::Pair{P,V}) = get!(deps_cache, pv) do
+    deps!(pv::Pair) = get!(deps_cache, pv) do
         s = deps(pv)
         s isa AbstractSet ? s : Set(s)
     end
 
     # co-compute reachable versions and conflicts between them
-    package_names = sort!(collect(keys(versions)))
-    reachable = Pair{P,Int}[p => Int(p in required) for p in package_names]
+    reachable = Pair{P,Int}[p => 1 for p in required]
     conflicts = Set{NTuple{2,Int}}()
-    conflicted = Set(required)
     while true
         clean = true
+        # ensure that dependencies are reachable
+        for (p₁, k₁) in reachable
+            v₁ = get(versions!(p₁), k₁, nothing)
+            v₁ === nothing && continue
+            for p₂ in deps!(p₁ => v₁)
+                any(p₂ == p for (p, k) in reachable) && continue
+                push!(reachable, p₂ => 0, p₂ => 1)
+                clean = false
+            end
+        end
+        # include next version after any conflicted version
         for (i₁, (p₁, k₁)) in enumerate(reachable),
             (i₂, (p₂, k₂)) in enumerate(reachable)
             p₁ < p₂ || continue
-            v₁ = get(versions[p₁], k₁, nothing)
-            v₂ = get(versions[p₂], k₂, nothing)
+            v₁ = get(versions!(p₁), k₁, nothing)
+            v₂ = get(versions!(p₂), k₂, nothing)
             if v₁ !== nothing && v₂ !== nothing
                 compat(p₁ => v₁, p₂ => v₂) &&
                 compat(p₂ => v₂, p₁ => v₁) && continue
@@ -117,18 +118,16 @@ function vertices_and_conflicts(
             end
             push!(conflicts, minmax(i₁, i₂))
             for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
-                if k ≤ length(versions[p]) + (p ∈ required) && (p => k) ∉ reachable
+                if k ≤ length(versions!(p)) + (p ∈ required) && (p => k) ∉ reachable
                     push!(reachable, p => k)
                     clean = false
                 end
-                push!(conflicted, p)
             end
         end
         clean && break
     end
     vertices = Pair{P,Union{V,Nothing}}[
-        p => get(versions[p], k, nothing)
-            for (p, k) in reachable if p in conflicted
+        p => get(versions!(p), k, nothing) for (p, k) in reachable
     ]
 
     return vertices, conflicts

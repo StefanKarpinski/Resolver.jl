@@ -9,10 +9,10 @@ const VersionsType = Union{
 
 const DepsType = Union{
     AbstractDict{Pair{P,V}, <:SetOrVector{P}} where {P,V},
-    Function, # Pair{P,V} --> SetOrVector{P}
+    Function, # (P, V) --> SetOrVector{P}
 }
 
-const NO_DEPS = ((::Pair{P},) where P) -> Set{P}()
+const NO_DEPS = ((::P, _) where P) -> Set{P}()
 const NO_CONFLICTS = (::Pair, ::Pair) -> true
 
 function resolve(
@@ -25,11 +25,10 @@ function resolve(
         versions_dict = versions
         versions = p::P -> versions_dict[p]
     end
-    V = isempty(required) ? Union{} : eltype(versions(required[1]))
     if deps isa AbstractDict
         deps_dict = deps
         deps = let no_deps = Set{P}()
-            pv::Pair -> get(deps_dict, pv, no_deps)
+            (p::P, v) -> get(deps_dict, p => v, no_deps)
         end
     end
     vertices, conflicts = vertices_and_conflicts(
@@ -40,6 +39,7 @@ function resolve(
     )
     packages = P[p for (p, v) in vertices]
     dummies = Bool[isnothing(v) for (p, v) in vertices]
+    V = isempty(required) ? Union{} : eltype(versions(required[1]))
     let resolved
         M = length(vertices)
         for relax = 0:M*(M-1)÷2
@@ -81,9 +81,9 @@ function vertices_and_conflicts(
 
     # cache of dependencies
     deps_cache = Dict{Pair{P,V}, Set{P}}()
-    deps!(pv::Pair) = get!(deps_cache, pv) do
-        s = deps(pv)
-        s isa AbstractSet ? s : Set(s)
+    deps!(p::P, v) = get!(deps_cache, p => v) do
+        d = deps(p, v)
+        d isa AbstractSet ? d : Set(d)
     end
 
     # cache of compatibility
@@ -101,7 +101,7 @@ function vertices_and_conflicts(
         for (p₁, k₁) in reachable
             v₁ = get(versions!(p₁), k₁, nothing)
             v₁ === nothing && continue
-            for p₂ in deps!(p₁ => v₁)
+            for p₂ in deps!(p₁, v₁)
                 any(p₂ == p for (p, k) in reachable) && continue
                 push!(reachable, p₂ => 0, p₂ => 1)
                 clean = false
@@ -118,9 +118,9 @@ function vertices_and_conflicts(
             elseif v₁ === v₂ === nothing
                 continue # non-versions are compatible
             elseif v₁ === nothing
-                p₁ ∈ deps!(p₂ => v₂) || continue
+                p₁ ∈ deps!(p₂, v₂) || continue
             elseif v₂ === nothing
-                p₂ ∈ deps!(p₁ => v₁) || continue
+                p₂ ∈ deps!(p₁, v₁) || continue
             end
             push!(conflicts, minmax(i₁, i₂))
             for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)

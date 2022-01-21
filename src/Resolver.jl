@@ -13,14 +13,17 @@ const DepsType = Union{
 }
 
 const NO_DEPS = ((::P, _) where P) -> Set{P}()
-const NO_CONFLICTS = (::Pair, ::Pair) -> true
+const NO_CONFLICTS = (p, v) -> (p, v) -> true
+
+DEBUG = false
 
 function resolve(
     required :: SetOrVector{P},
     versions :: VersionsType;            # p -> AbstractVector{V}
-    deps     :: DepsType = NO_DEPS,      # (p₁ => v₁) -> SetOrVector{P}
-    compat   :: Function = NO_CONFLICTS, # (p₁ => v₁, p₂ => v₂) -> Bool
+    deps     :: DepsType = NO_DEPS,      # (p, v) -> SetOrVector{P}
+    compat   :: Function = NO_CONFLICTS, # (p₁, v₁) -> (p₂, v₂) -> Bool
 ) where {P}
+    global t₀ = time()
     if versions isa AbstractDict
         versions_dict = versions
         versions = p::P -> versions_dict[p]
@@ -31,7 +34,9 @@ function resolve(
             (p::P, v) -> get(deps_dict, p => v, no_deps)
         end
     end
+    V = isempty(required) ? Union{} : eltype(versions(required[1]))
     vertices, conflicts = vertices_and_conflicts(
+        V,
         required,
         versions,
         deps,
@@ -39,7 +44,6 @@ function resolve(
     )
     packages = P[p for (p, v) in vertices]
     dummies = Bool[isnothing(v) for (p, v) in vertices]
-    V = isempty(required) ? Union{} : eltype(versions(required[1]))
     let resolved
         M = length(vertices)
         for relax = 0:M*(M-1)÷2
@@ -65,73 +69,90 @@ function resolve(
 end
 
 function vertices_and_conflicts(
+             :: Type{V},
     required :: SetOrVector{P},
     versions :: Function, # p -> AbstractVector{V}
-    deps     :: Function, # (p₁ => v₁) -> SetOrVector{P}
-    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
-) where {P}
-    # get the version type
-    V = isempty(required) ? Union{} : eltype(versions(required[1]))
-
+    deps     :: Function, # (p, v) -> SetOrVector{P}
+    compat   :: Function, # (p₁, v₁) -> (p₂, v₂) -> Bool
+) where {P,V}
     # cache of package versions
     versions_cache = Dict{P, Vector{V}}()
-    versions!(p::P) = get!(versions_cache, p) do
+    versions!(p::P)::Vector{V} = get!(versions_cache, p) do
         versions(p)
     end
 
     # cache of dependencies
-    deps_cache = Dict{Pair{P,V}, Set{P}}()
-    deps!(p::P, v) = get!(deps_cache, p => v) do
+    deps_cache = Dict{Tuple{P,V}, Set{P}}()
+    deps!(p::P, v::V)::Set{P} = get!(deps_cache, (p, v)) do
         d = deps(p, v)
         d isa AbstractSet ? d : Set(d)
     end
 
     # cache of compatibility
-    compat_cache = Dict{NTuple{2,Pair{P,V}}, Bool}()
-    compat!(pv₁::Pair, pv₂::Pair) = get!(compat_cache, (pv₁, pv₂)) do
-        compat(pv₁, pv₂) && compat(pv₂, pv₁)
+    compat_cache₁ = Dict{Tuple{P,V}, Function}()
+    compat₁!(p₁, v₁) = get!(compat_cache₁, (p₁, v₁)) do
+        compat(p₁, v₁)
     end
+    compat_cache₂ = Dict{Tuple{P,V,P,V}, Bool}()
+    compat!(p₁::P, v₁::V, p₂::P, v₂::V) =
+        get!(compat_cache₂, (p₁, v₁, p₂, v₂)) do
+            compat₁!(p₁, v₁)(p₂, v₂)::Bool &&
+            compat₁!(p₂, v₂)(p₁, v₁)::Bool
+        end
 
     # co-compute reachable versions and conflicts between them
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     reachable = Pair{P,Int}[p => 1 for p in required]
     conflicts = Set{NTuple{2,Int}}()
+    a = b = 0
     while true
-        clean = true
         # ensure that dependencies are reachable
-        for (p₁, k₁) in reachable
+        DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
+        i₁ = a
+        while (i₁ += 1) ≤ length(reachable)
+            p₁, k₁ = reachable[i₁]
             v₁ = get(versions!(p₁), k₁, nothing)
             v₁ === nothing && continue
             for p₂ in deps!(p₁, v₁)
                 any(p₂ == p for (p, k) in reachable) && continue
                 push!(reachable, p₂ => 0, p₂ => 1)
-                clean = false
             end
         end
+        a = length(reachable)
         # include next version after any conflicted version
-        for (i₁, (p₁, k₁)) in enumerate(reachable),
-            (i₂, (p₂, k₂)) in enumerate(reachable)
-            p₁ < p₂ || continue
+        DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
+        i₁ = 0
+        while (i₁ += 1) < length(reachable)
+            p₁, k₁ = reachable[i₁]
             v₁ = get(versions!(p₁), k₁, nothing)
-            v₂ = get(versions!(p₂), k₂, nothing)
-            if v₁ !== nothing && v₂ !== nothing
-                compat!(p₁ => v₁, p₂ => v₂) && continue
-            elseif v₁ === v₂ === nothing
-                continue # non-versions are compatible
-            elseif v₁ === nothing
-                p₁ ∈ deps!(p₂, v₂) || continue
-            elseif v₂ === nothing
-                p₂ ∈ deps!(p₁, v₁) || continue
-            end
-            push!(conflicts, minmax(i₁, i₂))
-            for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
-                if k ≤ length(versions!(p)) + (p ∈ required) && (p => k) ∉ reachable
-                    push!(reachable, p => k)
-                    clean = false
+            i₂ = max(b, i₁)
+            while (i₂ += 1) ≤ length(reachable)
+                p₂, k₂ = reachable[i₂]
+                p₁ == p₂ && continue
+                @show length(reachable), i₁, i₂
+                v₂ = get(versions!(p₂), k₂, nothing)
+                if v₁ !== nothing && v₂ !== nothing
+                    compat!(p₁, v₁, p₂, v₂) && continue
+                elseif v₁ === v₂ === nothing
+                    continue # non-versions are compatible
+                elseif v₁ === nothing
+                    p₁ ∈ deps!(p₂, v₂) || continue
+                elseif v₂ === nothing
+                    p₂ ∈ deps!(p₁, v₁) || continue
+                end
+                push!(conflicts, minmax(i₁, i₂))
+                for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
+                    (p => k) ∈ reachable && continue
+                    if k ≤ length(versions!(p)) + (p ∈ required)
+                        push!(reachable, p => k)
+                    end
                 end
             end
         end
-        clean && break
+        b == length(reachable) && break
+        b = length(reachable)
     end
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     vertices = Pair{P,Union{V,Nothing}}[
         p => get(versions!(p), k, nothing) for (p, k) in reachable
     ]
@@ -158,6 +179,7 @@ function resolve_core(
     end
 
     # conflict count matrix
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     N = length(packages)
     X = zeros(UInt32, N, N)
     for (v₁, p₁) in enumerate(packages),
@@ -166,8 +188,10 @@ function resolve_core(
         d = x && (dummies[v₁] || dummies[v₂])
         X[v₁, v₂] = X[v₂, v₁] = p₁ == p₂ ? relax + 2 : d ? relax + 1 : x
     end
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # deduplicate nodes by conflict sets
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     keep = UInt32[]
     seen = Set{Vector{UInt32}}()
     for (v, p) in enumerate(packages)
@@ -177,17 +201,22 @@ function resolve_core(
     end
     X = X[keep, keep]
     packages = packages[keep]
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # package indices
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     P = zeros(UInt32, length(packages))
     let indices = Dict{eltype(packages), UInt32}()
         for (v, p) in enumerate(packages)
             P[v] = get!(indices, p, length(indices) + 1)
         end
     end
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # find all optimal solutions
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     solutions = optimal_solutions(P, X, Int(relax))
+    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # translate back to original version indices
     Vector{Int}[Int[keep[v] for v in S] for S in solutions]

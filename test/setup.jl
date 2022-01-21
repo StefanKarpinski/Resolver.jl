@@ -89,6 +89,6 @@ end
 function gen_compat(
     conflicts::Dict{NTuple{2,P}, <:SetOrVector{NTuple{2,V}}},
 ) where {P, V}
-    ((p₁, v₁)::Pair{<:P,<:V}, (p₂, v₂)::Pair{<:P,<:V}) ->
+    (p₁::P, v₁::V) -> (p₂::P, v₂::V) ->
         (p₁, p₂) ∉ keys(conflicts) || (v₁, v₂) ∉ conflicts[(p₁, p₂)]
 end

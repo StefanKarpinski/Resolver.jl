@@ -12,14 +12,14 @@ const DepsType = Union{
     Function, # Pair{P,V} --> SetOrVector{P}
 }
 
-const NO_CONFLICTS = (::Pair, ::Pair) -> true
 const NO_DEPS = ((::Pair{P},) where P) -> Set{P}()
+const NO_CONFLICTS = (::Pair, ::Pair) -> true
 
 function resolve(
     required :: SetOrVector{P},
     versions :: VersionsType;            # p -> AbstractVector{V}
-    compat   :: Function = NO_CONFLICTS, # (p₁ => v₁, p₂ => v₂) -> Bool
     deps     :: DepsType = NO_DEPS,      # (p₁ => v₁) -> SetOrVector{P}
+    compat   :: Function = NO_CONFLICTS, # (p₁ => v₁, p₂ => v₂) -> Bool
 ) where {P}
     if versions isa AbstractDict
         versions_dict = versions
@@ -35,8 +35,8 @@ function resolve(
     vertices, conflicts = vertices_and_conflicts(
         required,
         versions,
-        compat,
         deps,
+        compat,
     )
     packages = P[p for (p, v) in vertices]
     dummies = Bool[isnothing(v) for (p, v) in vertices]
@@ -66,8 +66,8 @@ end
 function vertices_and_conflicts(
     required :: SetOrVector{P},
     versions :: Function, # p -> AbstractVector{V}
-    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
     deps     :: Function, # (p₁ => v₁) -> SetOrVector{P}
+    compat   :: Function, # (p₁ => v₁, p₂ => v₂) -> Bool
 ) where {P}
     # get the version type
     V = isempty(required) ? Union{} : eltype(versions(required[1]))
@@ -78,17 +78,17 @@ function vertices_and_conflicts(
         versions(p)
     end
 
-    # cache of compatibility
-    compat_cache = Dict{NTuple{2,Pair{P,V}}, Bool}()
-    compat!(pv₁::Pair, pv₂::Pair) = get!(compat_cache, (pv₁, pv₂)) do
-        compat(pv₁, pv₂) && compat(pv₂, pv₁)
-    end
-
-    # cache of deps lists
+    # cache of dependencies
     deps_cache = Dict{Pair{P,V}, Set{P}}()
     deps!(pv::Pair) = get!(deps_cache, pv) do
         s = deps(pv)
         s isa AbstractSet ? s : Set(s)
+    end
+
+    # cache of compatibility
+    compat_cache = Dict{NTuple{2,Pair{P,V}}, Bool}()
+    compat!(pv₁::Pair, pv₂::Pair) = get!(compat_cache, (pv₁, pv₂)) do
+        compat(pv₁, pv₂) && compat(pv₂, pv₁)
     end
 
     # co-compute reachable versions and conflicts between them

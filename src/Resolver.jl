@@ -78,6 +78,12 @@ function vertices_and_conflicts(
         versions(p)
     end
 
+    # cache of compatibility
+    compat_cache = Dict{NTuple{2,Pair{P,V}}, Bool}()
+    compat!(pv₁::Pair, pv₂::Pair) = get!(compat_cache, (pv₁, pv₂)) do
+        compat(pv₁, pv₂) && compat(pv₂, pv₁)
+    end
+
     # cache of deps lists
     deps_cache = Dict{Pair{P,V}, Set{P}}()
     deps!(pv::Pair) = get!(deps_cache, pv) do
@@ -107,10 +113,9 @@ function vertices_and_conflicts(
             v₁ = get(versions!(p₁), k₁, nothing)
             v₂ = get(versions!(p₂), k₂, nothing)
             if v₁ !== nothing && v₂ !== nothing
-                compat(p₁ => v₁, p₂ => v₂) &&
-                compat(p₂ => v₂, p₁ => v₁) && continue
+                compat!(p₁ => v₁, p₂ => v₂) && continue
             elseif v₁ === v₂ === nothing
-                continue
+                continue # non-versions are compatible
             elseif v₁ === nothing
                 p₁ ∈ deps!(p₂ => v₂) || continue
             elseif v₂ === nothing

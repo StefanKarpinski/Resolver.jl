@@ -56,7 +56,8 @@ function resolve(
             ]
             # only keep the most satisfying solutions
             sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
-            resolved = resolved[sat .≥ maximum(sat; init = 1-isempty(vertices))]
+            max_sat = maximum(sat; init = 1-isempty(vertices))
+            resolved = resolved[sat .≥ max_sat]
             !isempty(resolved) && break
         end
         resolved

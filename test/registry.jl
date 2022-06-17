@@ -31,14 +31,19 @@ function deps_callback(p::AbstractString, v::VersionNumber)
     return setdiff(deps, EXCLUDED_DEPS)
 end
 
-function compat_callback(p₁::AbstractString, v₁::VersionNumber)
+function compat_callback(
+    p::AbstractString, v::VersionNumber;
+    versions::Function = versions_callback,
+)
     info = pkg_info(p₁)
-    compat = Dict{String,VersionSpec}()
-    for (r₁, c₁) in info.compat
-        v₁ in r₁ && merge!(compat, c₁)
-    end
-    function (p₂::AbstractString, v₂::VersionNumber)
-        r₂ = get(compat, p₂, nothing)
-        r₂ === nothing || v₂ in r₂
+    compat = Dict{String,Vector{VersionNumber}}()
+    for (rₚ, c) in info.compat
+        v in r || continue
+        for (d, rᵈ) in c
+            vers = get!(compat, d) do
+                versions(d)
+            end
+            filter!(in(rᵈ), vers)
+        end
     end
 end

@@ -4,9 +4,28 @@ DEBUG::Bool = false
 
 const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
 
-include("DepProviders.jl")
+# Type Parameters:
+#  P = package type
+#  V = version type
+#  S = version set type
 
-function resolve(deps::DepProvider{P,V}, reqs::SetOrVector{P}) where {P,V}
+struct PkgInfo{P,V,S}
+    versions :: Vector{V}
+    depends  :: Dict{V, Vector{P}}
+    compat   :: Dict{V, Dict{P, S}}
+end
+
+struct DepsProvider{P,V,S,F<:Function}
+    provider :: F
+end
+
+DepsProvider{P,V,S}(provider::Function) where {P,V,S} =
+    DepsProvider{P,V,S,typeof(provider)}(provider)
+
+(deps::DepsProvider{P,V,S,F})(pkg::P) where {P,V,S,F<:Function} =
+    deps.provider(pkg) :: PkgInfo{P,V,S}
+
+function resolve(deps::DepsProvider{P,V}, reqs::Vector{P}) where {P,V}
     @eval t₀::Float64 = time()
     vertices, conflicts = prepare(deps, reqs)
     packages = P[p for (p, v) in vertices]
@@ -35,7 +54,7 @@ function resolve(deps::DepProvider{P,V}, reqs::SetOrVector{P}) where {P,V}
     end
 end
 
-function prepare(deps::DepCache{P,V,S}, reqs::SetOrVector{P}) where {P,V,S}
+function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # co-compute reachable versions and conflicts between them
@@ -46,10 +65,12 @@ function prepare(deps::DepCache{P,V,S}, reqs::SetOrVector{P}) where {P,V,S}
     interact = Dict{P, Dict{P, Vector{Int}}}()
     versions = Dict{P, Vector{Int}}()
 
-    # accessors: versions, dependencies & compat
-    vers(p) = versions!(deps, p) :: Vector{V}
-    deps(p) = depends!(deps, p)  :: Dict{V, Vector{P}}
-    comp(p) = compat!(deps, p)   :: Dict{V, Dict{P, S}}
+    # pkg info cache
+    cache = Dict{P, PkgInfo{P, V, S}}()
+    pkg!(p) = get!(() -> deps(p), cache, p)
+    vers!(p) = pkg!(p).versions
+    deps!(p) = pkg!(p).depends
+    comp!(p) = pkg!(p).compat
 
     # helper to record conflicts
     function conflict!(i₁, k₁, i₂, k₂)
@@ -60,7 +81,7 @@ function prepare(deps::DepCache{P,V,S}, reqs::SetOrVector{P}) where {P,V,S}
             # continue if we already have p => k
             any(reachable[j][2] == k for j in versions[p]) && continue
             # only add real version or dummy for required package
-            if k ≤ length(vers(p)) + (p ∈ reqs)
+            if k ≤ length(vers!(p)) + (p ∈ reqs)
                 push!(reachable, p => k)
             end
         end
@@ -73,33 +94,34 @@ function prepare(deps::DepCache{P,V,S}, reqs::SetOrVector{P}) where {P,V,S}
 
         # take a version off the queue
         p, k = reachable[i += 1]
-        v = vers(p)[k]
+        v = vers!(p)[k]
 
         # make sure dependencies are reachable
-        for d in deps(p)[v]
+        haskey(deps!(p), v) && for d in deps!(p)[v]
             haskey(versions, d) && continue
             push!(reachable, d => 0, d => 1)
         end
 
         # check if another package has conflict with this one
-        for (p′, I′) in interact[p]
-            c_p′ = comp(p′)
+        haskey(interact, p) && for (p′, I′) in interact[p]
+            c_p′ = comp!(p′)
             for i′ in I′
                 p_, k′ = reachable[i′]
                 @assert p′ == p_
-                v′ = vers(p′)[k′]
+                v′ = vers!(p′)[k′]
                 (c_p′v′ = get(c_p′, v′, nothing)) === nothing && continue
                 (c_p′v′p = get(c_p′v′, p, nothing)) === nothing && continue
                 v in c_p′v′p && continue
                 conflict!(i, k, i′, k′)
             end
         end
+
         # check if this package has conflict with another one
-        for (p′, c_pvp′) in comp(p)[v]
+        for (p′, c_pvp′) in comp!(p)[v]
             for i′ in versions[p′]
                 p_, k′ = reachable[i′]
                 @assert p′ == p_
-                v′ = vers(p′)[k′]
+                v′ = vers!(p′)[k′]
                 v′ in c_pvp′ && continue
                 conflict!(i, k, i′, k′)
             end
@@ -111,13 +133,13 @@ function prepare(deps::DepCache{P,V,S}, reqs::SetOrVector{P}) where {P,V,S}
             valtype(interact)()
         end
         # remember new version of p
-        push!(get!(() -> valtype(versions), versions, p), i)
+        push!(get!(() -> valtype(versions)(), versions, p), i)
     end
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # convert version indices back to versions
     vertices = Pair{P,Union{V,Nothing}}[
-        p => get(vers(p), k, nothing) for (p, k) in reachable
+        p => get(vers!(p), k, nothing) for (p, k) in reachable
     ]
 
     return vertices, conflicts

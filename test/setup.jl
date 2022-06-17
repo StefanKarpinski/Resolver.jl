@@ -1,7 +1,7 @@
 using Test
 using Random
 using Resolver
-using Resolver: resolve_core, SetOrVector
+using Resolver: resolve_core, SetOrVector, DepsProvider, PkgInfo
 
 function resolve_brute_force(
     versions  :: AbstractVector,
@@ -86,9 +86,22 @@ function randu128(k::Integer)
     return u
 end
 
-function gen_compat(
-    conflicts::Dict{NTuple{2,P}, <:SetOrVector{NTuple{2,V}}},
+function make_deps(
+    versions  :: Dict{P, <:AbstractVector{V}};
+    deps      :: Dict{Pair{P, V}, Vector{P}} =
+                 Dict{Pair{P, V}, Vector{P}}(),
+    conflicts :: Dict{Tuple{P, P}, Vector{Tuple{V, V}}} =
+                 Dict{Tuple{P, P}, Vector{Tuple{V, V}}}(),
 ) where {P, V}
-    (p₁::P, v₁::V) -> (p₂::P, v₂::V) ->
-        (p₁, p₂) ∉ keys(conflicts) || (v₁, v₂) ∉ conflicts[(p₁, p₂)]
+    A = Dict(p′ => Set(versions[p′]) for p′ in keys(versions))
+    DepsProvider{P, V, Set{V}}() do p::P
+        vers = versions[p]
+        D = Dict(v => d for ((p′, v), d) in deps if p′ == p)
+        C = Dict(v => delete!(copy(A), p) for v in vers)
+        for ((p₁, p₂), X) in conflicts, (v₁, v₂) in X
+            p₁ == p && delete!(C[v₁][p₂], v₂)
+            p₂ == p && delete!(C[v₂][p₁], v₁)
+        end
+        PkgInfo{P, V, Set{V}}(collect(vers), D, C)
+    end
 end

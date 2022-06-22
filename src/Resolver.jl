@@ -72,19 +72,25 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     deps!(p) = pkg!(p).depends
     comp!(p) = pkg!(p).compat
 
+    function in_reachable(p, k)
+        haskey(versions, p) &&
+        any(reachable[j][2] == k for j in versions[p]) ||
+        any(reachable[j] == (p => k) for j = i-1:length(reachable))
+    end
+
     # helper to record conflicts
-    function conflict!(i₁, k₁, i₂, k₂)
-        x = minmax(i₁, i₂)
-        x in conflicts && return
-        push!(conflicts, x)
-        for (p, k) in (p₁ => k₁ + 1, p₂ => k₂ + 1)
-            # continue if we already have p => k
-            any(reachable[j][2] == k for j in versions[p]) && continue
+    function conflict!(i₁, k₁, i₂, k₂; q = i)
+        @assert i₁ < i₂
+        (i₁, i₂) in conflicts && return
+        for (i, k) in (i₁ => k₁ + 1, i₂ => k₂ + 1)
+            p = reachable[i][1]
+            in_reachable(p, k) && continue
             # only add real version or dummy for required package
             if k ≤ length(vers!(p)) + (p ∈ reqs)
                 push!(reachable, p => k)
             end
         end
+        push!(conflicts, (i₁, i₂))
     end
 
     # process enqueued versions
@@ -94,7 +100,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
 
         # take a version off the queue
         p, k = reachable[i += 1]
-        v = vers!(p)[k]
+        v = get(vers!(p), k, nothing)
 
         # make sure dependencies are reachable
         haskey(deps!(p), v) && for d in deps!(p)[v]
@@ -112,18 +118,18 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
                 (c_p′v′ = get(c_p′, v′, nothing)) === nothing && continue
                 (c_p′v′p = get(c_p′v′, p, nothing)) === nothing && continue
                 v in c_p′v′p && continue
-                conflict!(i, k, i′, k′)
+                conflict!(i′, k′, i, k)
             end
         end
 
         # check if this package has conflict with another one
-        for (p′, c_pvp′) in comp!(p)[v]
+        haskey(comp!(p), v) && for (p′, c_pvp′) in comp!(p)[v]
             haskey(versions, p′) && for i′ in versions[p′]
                 p_, k′ = reachable[i′]
                 @assert p′ == p_
-                v′ = vers!(p′)[k′]
+                v′ = get(vers!(p′), k′, nothing)
                 v′ in c_pvp′ && continue
-                conflict!(i, k, i′, k′)
+                conflict!(i′, k′, i, k)
             end
             # remember as a potential conflict
             interact_p′ = get!(() -> valtype(interact)(), interact, p′)

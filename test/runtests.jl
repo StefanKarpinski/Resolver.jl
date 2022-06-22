@@ -141,7 +141,7 @@ end
             ("A" => 2) => ["B"],
         )
         required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
+        dp = make_deps(versions; deps)
         resolved = Resolver.resolve(dp, required)
         @test resolved == [["A" => 1, "B" => 1]]
     end

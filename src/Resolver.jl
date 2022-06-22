@@ -118,7 +118,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
 
         # check if this package has conflict with another one
         for (p′, c_pvp′) in comp!(p)[v]
-            for i′ in versions[p′]
+            haskey(versions, p′) && for i′ in versions[p′]
                 p_, k′ = reachable[i′]
                 @assert p′ == p_
                 v′ = vers!(p′)[k′]

@@ -45,7 +45,7 @@ function resolve(deps::DepsProvider{P,V}, reqs::Vector{P}) where {P,V}
                     for S in solutions
             ]
             # only keep the most satisfying solutions
-            sat = [sum(p in required for (p, v) in S; init=0) for S in resolved]
+            sat = [sum(p in reqs for (p, v) in S; init=0) for S in resolved]
             max_sat = maximum(sat; init = 1-isempty(vertices))
             resolved = resolved[sat .≥ max_sat]
             !isempty(resolved) && break
@@ -125,13 +125,11 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
                 v′ in c_pvp′ && continue
                 conflict!(i, k, i′, k′)
             end
-            # remember potential conflicts
-            push!(get!(() -> Int[], interact[p′], p), i)
+            # remember as a potential conflict
+            interact_p′ = get!(() -> valtype(interact)(), interact, p′)
+            push!(get!(() -> Int[], interact_p′, p), i)
         end
-        # ensure interaction dict for p exists
-        get!(interact, p) do
-            valtype(interact)()
-        end
+
         # remember new version of p
         push!(get!(() -> valtype(versions)(), versions, p), i)
     end

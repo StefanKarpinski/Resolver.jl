@@ -168,8 +168,6 @@ end
     end
 
     @testset "example: 2 pkgs, 2 conflicts, 2 reqs" begin
-        # package type must be sortable
-        # version type can be anything
         versions = Dict(
             "A" => 1:2,
             "B" => 1:2

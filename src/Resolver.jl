@@ -72,7 +72,13 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     deps!(p) = pkg!(p).depends
     comp!(p) = pkg!(p).compat
 
-    function in_reachable(p, k)
+    function get_reachable(p::P, i::Int)
+        p′, k = reachable[i]
+        @assert p′ == p
+        k, get(vers!(p), k, nothing)
+    end
+
+    function in_reachable(p::P, k::Int)
         haskey(versions, p) &&
         any(reachable[j][2] == k for j in versions[p]) ||
         any(reachable[j] == (p => k) for j = i-1:length(reachable))
@@ -85,7 +91,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
         for (i, k) in (i₁ => k₁ + 1, i₂ => k₂ + 1)
             p = reachable[i][1]
             in_reachable(p, k) && continue
-            # only add real version or dummy for required package
+            # only add real version or dummy if required package
             if k ≤ length(vers!(p)) + (p ∈ reqs)
                 push!(reachable, p => k)
             end
@@ -103,21 +109,23 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
         v = get(vers!(p), k, nothing)
 
         # make sure dependencies are reachable
-        haskey(deps!(p), v) && for d in deps!(p)[v]
-            haskey(versions, d) && continue
-            push!(reachable, d => 0, d => 1)
+        haskey(deps!(p), v) && for p′ in deps!(p)[v]
+            haskey(versions, p′) && continue
+            push!(reachable, p′ => 0, p′ => 1)
         end
 
         # check if another package has conflict with this one
         haskey(interact, p) && for (p′, I′) in interact[p]
             c_p′ = comp!(p′)
             for i′ in I′
-                p_, k′ = reachable[i′]
-                @assert p′ == p_
-                v′ = vers!(p′)[k′]
+                k′, v′ = get_reachable(p′, i′)
+                # continue if v′ has no compat
                 (c_p′v′ = get(c_p′, v′, nothing)) === nothing && continue
+                # continue if v′ compat doesn't mention p
                 (c_p′v′p = get(c_p′v′, p, nothing)) === nothing && continue
+                # continue if v′ compat for p includes v
                 v in c_p′v′p && continue
+                # conflict: v′ has compat for p and doesn't include v
                 conflict!(i′, k′, i, k)
             end
         end
@@ -125,9 +133,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
         # check if this package has conflict with another one
         haskey(comp!(p), v) && for (p′, c_pvp′) in comp!(p)[v]
             haskey(versions, p′) && for i′ in versions[p′]
-                p_, k′ = reachable[i′]
-                @assert p′ == p_
-                v′ = get(vers!(p′), k′, nothing)
+                k′, v′ = get_reachable(p′, i′)
                 v′ in c_pvp′ && continue
                 conflict!(i′, k′, i, k)
             end

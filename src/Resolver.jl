@@ -175,8 +175,6 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
 
         # remember versions of p
         push!(get!(() -> valtype(versions)(), versions, p), i)
-
-        @show i reachable conflicts versions interact
     end
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 

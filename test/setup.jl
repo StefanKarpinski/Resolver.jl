@@ -97,14 +97,14 @@ function make_deps(
     DepsProvider{P, V, Set{V}}() do p::P
         vers = versions[p]
         D = Dict(v => d for ((p′, v), d) in deps if p′ == p)
-        C = Dict(v => delete!(copy(A), p) for v in vers)
+        C = Dict(v => delete!(deepcopy(A), p) for v in vers)
         for ((p₁, p₂), X) in conflicts, (v₁, v₂) in X
             p₁ == p && delete!(C[v₁][p₂], v₂)
             p₂ == p && delete!(C[v₂][p₁], v₁)
         end
         for (v, c) in C
             filter!(c) do (p′, s′)
-                s′ ⊈ versions[p′]
+                any(v′ ∉ s′ for v′ in versions[p′])
             end
         end
         filter!(C) do (v, c)

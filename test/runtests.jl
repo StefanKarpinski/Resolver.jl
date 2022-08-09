@@ -189,19 +189,19 @@ end
         # package type must be sortable
         # version type can be anything
         vers = Dict(
-            :A => [1+0im, 2+0im],
-            :B => [1+0im, 2+0im]
+            :A => [1+2im, 2+1im],
+            :B => [1-2im, 2-1im]
         )
         conflicts = Dict(
-            (:A, :B) => [(1+0im, 1+0im)],
-            (:B, :A) => [(2+0im, 2+0im)],
+            (:A, :B) => [(1+2im, 1-2im)],
+            (:B, :A) => [(2-1im, 2+1im)],
         )
         deps = make_deps(vers; conflicts)
         reqs = [:B, :A]
         resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
-            [:A => 1+0im, :B => 2+0im],
-            [:A => 2+0im, :B => 1+0im],
+            [:A => 1+2im, :B => 2-1im],
+            [:A => 2+1im, :B => 1-2im],
         ]
     end
 

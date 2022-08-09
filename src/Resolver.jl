@@ -61,9 +61,14 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     reachable = Pair{P, Int}[p => 1 for p in reqs]
     conflicts = Set{Tuple{Int, Int}}()
 
-    # tracking which requirements could conflict
-    interact = Dict{P, Dict{P, Vector{Int}}}()
+    # tracking which versions in reachable could conflict
+    #   versions: p -> [i] such that reachable[i] belongs to package p
+    #   interact: p -> [i′] such that v′ = reachable[i′] either
+    #       - has compat entry for p, or
+    #       - depends on p (like compat excluding non version)
+    #
     versions = Dict{P, Vector{Int}}()
+    interact = Dict{P, Vector{Int}}()
 
     # pkg info cache
     cache = Dict{P, PkgInfo{P, V, S}}()
@@ -72,19 +77,28 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     deps!(p) = pkg!(p).depends
     comp!(p) = pkg!(p).compat
 
-    function get_reachable(p::P, i::Int)
-        p′, k = reachable[i]
-        @assert p′ == p
-        k, get(vers!(p), k, nothing)
+    # helper: get versions from reachable
+    function get_reachable(p′::P, i′::Int)
+        p_, k′ = reachable[i′]
+        @assert p_ == p′
+        k′, get(vers!(p′), k′, nothing)
     end
 
+    # helper: check if versions are in reachable
     function in_reachable(p::P, k::Int)
         haskey(versions, p) &&
         any(reachable[j][2] == k for j in versions[p]) ||
         any(reachable[j] == (p => k) for j = i-1:length(reachable))
     end
 
-    # helper to record conflicts
+    # helper: record interactions
+    function interact!(p::P, p′::P)
+        interact_p′ = get!(() -> valtype(interact)(), interact, p′)
+        interact_p′p = get!(() -> Int[], interact_p′, p)
+        i in interact_p′p || push!(interact_p′p, i)
+    end
+
+    # helper: record conflicts
     function conflict!(i₁, k₁, i₂, k₂; q = i)
         @assert i₁ < i₂
         (i₁, i₂) in conflicts && return
@@ -108,38 +122,49 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
         p, k = reachable[i += 1]
         v = get(vers!(p), k, nothing)
 
-        # make sure dependencies are reachable
-        haskey(deps!(p), v) && for p′ in deps!(p)[v]
-            haskey(versions, p′) && continue
-            push!(reachable, p′ => 0, p′ => 1)
-        end
-
         # check if another package has conflict with this one
         haskey(interact, p) && for (p′, I′) in interact[p]
             c_p′ = comp!(p′)
             for i′ in I′
                 k′, v′ = get_reachable(p′, i′)
-                # continue if v′ has no compat
-                (c_p′v′ = get(c_p′, v′, nothing)) === nothing && continue
-                # continue if v′ compat doesn't mention p
-                (c_p′v′p = get(c_p′v′, p, nothing)) === nothing && continue
-                # continue if v′ compat for p includes v
-                v in c_p′v′p && continue
-                # conflict: v′ has compat for p and doesn't include v
+                # v′ either depends on p or has compat entry for p
+                #   distinguish by whether v === nothing or not
+                if v === nothing
+                    # check if v′ depends on p; can be a false alarm if
+                    #   - v′ has compat for p but
+                    #   - v′ doesn't depend on p
+                    haskey(deps!(p′), v′) && p in deps!(p′)[v′] || continue
+                else
+                    # continue if v′ has no compat
+                    (c_p′v′ = get(c_p′, v′, nothing)) === nothing && continue
+                    # continue if v′ compat doesn't mention p
+                    (c_p′v′p = get(c_p′v′, p, nothing)) === nothing && continue
+                    # continue if v′ compat for p includes v
+                    v in c_p′v′p && continue
+                end
+                # conflict:
+                #   - v′ depends on p and v === nothing ==> conflict
+                #   - v′ compat excluding v !== nothing ==> conflict
                 conflict!(i′, k′, i, k)
             end
         end
 
         # check if this package has conflict with another one
         haskey(comp!(p), v) && for (p′, c_pvp′) in comp!(p)[v]
+            interact!(p, p′) # compat is an interaction
             haskey(versions, p′) && for i′ in versions[p′]
                 k′, v′ = get_reachable(p′, i′)
                 v′ in c_pvp′ && continue
                 conflict!(i′, k′, i, k)
             end
-            # remember as a potential conflict
-            interact_p′ = get!(() -> valtype(interact)(), interact, p′)
-            push!(get!(() -> Int[], interact_p′, p), i)
+        end
+
+        # make sure dependencies are reachable
+        haskey(deps!(p), v) && for p′ in deps!(p)[v]
+            # insert p′ into reachable if not already there
+            interact!(p, p′) # dependency is an interaction
+            haskey(versions, p′) && continue
+            push!(reachable, p′ => 0, p′ => 1)
         end
 
         # remember new version of p

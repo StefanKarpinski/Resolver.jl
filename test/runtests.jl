@@ -81,58 +81,58 @@ end
     @testset "example: 0 pkgs" begin
         # also tests that pacakge and version types flow through
         for (P, V) in [(String, VersionNumber), (Real, Complex{Int})]
-            versions = Dict{P,Vector{V}}()
-            required = P[]
-            dp = make_deps(versions)
-            resolved = Resolver.resolve(dp, required)
+            vers = Dict{P,Vector{V}}()
+            deps = make_deps(vers)
+            reqs = P[]
+            resolved = Resolver.resolve(deps, reqs)
             @test resolved == [[]]
             @test eltype(resolved) == Vector{Pair{P,V}}
         end
     end
 
     @testset "example: 1 pkgs" begin
-        versions = Dict("A" => 1:2)
-        required = ["A"]
-        dp = make_deps(versions)
-        resolved = Resolver.resolve(dp, required)
+        vers = Dict("A" => 1:2)
+        deps = make_deps(vers)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1]]
     end
 
     @testset "example: 1 pkgs (VersionNumbers)" begin
-        versions = Dict("A" => [v"2", v"1"])
-        required = ["A"]
-        dp = make_deps(versions)
-        resolved = Resolver.resolve(dp, required)
+        vers = Dict("A" => [v"2", v"1"])
+        deps = make_deps(vers)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => v"2"]]
     end
 
     @testset "example: 2 pkgs, 0 conflicts" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:2,
         )
-        required = ["A"]
-        dp = make_deps(versions)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1]]
     end
 
     @testset "example: 2 pkgs, 1 conflicts" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:2,
         )
         conflicts = Dict(
             ("A", "B") => [(1, 1)]
         )
-        required = ["A"]
-        dp = make_deps(versions; conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1]]
     end
 
     @testset "example: 2 pkgs, 2 deps" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:2,
         )
@@ -140,14 +140,14 @@ end
             ("A" => 1) => ["B"],
             ("A" => 2) => ["B"],
         )
-        required = ["A"]
-        dp = make_deps(versions; deps)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1, "B" => 1]]
     end
 
     @testset "example: 2 pkgs, 2 deps, 1 conflicts" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:2,
         )
@@ -158,9 +158,9 @@ end
         conflicts = Dict(
             ("A", "B") => [(1, 1)]
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 2, "B" => 1],
@@ -168,7 +168,7 @@ end
     end
 
     @testset "example: 2 pkgs, 2 conflicts, 2 reqs" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:2
         )
@@ -176,9 +176,9 @@ end
             ("A", "B") => [(1, 1)],
             ("B", "A") => [(2, 2)],
         )
-        required = ["B", "A"]
-        dp = make_deps(versions; conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; conflicts)
+        reqs = ["B", "A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 2, "B" => 1],
@@ -188,7 +188,7 @@ end
     @testset "example: 2 pkgs, 2 conflicts, 2 reqs (weird types)" begin
         # package type must be sortable
         # version type can be anything
-        versions = Dict(
+        vers = Dict(
             :A => [1+0im, 2+0im],
             :B => [1+0im, 2+0im]
         )
@@ -196,9 +196,9 @@ end
             (:A, :B) => [(1+0im, 1+0im)],
             (:B, :A) => [(2+0im, 2+0im)],
         )
-        required = [:B, :A]
-        dp = make_deps(versions; conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; conflicts)
+        reqs = [:B, :A]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             [:A => 1+0im, :B => 2+0im],
             [:A => 2+0im, :B => 1+0im],
@@ -206,7 +206,7 @@ end
     end
 
     @testset "example: 2 pkgs, 3 deps, 5 conflicts" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:4,
             "B" => 1:3,
         )
@@ -224,9 +224,9 @@ end
                 (4, 3)
             ]
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             ["A" => 1, "B" => 2],
             ["A" => 3],
@@ -234,7 +234,7 @@ end
     end
 
     @testset "example: 4 pkgs, 2 deps, 2 conflicts" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:2,
             "C" => 1:1,
@@ -248,16 +248,16 @@ end
             ("A", "C") => [(1, 1)],
             ("B", "D") => [(1, 1)],
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             ["A" => 2, "B" => 2, "C" => 1, "D" => 1],
         ]
     end
 
     @testset "example: 3 pkgs, 2 deps, 2 conflicts (incomplete)" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:1,
             "B" => 1:1,
             "C" => 1:2,
@@ -270,9 +270,9 @@ end
             ("A", "C") => [(1, 1)],
             ("B", "C") => [(1, 2)],
         )
-        required = ["A", "B"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A", "B"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             ["A" => 1, "C" => 2],
             ["B" => 1, "C" => 1],
@@ -280,7 +280,7 @@ end
     end
 
     @testset "example: 3 pkgs, 2 deps, 1 conflicts (incompatible)" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:1,
             "B" => 1:1,
             "C" => 1:1,
@@ -292,14 +292,14 @@ end
         conflicts = Dict(
             ("A", "C") => [(1, 1)],
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
     @testset "example: 3 pkgs, 2 deps, 1 conflicts (incompatible)" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:1,
             "B" => 1:1,
             "C" => 1:1,
@@ -310,14 +310,14 @@ end
         conflicts = Dict(
             ("B", "C") => [(1, 1)],
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
     @testset "example: 3 pkgs, 2 deps, 3 conflicts (incompatible)" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:1,
             "B" => 1:1,
             "C" => 1:1,
@@ -330,14 +330,14 @@ end
             ("A", "C") => [(1, 1)],
             ("B", "C") => [(1, 1)],
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [["A" => 1, "B" => 1, "C" => 1]]
     end
 
     @testset "example: 3 pkgs, 2 deps, 2 conflicts (incompatible)" begin
-        versions = Dict(
+        vers = Dict(
             "A" => 1:2,
             "B" => 1:1,
             "C" => 1:1,
@@ -350,9 +350,9 @@ end
             ("A", "B") => [(1, 1)],
             ("A", "C") => [(2, 1)],
         )
-        required = ["A"]
-        dp = make_deps(versions; deps, conflicts)
-        resolved = Resolver.resolve(dp, required)
+        deps = make_deps(vers; deps, conflicts)
+        reqs = ["A"]
+        resolved = Resolver.resolve(deps, reqs)
         @test resolved == [
             ["A" => 1, "B" => 1],
             ["A" => 2, "C" => 1],

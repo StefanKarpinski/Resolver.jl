@@ -102,6 +102,14 @@ function make_deps(
             p₁ == p && delete!(C[v₁][p₂], v₂)
             p₂ == p && delete!(C[v₂][p₁], v₁)
         end
+        for (v, c) in C
+            filter!(c) do (p′, s′)
+                s′ ⊈ versions[p′]
+            end
+        end
+        filter!(C) do (v, c)
+            !isempty(c)
+        end
         PkgInfo{P, V, Set{V}}(collect(vers), D, C)
     end
 end

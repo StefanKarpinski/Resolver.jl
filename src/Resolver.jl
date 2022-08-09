@@ -65,7 +65,8 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     #   versions: p -> [i] such that
     #       - reachable[i] belongs to package p
     #   interact: p -> [i′] such that
-    #       - reachable[i′] either depends on has compat for p
+    #       - reachable[i′] depends on p or
+    #       - reachable[i′] compat for p
     #
     versions = Dict{P, Vector{Int}}()
     interact = Dict{P, Vector{Int}}()
@@ -81,7 +82,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     function get_reachable(i′::Int)
         p′, k′ = reachable[i′]
         v′ = get(vers!(p′), k′, nothing)
-        p′, k′, v′
+        k′, v′, p′
     end
 
     # helper: check if versions are in reachable
@@ -118,12 +119,11 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
         DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
         # take a version off the queue
-        p, k = reachable[i += 1]
-        v = get(vers!(p), k, nothing)
+        k, v, p = get_reachable(i += 1)
 
         # check if another package has conflict with this one
         haskey(interact, p) && for i′ in interact[p]
-            p′, k′, v′ = get_reachable(i′)
+            k′, v′, p′ = get_reachable(i′)
             # v′ either depends on p or has compat entry for p
             #   distinguish by whether v === nothing or not
             if v === nothing
@@ -149,22 +149,34 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
         haskey(comp!(p), v) && for (p′, c_pvp′) in comp!(p)[v]
             interact!(p′, i) # compat is an interaction
             haskey(versions, p′) && for i′ in versions[p′]
-                k′, v′ = get_reachable(p′, i′)
+                k′, v′ = get_reachable(i′)
+                v′ === nothing && continue
                 v′ in c_pvp′ && continue
                 conflict!(i′, k′, i, k)
             end
         end
 
-        # make sure dependencies are reachable
+        # process dependencies
         haskey(deps!(p), v) && for p′ in deps!(p)[v]
             interact!(p′, i) # dependency is an interaction
-            # insert p′ into reachable if not already there
-            haskey(versions, p′) && continue
-            push!(reachable, p′ => 0, p′ => 1)
+            versions_p′ = get(versions, p′, nothing)
+            if versions_p′ === nothing
+                # new package, insert into reachable
+                push!(reachable, p′ => 0, p′ => 1)
+                continue
+            end
+            # dependency => dummy versions are incompatible
+            for i′ in (versions_p′[begin], versions_p′[end])
+                k′, v′ = get_reachable(i′)
+                v′ === nothing || continue
+                conflict!(i′, k′, i, k)
+            end
         end
 
-        # remember new version of p
+        # remember versions of p
         push!(get!(() -> valtype(versions)(), versions, p), i)
+
+        @show i reachable conflicts versions interact
     end
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 

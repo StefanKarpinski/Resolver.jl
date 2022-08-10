@@ -10,9 +10,9 @@ const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
 #  S = version set type
 
 struct PkgInfo{P,V,S}
-    versions :: Vector{V}
-    depends  :: Dict{V, Vector{P}}
-    compat   :: Dict{V, Dict{P, S}}
+    vers :: Vector{V}
+    deps :: Dict{V, Vector{P}}
+    comp :: Dict{V, Dict{P, S}}
 end
 
 struct DepsProvider{P,V,S,F<:Function}
@@ -74,9 +74,9 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     # pkg info cache
     cache = Dict{P, PkgInfo{P, V, S}}()
     pkg!(p) = get!(() -> deps(p), cache, p)
-    vers!(p) = pkg!(p).versions
-    deps!(p) = pkg!(p).depends
-    comp!(p) = pkg!(p).compat
+    vers!(p) = pkg!(p).vers
+    deps!(p) = pkg!(p).deps
+    comp!(p) = pkg!(p).comp
 
     # helper: get versions from reachable
     function get_reachable(i′::Int)
@@ -248,7 +248,7 @@ function resolve_core(
     Vector{Int}[Int[keep[v] for v in S] for S in solutions]
 end
 
-# The core solver is based on naive k-clique listing algorithm in Chiba &
+# The core solver is based on the naive k-clique listing algorithm in Chiba &
 # Nishizeki 1985, "Arboricity and subgraph listing algorithms". It is also
 # similar to the well-known Bron-Kerbosch maximal clique listing algorithm, but
 # doesn't require keeping track of the set of excluded nodes because the clique

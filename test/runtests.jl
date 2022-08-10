@@ -25,11 +25,6 @@ include("setup.jl")
             @test solutions′ == resolve_brute_force(packages′, conflicts′)
             @test solutions′ == resolve_core(packages′, conflicts′)
         end
-        @testset "unordered package names" begin
-            packages = [fill(1+0im, 2); fill(2+0im, 4); fill(3+0im, 4)]
-            @test solutions == resolve_brute_force(packages, conflicts)
-            @test solutions == resolve_core(packages, conflicts)
-        end
     end
 
     @testset "comprehensive tests" begin

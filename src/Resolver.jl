@@ -1,5 +1,7 @@
 module Resolver
 
+using SparseArrays
+
 DEBUG::Bool = false
 
 const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
@@ -29,7 +31,7 @@ function resolve(deps::DepsProvider{P,V}, reqs::Vector{P}) where {P,V}
     @eval t₀::Float64 = time()
     vertices, conflicts = prepare(deps, reqs)
     packages = P[p for (p, v) in vertices]
-    dummies = Bool[isnothing(v) for (p, v) in vertices]
+    dummies = BitSet(i for i=1:length(vertices) if isnothing(vertices[i][2]))
     let resolved
         M = length(vertices)
         for relax = 0:M*(M-1)÷2
@@ -41,7 +43,7 @@ function resolve(deps::DepsProvider{P,V}, reqs::Vector{P}) where {P,V}
             sort!(solutions)
             # map back to version identifiers
             resolved = Vector{Pair{P,V}}[
-                [vertices[v] for v in S if !dummies[v]]
+                [vertices[v] for v in S if v ∉ dummies]
                     for S in solutions
             ]
             # only keep the most satisfying solutions
@@ -59,7 +61,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
 
     # co-compute reachable versions and conflicts between them
     reachable = Pair{P, Int}[p => 1 for p in reqs]
-    conflicts = Set{Tuple{Int, Int}}()
+    conflicts = Dict{Int, Set{Int}}()
 
     # tracking which versions in reachable could conflict
     #   versions: p -> [i] such that
@@ -101,7 +103,10 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     # helper: record conflicts
     function conflict!(i₁, k₁, i₂, k₂; q = i)
         @assert i₁ < i₂
-        (i₁, i₂) in conflicts && return
+        conflicts_i₁ = get!(() -> Set{Int}(), conflicts, i₁)
+        i₂ in conflicts_i₁ && return
+        conflicts_i₂ = get!(() -> Set{Int}(), conflicts, i₂)
+        # add successor versions to reachable set
         for (i, k) in (i₁ => k₁ + 1, i₂ => k₂ + 1)
             p = reachable[i][1]
             in_reachable(p, k) && continue
@@ -110,7 +115,9 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
                 push!(reachable, p => k)
             end
         end
-        push!(conflicts, (i₁, i₂))
+        # record the conflict
+        push!(conflicts_i₁, i₂)
+        push!(conflicts_i₂, i₁)
     end
 
     # process enqueued versions
@@ -178,74 +185,102 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     end
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
-    # convert version indices back to versions
-    vertices = Pair{P,Union{V,Nothing}}[
+    # deduplicate versions by their package, dummy flag & conflict set
+    kept = collect(reverse(1:length(reachable)))
+    while true
+        # map all dups to first reachable version
+        seen = Dict{Tuple{P, Bool, Set{Int}}, Int}()
+        for i in kept
+            k, v, p = get_reachable(i)
+            x = get!(() -> Set{Int}(), conflicts, i)
+            seen[(p, isnothing(v), x)] = i
+        end
+        length(seen) == length(kept) && break
+        keep = Set(values(seen))
+        filter!(conflicts) do (i, c)
+            filter!(in(keep), c)
+            i in keep
+        end
+        filter!(in(keep), kept)
+    end
+    reverse!(kept)
+    @assert issorted(kept)
+    reachable = reachable[kept]
+    inds = Dict{Int, Int}(kept .=> 1:length(kept))
+
+    # compute final result structures
+    vertices = Pair{P, Union{V, Nothing}}[
         p => get(vers!(p), k, nothing) for (p, k) in reachable
     ]
+    conflicts = Set{Int}[
+        Set{Int}(inds[j] for j in conflicts[i]) for i in kept
+    ]
+
+    # deduplicate final conflict sets
+    seen = Dict{Set{Int}, Set{Int}}()
+    for (i, x) in enumerate(conflicts)
+        conflicts[i] = get!(seen, x, x)
+    end
 
     return vertices, conflicts
 end
 
 function resolve_core(
-    packages  :: AbstractVector,
-    conflicts :: SetOrVector{<:NTuple{2,Integer}};
-    dummies   :: Vector{Bool} = fill(false, length(packages)),
+    packages  :: AbstractVector{P},
+    conflicts :: AbstractVector{<:SetOrVector{<:Integer}};
+    dummies   :: AbstractSet{<:Integer} = BitSet(),
     relax     :: Integer = 0,
-)
-    # check conflicts
-    for (v₁, v₂) in conflicts
-        v₁ in keys(packages) ||
-            throw(ArgumentError("conflicts: invalid version index: $v₁"))
-        v₂ in keys(packages) ||
-            throw(ArgumentError("conflicts: invalid version index: $v₂"))
-        v₁ != v₂ ||
-            throw(ArgumentError("conflicts: package $(packages[v₁]): self-conflict $v₁"))
-        packages[v₁] != packages[v₂] ||
-            throw(ArgumentError("conflicts: package $(packages[v₁]): conflict between $v₁, $v₂"))
+) where {P}
+    # package maps
+    pkgs = unique(packages)
+    inds = Dict{P, Int}(p => k for (k, p) in enumerate(pkgs))
+    versions = [Int[] for _ = 1:length(pkgs)]
+    for (v, p) in enumerate(packages)
+        push!(versions[inds[p]], v)
+    end
+    Π = zeros(Int, length(packages))
+    for (p, V) in enumerate(versions)
+        Π[V] .= p
     end
 
     # conflict count matrix
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
     N = length(packages)
-    X = zeros(UInt32, N, N)
-    for (v₁, p₁) in enumerate(packages),
-        (v₂, p₂) in enumerate(packages)
-        x = (v₁, v₂) ∈ conflicts || (v₂, v₁) ∈ conflicts
-        d = x && (dummies[v₁] || dummies[v₂])
-        X[v₁, v₂] = X[v₂, v₁] = p₁ == p₂ ? relax + 2 : d ? relax + 1 : x
-    end
-    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
-
-    # deduplicate nodes by conflict sets
-    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
-    keep = UInt32[]
-    seen = Set{Vector{UInt32}}()
-    for (v, p) in enumerate(packages)
-        X[:, v] in seen && continue
-        push!(seen, X[:, v])
-        push!(keep, v)
-    end
-    X = X[keep, keep]
-    packages = packages[keep]
-    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
-
-    # package indices
-    DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
-    P = zeros(UInt32, length(packages))
-    let indices = Dict{eltype(packages), UInt32}()
-        for (v, p) in enumerate(packages)
-            P[v] = get!(indices, p, length(indices) + 1)
+    X = spzeros(Int, N, N)
+    for v₁ = 1:N
+        for v₂ in conflicts[v₁]
+            # forbid dependency conflicts
+            d = v₁ ∈ dummies || v₂ ∈ dummies
+            X[v₂, v₁] = d ? relax + 1 : 1
+        end
+        for v₂ in versions[Π[v₁]]
+            # forbid same-package pairs
+            X[v₂, v₁] = relax + 2
         end
     end
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
     # find all optimal solutions
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
-    solutions = optimal_solutions(P, X, Int(relax))
+    solutions = optimal_solutions(Π, X, Int(relax))
     DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
 
-    # translate back to original version indices
-    Vector{Int}[Int[keep[v] for v in S] for S in solutions]
+    return solutions
+end
+
+# stub for testing
+function resolve_core(
+    packages  :: AbstractVector,
+    conflicts :: SetOrVector{<:NTuple{2,Integer}};
+    dummies   :: AbstractSet{<:Integer} = BitSet(),
+    relax     :: Integer = 0,
+)
+    conflicts′ = Vector{Int}[Int[] for _ = 1:length(packages)]
+    for (v₁, v₂) in conflicts
+        push!(conflicts′[v₁], v₂)
+        push!(conflicts′[v₂], v₁)
+    end
+    resolve_core(packages, conflicts′; dummies, relax)
 end
 
 # The core solver is based on the naive k-clique listing algorithm in Chiba &
@@ -274,13 +309,17 @@ end
 # conflict with that solution since otherwise it wouldn't be optimal. So rather
 # than pivoting around a node, we are pivoting around an entire solution.
 
-function optimal_solutions(P::Vector{T}, X::Matrix{T}, c::Int = 0) where {T<:Integer}
+function optimal_solutions(
+    P :: AbstractVector{T},
+    X :: AbstractMatrix{T},
+    c :: Int = 0,
+) where {T<:Integer}
     # number of packages & versions
     M = maximum(P, init=0)
     L = maximum(X, init=1) + M
     N = size(X, 1)
 
-    # conflict count vector, level vector, solution vector, solutions set
+    # conflict count vector, solution vector, solutions set
     C = zeros(T, N)
     S = zeros(T, M)
     solutions = typeof(S)[]

@@ -3,12 +3,15 @@ using Pkg.Registry: RegistryInstance, init_package_info!
 using Pkg.Types: stdlibs
 using Pkg.Versions: VersionSpec
 
+using Resolver
+using Resolver: DepsProvider, PkgInfo
+
 const reg_path = joinpath(depots1(), "registries", "General.toml")
 const reg_inst = RegistryInstance(expanduser(reg_path))
 const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs))
 const excludes = push!(Set(first.(values(stdlibs()))), "julia")
 
-reg_deps = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
+deps = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     info = init_package_info!(reg_dict[pkg])
     vers = sort!(collect(keys(info.version_info)), rev=true)
     deps = Dict(v => String[] for v in vers)
@@ -39,3 +42,4 @@ reg_deps = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     # return resolver PkgInfo data structure
     PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
+reqs = ["ACME"]

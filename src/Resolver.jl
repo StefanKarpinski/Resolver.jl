@@ -325,7 +325,7 @@ function optimal_solutions(
     solutions = typeof(S)[]
     M == 0 && return push!(solutions, S)
 
-    function search!(c::Int, r::Int = 1, d::Int = 1)
+    function search!(r::Int = 1, d::Int = 1, c::Int = c)
         for j = 1:N
             # check subgraph inclusion at this level
             c′ = c - C[j]
@@ -358,7 +358,7 @@ function optimal_solutions(
                 C[k] += X[k, j]
             end
             # recursion
-            search!(c′, r + 1, d′)
+            search!(r + 1, d′, c′)
             # restore the conflict count & level vectors
             for k = 1:N
                 C[k] -= X[k, j]
@@ -373,7 +373,7 @@ function optimal_solutions(
             end
         end
     end
-    search!(c)
+    search!()
 
     foreach(sort!, solutions)
     return sort!(solutions)

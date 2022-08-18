@@ -326,10 +326,15 @@ function optimal_solutions(
     M == 0 && return push!(solutions, S)
 
     function search!(r::Int = 1, d::Int = 1, c::Int = c)
+        DEBUG && println(@__FILE__, ":", @__LINE__, " @ ", time()-t₀)
+        @show r, d, c
+        p = 0 # pivot vertex (zero means unset)
         for j = 1:N
             # check subgraph inclusion at this level
             c′ = c - C[j]
             c′ ≥ 0 || continue
+            # set pivot if unset
+            p == 0 && (@show p = j)
             # record version choice
             S[r] = j
             # advance dominance frontier (if necessary & possible)
@@ -345,6 +350,9 @@ function optimal_solutions(
                     S′ = solutions[d′]
                     any(k < S′[P[k]] for r′ = 1:r for k = S[r′]) || break
                 end
+            else
+                # only consider vertices incompatible with pivot
+                X[p, j] == 0 && continue
             end
             # check for a complete solution
             if r == M

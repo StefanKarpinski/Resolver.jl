@@ -326,7 +326,8 @@ function optimal_solutions(
     M == 0 && return push!(solutions, S)
 
     function search!(r::Int = 1, d::Int = 1, c::Int = c)
-        for j = 1:N
+        j = m = 0
+        while (j = max(m, j + 1)) ≤ N
             # check subgraph inclusion at this level
             c′ = c - C[j]
             c′ ≥ 0 || continue
@@ -346,6 +347,8 @@ function optimal_solutions(
                     any(k < S′[P[k]] for r′ = 1:r for k = S[r′]) || break
                 end
             end
+            # update max explored vertex value
+            m = max(m, j)
             # check for a complete solution
             if r == M
                 if d′ > l # it's optimal, save it!
@@ -358,7 +361,8 @@ function optimal_solutions(
                 C[k] += X[k, j]
             end
             # recursion
-            search!(r + 1, d′, c′)
+            m′ = search!(r + 1, d′, c′)
+            m = max(m, m′)
             # restore the conflict count & level vectors
             for k = 1:N
                 C[k] -= X[k, j]
@@ -372,6 +376,7 @@ function optimal_solutions(
                 C[j] = dr[2]
             end
         end
+        return m
     end
     search!()
 

@@ -43,3 +43,4 @@ deps = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
 reqs = ["ACME"]
+pkgs = find_packages(deps, reqs)

@@ -42,5 +42,13 @@ deps = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     # return resolver PkgInfo data structure
     PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
-reqs = ["ACME"]
+
+# reqs = ["ACME"]
+
+reqs = sort!(collect(keys(reg_dict)))
+filter!(!endswith("_jll"), reqs)
+filter!(!in(excludes), reqs)
+
 pkgs = find_packages(deps, reqs)
+reach = find_reachable(pkgs, reqs)
+filter_reachable!(pkgs, reach)

@@ -186,17 +186,20 @@ function find_conflicts(
     pkgs::Dict{P,PkgInfo{P,V,S}},
     interacts::Dict{P,Vector{P}},
 ) where {P,V,S}
-    conflicts = Dict{Tuple{P, P}, Matrix{Bool}}()
+    conflicts = Dict{P, BitMatrix}()
 
-    for p₂ in sort!(collect(keys(interacts)))
-        pkgs₁ = interacts[p₂]
-        vers₂ = pkgs[p₂].versions
-        comp₂ = pkgs[p₂].compat
-        for p₁ in pkgs₁
-            p₁ < p₂ || break
-            vers₁ = pkgs[p₁].versions
-            comp₁ = pkgs[p₁].compat
-            conflicts[p₁, p₂] = Bool[
+    for p₁ in sort!(collect(keys(interacts)))
+        vers₁ = pkgs[p₁].versions
+        comp₁ = pkgs[p₁].compat
+        m = length(vers₁)
+        N = sum(length(pkgs[p₂].versions) for p₂ in interacts[p₁])
+        conflicts[p₁] = valtype(conflicts)(undef, m, N)
+        b = 0
+        for p₂ in interacts[p₁]
+            vers₂ = pkgs[p₂].versions
+            comp₂ = pkgs[p₂].compat
+            n = length(vers₂)
+            conflicts[p₁][:, b.+(1:n)] = [
                 v₁ ∈ keys(comp₁) &&
                 p₂ ∈ keys(comp₁[v₁]) &&
                 v₂ ∉ comp₁[v₁][p₂] ||
@@ -206,6 +209,7 @@ function find_conflicts(
                 (i₁, v₁) in enumerate(vers₁),
                 (i₂, v₂) in enumerate(vers₂)
             ]
+            b += n
         end
     end
 

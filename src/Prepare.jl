@@ -129,6 +129,9 @@ function filter_reachable!(
         end
         resize!(vers, k)
     end
+    filter!(pkgs) do (pkg, info)
+        pkg in keys(reach) && !isempty(info.versions)
+    end
 end
 
 # eliminate redundant versions
@@ -138,20 +141,70 @@ end
 
 """
 
-# compute the set of conflicts between package versions
+# two packages interact if there is some conflict between them
 
-struct Conflicts{P,V}
-    versions  :: Vector{Pair{P,V}}
-    conflicts :: Vector{Vector{Int}}
+function find_interactions(pkgs::Dict{P,PkgInfo{P,V,S}}) where {P,V,S}
+    interacts = Dict{P,Vector{P}}(p => Vector{P}() for p in keys(pkgs))
+
+    for (pkg₁, info₁) in pkgs
+        interact₁ = interacts[pkg₁]
+        for ver₁ in info₁.versions
+            ver₁ in keys(info₁.compat) || continue
+            compat₁ = info₁.compat[ver₁]
+            for (pkg₂, spec₁) in compat₁
+                pkg₂ in interact₁ && continue
+                interact₂ = interacts[pkg₂]
+                for ver₂ in pkgs[pkg₂].versions
+                    if ver₂ ∉ spec₁
+                        push!(interact₁, pkg₂)
+                        push!(interact₂, pkg₁)
+                        break
+                    else
+                        compat₂ = pkgs[pkg₂].compat
+                        pkg₁ in keys(compat₂) || continue
+                        spec₂ = compat₂[pkg₁]
+                        if ver₁ ∉ spec₂
+                            push!(interact₁, pkg₂)
+                            push!(interact₂, pkg₁)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    filter!(interacts) do (pkg, ix)
+        !isempty(ix)
+    end
+    foreach(sort!, values(interacts))
+    return interacts
 end
 
-function find_conflicts(pkgs::Dict{P,PkgInfo{P,V,S}}) where {P,V,S}
-    conflicts = Dict{Tuple{P,P}, Vector{Tuple{V,V}}}()
+# compute the set of conflicts between package versions
+
+function find_conflicts(
+    pkgs::Dict{P,PkgInfo{P,V,S}},
+    interacts::Dict{P,Vector{P}},
+) where {P,V,S}
+    # initialize versions vector & map
+    vers_v = Vector{Tuple{P,V}}()
+    for (pkg, info) in pkgs, ver in info.versions
+        push!(vers_v, (pkg, ver))
+    end
+    vers_d = Dict(pv => i for (i, pv) in enumerate(vers_v))
+
+    conflicts = Dict{P, Dict{V, Set{Int}}}()
 
     function add_conflict!(p₁::P, v₁::V, p₂::P, v₂::V)
-        p₂ < p₁ && return add_conflict!(p₂, v₂, p₁, v₁)
-        pairs = get!(()->valtype(conflicts)(), conflicts, (p₁, p₂))
-        (v₁, v₂) in pairs || push!(pairs, (v₁, v₂))
+        _add_conflict!(p₁, v₁, p₂, v₂)
+        _add_conflict!(p₂, v₂, p₁, v₁)
+    end
+
+    function _add_conflict!(p::P, v::V, p′::P, v′::V)
+        conflicts_d = get!(()->valtype(conflicts)(), conflicts, p)
+        conflicts_s = get!(()->valtype(conflicts_d)(), conflicts_d, v)
+        push!(conflicts_s, vers_d[(p′, v′)])
+        return
     end
 
     for (pkg₁, info₁) in sort!(collect(pkgs), by=first),
@@ -159,7 +212,7 @@ function find_conflicts(pkgs::Dict{P,PkgInfo{P,V,S}}) where {P,V,S}
         ver₁ in keys(info₁.compat) || continue
         compat₁ = info₁.compat[ver₁]
         for (pkg₂, spec₁) in compat₁
-            @show pkg₁, pkg₂
+            # @show pkg₁, pkg₂
             for ver₂ in pkgs[pkg₂].versions
                 if ver₂ ∉ spec₁
                     add_conflict!(pkg₁, ver₁, pkg₂, ver₂)
@@ -173,11 +226,7 @@ function find_conflicts(pkgs::Dict{P,PkgInfo{P,V,S}}) where {P,V,S}
                 end
             end
         end
-        @show length(conflicts)
-        @show sum(length, values(conflicts))
     end
-    filter!(conflicts) do (pkgs, vers)
-        !isempty(vers)
-    end
+
     return conflicts
 end

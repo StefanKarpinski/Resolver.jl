@@ -186,45 +186,26 @@ function find_conflicts(
     pkgs::Dict{P,PkgInfo{P,V,S}},
     interacts::Dict{P,Vector{P}},
 ) where {P,V,S}
-    # initialize versions vector & map
-    vers_v = Vector{Tuple{P,V}}()
-    for (pkg, info) in pkgs, ver in info.versions
-        push!(vers_v, (pkg, ver))
-    end
-    vers_d = Dict(pv => i for (i, pv) in enumerate(vers_v))
+    conflicts = Dict{Tuple{P, P}, Matrix{Bool}}()
 
-    conflicts = Dict{P, Dict{V, Set{Int}}}()
-
-    function add_conflict!(p₁::P, v₁::V, p₂::P, v₂::V)
-        _add_conflict!(p₁, v₁, p₂, v₂)
-        _add_conflict!(p₂, v₂, p₁, v₁)
-    end
-
-    function _add_conflict!(p::P, v::V, p′::P, v′::V)
-        conflicts_d = get!(()->valtype(conflicts)(), conflicts, p)
-        conflicts_s = get!(()->valtype(conflicts_d)(), conflicts_d, v)
-        push!(conflicts_s, vers_d[(p′, v′)])
-        return
-    end
-
-    for (pkg₁, info₁) in sort!(collect(pkgs), by=first),
-        ver₁ in info₁.versions
-        ver₁ in keys(info₁.compat) || continue
-        compat₁ = info₁.compat[ver₁]
-        for (pkg₂, spec₁) in compat₁
-            # @show pkg₁, pkg₂
-            for ver₂ in pkgs[pkg₂].versions
-                if ver₂ ∉ spec₁
-                    add_conflict!(pkg₁, ver₁, pkg₂, ver₂)
-                else
-                    compat₂ = pkgs[pkg₂].compat
-                    pkg₁ in keys(compat₂) || continue
-                    spec₂ = compat₂[pkg₁]
-                    if ver₁ ∉ spec₂
-                        add_conflict!(pkg₁, ver₁, pkg₂, ver₂)
-                    end
-                end
-            end
+    for p₂ in sort!(collect(keys(interacts)))
+        pkgs₁ = interacts[p₂]
+        vers₂ = pkgs[p₂].versions
+        comp₂ = pkgs[p₂].compat
+        for p₁ in pkgs₁
+            p₁ < p₂ || break
+            vers₁ = pkgs[p₁].versions
+            comp₁ = pkgs[p₁].compat
+            conflicts[p₁, p₂] = Bool[
+                v₁ ∈ keys(comp₁) &&
+                p₂ ∈ keys(comp₁[v₁]) &&
+                v₂ ∉ comp₁[v₁][p₂] ||
+                v₂ ∈ keys(comp₂) &&
+                p₁ ∈ keys(comp₂[v₂]) &&
+                v₁ ∉ comp₂[v₂][p₁] for
+                (i₁, v₁) in enumerate(vers₁),
+                (i₂, v₂) in enumerate(vers₂)
+            ]
         end
     end
 

@@ -179,37 +179,42 @@ end
 # compute the set of conflicts between package versions
 
 function find_conflicts(
+    pkgs :: Dict{P,PkgInfo{P,V,S}},
+    p₁   :: String,
+    P₂   :: Vector{String},
+) where {P,V,S}
+    vers₁ = pkgs[p₁].versions
+    comp₁ = pkgs[p₁].compat
+    m = length(vers₁)
+    N = sum(length(pkgs[p₂].versions) for p₂ in P₂)
+    X = BitMatrix(undef, m, N)
+    b = 0
+    for p₂ in P₂
+        vers₂ = pkgs[p₂].versions
+        comp₂ = pkgs[p₂].compat
+        n = length(vers₂)
+        X[:, b .+ (1:n)] = [
+            v₁ ∈ keys(comp₁) &&
+            p₂ ∈ keys(comp₁[v₁]) &&
+            v₂ ∉ comp₁[v₁][p₂] ||
+            v₂ ∈ keys(comp₂) &&
+            p₁ ∈ keys(comp₂[v₂]) &&
+            v₁ ∉ comp₂[v₂][p₁] for
+            (i₁, v₁) in enumerate(vers₁),
+            (i₂, v₂) in enumerate(vers₂)
+        ]
+        b += n
+    end
+    return X
+end
+
+function find_conflicts(
     pkgs      :: Dict{P,PkgInfo{P,V,S}},
     interacts :: Dict{P,Vector{P}},
 ) where {P,V,S}
-    conflicts = Dict{P, BitMatrix}()
-
-    for p₁ in sort!(collect(keys(interacts)))
-        vers₁ = pkgs[p₁].versions
-        comp₁ = pkgs[p₁].compat
-        m = length(vers₁)
-        N = sum(length(pkgs[p₂].versions) for p₂ in interacts[p₁])
-        conflicts[p₁] = valtype(conflicts)(undef, m, N)
-        b = 0
-        for p₂ in interacts[p₁]
-            vers₂ = pkgs[p₂].versions
-            comp₂ = pkgs[p₂].compat
-            n = length(vers₂)
-            conflicts[p₁][:, b .+ (1:n)] = [
-                v₁ ∈ keys(comp₁) &&
-                p₂ ∈ keys(comp₁[v₁]) &&
-                v₂ ∉ comp₁[v₁][p₂] ||
-                v₂ ∈ keys(comp₂) &&
-                p₁ ∈ keys(comp₂[v₂]) &&
-                v₁ ∉ comp₂[v₂][p₁] for
-                (i₁, v₁) in enumerate(vers₁),
-                (i₂, v₂) in enumerate(vers₂)
-            ]
-            b += n
-        end
-    end
-
-    return conflicts
+    return Dict{P, BitMatrix}(
+        p => find_conflicts(pkgs, p, ix) for (p, ix) in interacts
+    )
 end
 
 function find_redundant(

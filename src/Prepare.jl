@@ -251,24 +251,17 @@ function filter_redundant!(
         redundant = find_redundant(pkgs, interacts)
         isempty(redundant) && return interacts
         while !isempty(redundant)
-            filter_redundant!(pkgs, redundant)
+            for (p, R) in redundant
+                info = pkgs[p]
+                for (i, v) in enumerate(info.versions)
+                    i in R || continue
+                    delete!(info.depends, v)
+                    delete!(info.compat, v)
+                end
+                deleteat!(info.versions, R)
+            end
             dirty = sort!(mapreduce(p -> interacts[p], union!, keys(redundant)))
             redundant = find_redundant(pkgs, interacts, dirty)
         end
-    end
-end
-
-function filter_redundant!(
-    pkgs      :: Dict{P,PkgInfo{P,V,S}},
-    redundant :: Dict{P,Vector{Int}},
-) where {P,V,S}
-    for (p, R) in redundant
-        info = pkgs[p]
-        for (i, v) in enumerate(info.versions)
-            i in R || continue
-            delete!(info.depends, v)
-            delete!(info.compat, v)
-        end
-        deleteat!(info.versions, R)
     end
 end

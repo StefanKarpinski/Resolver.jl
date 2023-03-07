@@ -136,7 +136,7 @@ end
 
 # two packages interact if there is some conflict between them
 
-function find_interactions(
+function find_interacts(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
 ) where {P,V,S}
     interacts = Dict{P,Vector{P}}(
@@ -218,12 +218,13 @@ function find_conflicts(
 end
 
 function find_redundant(
-    conflicts :: Dict{P,<:AbstractMatrix{Bool}},
-    dirty     :: AbstractSet{P} = keys(conflicts),
-) where P
+    pkgs      :: Dict{P,PkgInfo{P,V,S}},
+    interacts :: Dict{P,Vector{P}},
+    dirty     :: AbstractSet{P} = keys(interacts),
+) where {P,V,S}
     redundant = Dict{P,Vector{Int}}()
     for pkg in dirty
-        X = conflicts[pkg]
+        X = find_conflicts(pkgs, pkg, interacts[pkg])
         R = Int[]
         for j = 2:size(X, 1)
             for i = 1:j-1
@@ -242,24 +243,16 @@ function find_redundant(
     return redundant
 end
 
-struct ConflictInfo{P}
-    interacts :: Vector{P}
-    conflicts :: BitMatrix
-end
-
 function filter_redundant!(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
 ) where {P,V,S}
     while true
-        interacts = find_interactions(pkgs)
-        conflicts = find_conflicts(pkgs, interacts)
-        redundant = find_redundant(conflicts)
-        isempty(redundant) && return Dict{P,ConflictInfo{P}}(
-            p => ConflictInfo(ix, conflicts[p]) for (p, ix) in interacts
-        )
+        interacts = find_interacts(pkgs)
+        redundant = find_redundant(pkgs, interacts)
+        isempty(redundant) && return interacts
         while !isempty(redundant)
-            dirty = filter_redundant!(pkgs, interacts, conflicts, redundant)
-            redundant = find_redundant(conflicts, dirty)
+            dirty = filter_redundant!(pkgs, interacts, redundant)
+            redundant = find_redundant(pkgs, interacts, dirty)
         end
     end
 end
@@ -267,27 +260,9 @@ end
 function filter_redundant!(
     pkgs      :: Dict{P,PkgInfo{P,V,S}},
     interacts :: Dict{P,Vector{P}},
-    conflicts :: Dict{P,<:AbstractMatrix{Bool}},
     redundant :: Dict{P,Vector{Int}},
 ) where {P,V,S}
     dirty = Set{P}()
-    # first filter conflicts
-    for (p₁, R₁) in redundant
-        N = 0
-        R₂ = Int[]
-        for p₂ in interacts[p₁]
-            push!(dirty, p₂)
-            if p₂ in keys(redundant)
-                append!(R₂, N .+ redundant[p₂])
-            end
-            N += length(pkgs[p₂].versions)
-        end
-        m = length(pkgs[p₁].versions)
-        I = setdiff(1:m, R₁)
-        J = setdiff(1:N, R₂)
-        conflicts[p₁] = conflicts[p₁][I,J]
-    end
-    # next filter pkgs to match
     for (p, R) in redundant
         info = pkgs[p]
         for (i, v) in enumerate(info.versions)
@@ -296,7 +271,7 @@ function filter_redundant!(
             delete!(info.compat, v)
         end
         deleteat!(info.versions, R)
+        union!(dirty, interacts[p])
     end
-    # return potentially affected packages
     return dirty
 end

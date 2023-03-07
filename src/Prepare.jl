@@ -220,7 +220,7 @@ end
 function find_redundant(
     pkgs      :: Dict{P,PkgInfo{P,V,S}},
     interacts :: Dict{P,Vector{P}},
-    dirty     :: AbstractSet{P} = keys(interacts),
+    dirty     :: Vector{P} = sort!(collect(keys(interacts))),
 ) where {P,V,S}
     redundant = Dict{P,Vector{Int}}()
     for pkg in dirty
@@ -251,7 +251,8 @@ function filter_redundant!(
         redundant = find_redundant(pkgs, interacts)
         isempty(redundant) && return interacts
         while !isempty(redundant)
-            dirty = filter_redundant!(pkgs, interacts, redundant)
+            filter_redundant!(pkgs, redundant)
+            dirty = sort!(mapreduce(p -> interacts[p], union!, keys(redundant)))
             redundant = find_redundant(pkgs, interacts, dirty)
         end
     end
@@ -259,10 +260,8 @@ end
 
 function filter_redundant!(
     pkgs      :: Dict{P,PkgInfo{P,V,S}},
-    interacts :: Dict{P,Vector{P}},
     redundant :: Dict{P,Vector{Int}},
 ) where {P,V,S}
-    dirty = Set{P}()
     for (p, R) in redundant
         info = pkgs[p]
         for (i, v) in enumerate(info.versions)
@@ -271,7 +270,5 @@ function filter_redundant!(
             delete!(info.compat, v)
         end
         deleteat!(info.versions, R)
-        union!(dirty, interacts[p])
     end
-    return dirty
 end

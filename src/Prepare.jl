@@ -134,13 +134,6 @@ function filter_reachable!(
     end
 end
 
-# eliminate redundant versions
-
-"""
-    filter_redundant!(pkgs)
-
-"""
-
 # two packages interact if there is some conflict between them
 
 function find_interactions(pkgs::Dict{P,PkgInfo{P,V,S}}) where {P,V,S}
@@ -214,4 +207,26 @@ function find_conflicts(
     end
 
     return conflicts
+end
+
+function find_redundant(conflicts::Dict{P,<:AbstractMatrix{Bool}}) where P
+    redundant = Dict{P, Vector{Int}}()
+    for pkg in keys(conflicts)
+        R = Int[]
+        X = conflicts[pkg]
+        for j = 2:size(X, 1)
+            for i = 1:j-1
+                i in R && continue
+                if all(!X[i, k] | X[j, k] for k = 1:size(X, 2))
+                    # version i always preferrable to j
+                    push!(R, j)
+                    break
+                end
+            end
+        end
+        if !isempty(R)
+            redundant[pkg] = R
+        end
+    end
+    return redundant
 end

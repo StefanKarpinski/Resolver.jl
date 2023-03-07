@@ -54,5 +54,5 @@ reach = find_reachable(pkgs, reqs)
 filter_reachable!(pkgs, reach)
 
 interacts = find_interactions(pkgs)
-
-conflicts = find_conflicts(pkgs)
+conflicts = find_conflicts(pkgs, interacts)
+redundant = find_redundant(conflicts)

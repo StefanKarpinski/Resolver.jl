@@ -252,26 +252,16 @@ function filter_redundant!(
         isempty(redundant) && return Dict{P,ConflictInfo{P}}(
             p => ConflictInfo(ix, conflicts[p]) for (p, ix) in interacts
         )
-        while isempty(redundant)
-            dirty = filter_redundant!(pkgs, conflicts, redundant)
+        while !isempty(redundant)
+            dirty = filter_redundant!(pkgs, interacts, conflicts, redundant)
             redundant = find_redundant(conflicts, dirty)
         end
     end
 end
 
-# function filter_redundant!(
-#     pkgs      :: Dict{P,PkgInfo{P,V,S}},
-#     conflicts :: Dict{P,<:AbstractMatrix{Bool}},
-# ) where {P,V,S}
-#     dirty = copy(keys(conflicts))
-#     while !isempty(dirty)
-#         redundant = find_redundant(conflicts, dirty)
-#         dirty = filter_redundant!(pkgs, conflicts, redundant)
-#     end
-# end
-
 function filter_redundant!(
     pkgs      :: Dict{P,PkgInfo{P,V,S}},
+    interacts :: Dict{P,Vector{P}},
     conflicts :: Dict{P,<:AbstractMatrix{Bool}},
     redundant :: Dict{P,Vector{Int}},
 ) where {P,V,S}
@@ -301,7 +291,6 @@ function filter_redundant!(
             delete!(info.compat, v)
         end
         deleteat!(info.versions, R)
-        @assert !isempty(info.versions)
     end
     # return potentially affected packages
     return dirty

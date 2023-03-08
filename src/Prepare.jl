@@ -246,22 +246,39 @@ end
 function filter_redundant!(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
 ) where {P,V,S}
-    while true
-        interacts = find_interacts(pkgs)
-        redundant = find_redundant(pkgs, interacts)
-        isempty(redundant) && return interacts
-        while !isempty(redundant)
-            for (p, R) in redundant
-                info = pkgs[p]
-                for (i, v) in enumerate(info.versions)
-                    i in R || continue
-                    delete!(info.depends, v)
-                    delete!(info.compat, v)
+    interacts = find_interacts(pkgs)
+    work = copy(keys(interacts))
+    while !isempty(work)
+        p = pop!(work)
+        @show length(work), p
+        info = pkgs[p]
+        # shortcut: unique version cannot be reundant
+        length(info.versions) ≤ 1 && continue
+        # compute conflict matrix
+        t = interacts[p]
+        X = find_conflicts(pkgs, p, t)
+        # find redundant versions
+        R = Int[]
+        for j = 2:size(X, 1)
+            for i = 1:j-1
+                i in R && continue
+                if all(!X[i, k] | X[j, k] for k = 1:size(X, 2))
+                    # an earlier version is strictly more compatible
+                    # i.e. i < j and X[i, k] => X[j, k] for all k
+                    push!(R, j)
+                    break
                 end
-                deleteat!(info.versions, R)
             end
-            dirty = sort!(mapreduce(p -> interacts[p], union!, keys(redundant)))
-            redundant = find_redundant(pkgs, interacts, dirty)
         end
+        isempty(R) && continue
+        # filter out redundant versions
+        for (i, v) in enumerate(info.versions)
+            i in R || continue
+            delete!(info.depends, v)
+            delete!(info.compat, v)
+        end
+        deleteat!(info.versions, R)
+        # interacting pkgs could have new redundancies
+        union!(work, t)
     end
 end

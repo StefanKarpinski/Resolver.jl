@@ -248,29 +248,15 @@ function filter_redundant!(
 ) where {P,V,S}
     interacts = find_interacts(pkgs)
     work = copy(keys(interacts))
-    cache = Dict{P,BitMatrix}()
     while !isempty(work)
-        @show length(cache)
-        # try to use the cached version
-        cached = intersect(work, keys(cache))
-        if !isempty(cached)
-            p = rand(cached)
-        else
-            # try a package that interacts with the cache
-            adjacent = mapreduce(union!, keys(cache), init=Set{P}()) do p
-                interacts[p]
-            end
-            intersect!(adjacent, work)
-            p = rand(!isempty(adjacent) ? adjacent : work)
-        end
+        p = pop!(work)
         @show length(work), p
-        delete!(work, p)
         info = pkgs[p]
         # shortcut: unique version cannot be reundant
         length(info.versions) ≤ 1 && continue
-        # get interactions & conflicts
+        # compute conflict matrix
         t = interacts[p]
-        X = get!(()->find_conflicts(pkgs, p, t), cache, p)
+        X = find_conflicts(pkgs, p, t)
         # find redundant versions
         R = Int[]
         for j = 2:size(X, 1)
@@ -283,15 +269,6 @@ function filter_redundant!(
                     break
                 end
             end
-        end
-        # set/unset/update the cache
-        if size(X, 1) ≤ 1
-            delete!(cache, p)
-        else
-            if !isempty(R)
-                X = X[setdiff(1:end, R), :]
-            end
-            cache[p] = X
         end
         isempty(R) && continue
         # filter out redundant versions

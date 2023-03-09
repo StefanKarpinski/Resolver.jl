@@ -245,7 +245,7 @@ function filter_redundant!(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
 ) where {P,V,S}
     interacts = find_interacts(pkgs)
-    # precompute max boolean array size 
+    # precompute max boolean array size
     sizes = Dict{P,Tuple{Int,Int}}()
     L = 0
     for (p, ix) in interacts
@@ -254,18 +254,15 @@ function filter_redundant!(
         sizes[p] = (m, n)
         L = max(L, m*n)
     end
-    B = zeros(Bool, L)
+    B = Array{Bool}(undef, L)
     # main redundancy elimination loop
     work = copy(keys(interacts))
-    next = typeof(work)()
-    while !isempty(work) || !isempty(next)
-        @show length(work) + length(next)
-        # if work is empty, swap it with next
-        if isempty(work)
-            work, next = next, work
-        end
-        # take a package of the work list
-        p = pop!(work)
+    names = sort!(collect(work))
+    for p in Iterators.cycle(names)
+        isempty(work) && break
+        p in work || continue
+        delete!(work, p)
+        @show length(work), p
         info = pkgs[p]
         # check that sizes is correct
         @assert sizes[p][1] == length(info.versions)
@@ -304,6 +301,6 @@ function filter_redundant!(
         end
         deleteat!(info.versions, R)
         # interacting pkgs could have new redundancies
-        union!(next, t)
+        union!(work, t)
     end
 end

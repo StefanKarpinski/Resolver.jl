@@ -258,6 +258,7 @@ function filter_redundant!(
     # main redundancy elimination loop
     work = copy(keys(interacts))
     names = sort!(collect(work))
+    sort!(names, by=p->length(interacts[p]))
     for p in Iterators.cycle(names)
         isempty(work) && break
         p in work || continue

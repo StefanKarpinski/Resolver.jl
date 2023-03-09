@@ -178,16 +178,14 @@ end
 
 # compute the set of conflicts between package versions
 
-function find_conflicts(
+function find_conflicts!(
+    X    :: AbstractMatrix{Bool},
     pkgs :: Dict{P,PkgInfo{P,V,S}},
     p₁   :: String,
     P₂   :: Vector{String},
 ) where {P,V,S}
     vers₁ = pkgs[p₁].versions
     comp₁ = pkgs[p₁].compat
-    m = length(vers₁)
-    N = sum(length(pkgs[p₂].versions) for p₂ in P₂)
-    X = BitMatrix(undef, m, N)
     b = 0
     for p₂ in P₂
         vers₂ = pkgs[p₂].versions
@@ -247,16 +245,37 @@ function filter_redundant!(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
 ) where {P,V,S}
     interacts = find_interacts(pkgs)
+    # precompute max boolean array size 
+    sizes = Dict{P,Tuple{Int,Int}}()
+    L = 0
+    for (p, ix) in interacts
+        m = length(pkgs[p].versions)
+        n = sum(length(pkgs[p′].versions) for p′ in ix)
+        sizes[p] = (m, n)
+        L = max(L, m*n)
+    end
+    B = zeros(Bool, L)
+    # main redundancy elimination loop
     work = copy(keys(interacts))
-    while !isempty(work)
+    next = typeof(work)()
+    while !isempty(work) || !isempty(next)
+        @show length(work) + length(next)
+        # if work is empty, swap it with next
+        if isempty(work)
+            work, next = next, work
+        end
+        # take a package of the work list
         p = pop!(work)
-        @show length(work), p
         info = pkgs[p]
+        # check that sizes is correct
+        @assert sizes[p][1] == length(info.versions)
+        @assert sizes[p][2] == sum(length(pkgs[p′].versions) for p′ in interacts[p])
         # shortcut: unique version cannot be reundant
         length(info.versions) ≤ 1 && continue
         # compute conflict matrix
         t = interacts[p]
-        X = find_conflicts(pkgs, p, t)
+        X = reshape(view(B, 1:prod(sizes[p])), sizes[p])
+        find_conflicts!(X, pkgs, p, t)
         # find redundant versions
         R = Int[]
         for j = 2:size(X, 1)
@@ -270,7 +289,13 @@ function filter_redundant!(
                 end
             end
         end
-        isempty(R) && continue
+        r = length(R)
+        r == 0 && continue
+        # update sizes map
+        sizes[p] = (sizes[p][1]-r, sizes[p][2])
+        for p′ in t
+            sizes[p′] = (sizes[p′][1], sizes[p′][2]-r)
+        end
         # filter out redundant versions
         for (i, v) in enumerate(info.versions)
             i in R || continue
@@ -279,6 +304,6 @@ function filter_redundant!(
         end
         deleteat!(info.versions, R)
         # interacting pkgs could have new redundancies
-        union!(work, t)
+        union!(next, t)
     end
 end

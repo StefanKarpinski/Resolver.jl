@@ -53,4 +53,4 @@ pkgs = find_packages(deps, reqs)
 reach = find_reachable(pkgs, reqs)
 filter_reachable!(pkgs, reach)
 
-filter_redundant!(pkgs)
+# filter_redundant!(pkgs)

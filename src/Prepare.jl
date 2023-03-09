@@ -186,12 +186,13 @@ function find_conflicts!(
 ) where {P,V,S}
     vers₁ = pkgs[p₁].versions
     comp₁ = pkgs[p₁].compat
-    b = 0
+    m = length(vers₁)
+    n = 0
     for p₂ in P₂
         vers₂ = pkgs[p₂].versions
         comp₂ = pkgs[p₂].compat
-        n = length(vers₂)
-        X[:, b .+ (1:n)] = [
+        nₚ = length(vers₂)
+        X[1:m, n .+ (1:nₚ)] = [
             v₁ ∈ keys(comp₁) &&
             p₂ ∈ keys(comp₁[v₁]) &&
             v₂ ∉ comp₁[v₁][p₂] ||
@@ -201,9 +202,9 @@ function find_conflicts!(
             (i₁, v₁) in enumerate(vers₁),
             (i₂, v₂) in enumerate(vers₂)
         ]
-        b += n
+        n += nₚ
     end
-    return X
+    return m, n
 end
 
 function find_conflicts(
@@ -271,13 +272,14 @@ function filter_redundant!(
         # compute conflict matrix
         t = interacts[p]
         X = reshape(view(B, 1:prod(sizes[p])), sizes[p])
-        find_conflicts!(X, pkgs, p, t)
+        m, n = find_conflicts!(X, pkgs, p, t)
+        @assert (m, n) == sizes[p]
         # find redundant versions
         empty!(R)
-        for j = 2:size(X, 1)
+        for j = 2:m
             for i = 1:j-1
                 i in R && continue
-                if all(!X[i, k] | X[j, k] for k = 1:size(X, 2))
+                if all(!X[i, k] | X[j, k] for k = 1:n)
                     # an earlier version is strictly more compatible
                     # i.e. i < j and X[i, k] => X[j, k] for all k
                     push!(R, j)

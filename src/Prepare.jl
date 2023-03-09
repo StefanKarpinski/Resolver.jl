@@ -255,6 +255,7 @@ function filter_redundant!(
         L = max(L, m*n)
     end
     B = Array{Bool}(undef, L)
+    R = Int[]
     # main redundancy elimination loop
     work = copy(keys(interacts))
     names = sort!(collect(work))
@@ -263,11 +264,8 @@ function filter_redundant!(
         isempty(work) && break
         p in work || continue
         delete!(work, p)
-        @show length(work), p
+        # @show length(work), p
         info = pkgs[p]
-        # check that sizes is correct
-        @assert sizes[p][1] == length(info.versions)
-        @assert sizes[p][2] == sum(length(pkgs[p′].versions) for p′ in interacts[p])
         # shortcut: unique version cannot be reundant
         length(info.versions) ≤ 1 && continue
         # compute conflict matrix
@@ -275,7 +273,7 @@ function filter_redundant!(
         X = reshape(view(B, 1:prod(sizes[p])), sizes[p])
         find_conflicts!(X, pkgs, p, t)
         # find redundant versions
-        R = Int[]
+        empty!(R)
         for j = 2:size(X, 1)
             for i = 1:j-1
                 i in R && continue

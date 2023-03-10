@@ -207,41 +207,6 @@ function find_conflicts!(
     return m, n
 end
 
-function find_conflicts(
-    pkgs      :: Dict{P,PkgInfo{P,V,S}},
-    interacts :: Dict{P,Vector{P}},
-) where {P,V,S}
-    return Dict{P, BitMatrix}(
-        p => find_conflicts(pkgs, p, ix) for (p, ix) in interacts
-    )
-end
-
-function find_redundant(
-    pkgs      :: Dict{P,PkgInfo{P,V,S}},
-    interacts :: Dict{P,Vector{P}},
-    dirty     :: Vector{P} = sort!(collect(keys(interacts))),
-) where {P,V,S}
-    redundant = Dict{P,Vector{Int}}()
-    for pkg in dirty
-        X = find_conflicts(pkgs, pkg, interacts[pkg])
-        R = Int[]
-        for j = 2:size(X, 1)
-            for i = 1:j-1
-                i in R && continue
-                if all(!X[i, k] | X[j, k] for k = 1:size(X, 2))
-                    # an earlier version is strictly more compatible
-                    # i.e. i < j and X[i, k] => X[j, k] for all k
-                    push!(R, j)
-                    break
-                end
-            end
-        end
-        isempty(R) && continue
-        redundant[pkg] = R
-    end
-    return redundant
-end
-
 function filter_redundant!(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
 ) where {P,V,S}

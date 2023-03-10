@@ -247,12 +247,10 @@ function filter_redundant!(
 ) where {P,V,S}
     interacts = find_interacts(pkgs)
     # precompute max boolean array size
-    sizes = Dict{P,Tuple{Int,Int}}()
     L = 0
     for (p, ix) in interacts
         m = length(pkgs[p].versions)
         n = sum(length(pkgs[p′].versions) for p′ in ix)
-        sizes[p] = (m, n)
         L = max(L, m*n)
     end
     B = Array{Bool}(undef, L)
@@ -268,12 +266,12 @@ function filter_redundant!(
         # @show length(work), p
         info = pkgs[p]
         # shortcut: unique version cannot be reundant
-        length(info.versions) ≤ 1 && continue
+        m = length(info.versions)
+        m > 1 || continue
         # compute conflict matrix
         t = interacts[p]
-        X = reshape(view(B, 1:prod(sizes[p])), sizes[p])
-        m, n = find_conflicts!(X, pkgs, p, t)
-        @assert (m, n) == sizes[p]
+        X = reshape(view(B, 1:(L÷m)*m), m, :)
+        _, n = find_conflicts!(X, pkgs, p, t)
         # find redundant versions
         empty!(R)
         for j = 2:m
@@ -289,11 +287,6 @@ function filter_redundant!(
         end
         r = length(R)
         r == 0 && continue
-        # update sizes map
-        sizes[p] = (sizes[p][1]-r, sizes[p][2])
-        for p′ in t
-            sizes[p′] = (sizes[p′][1], sizes[p′][2]-r)
-        end
         # filter out redundant versions
         for (i, v) in enumerate(info.versions)
             i in R || continue

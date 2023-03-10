@@ -192,16 +192,16 @@ function fill_conflicts!(
         vers_q = pkgs[q].versions
         comp_q = pkgs[q].compat
         n′ = length(vers_q)
-        X[1:m, n .+ (1:n′)] = [
-            v ∈ keys(comp_p) &&
-            q ∈ keys(comp_p[v]) &&
-            u ∉ comp_p[v][q] ||
-            u ∈ keys(comp_q) &&
-            p ∈ keys(comp_q[u]) &&
-            v ∉ comp_q[u][p]
-            for v in vers_p,
-                u in vers_q
-        ]
+        for (j, u) in enumerate(vers_q),
+            (i, v) in enumerate(vers_p)
+            X[i, n + j] =
+                v ∈ keys(comp_p) &&
+                q ∈ keys(comp_p[v]) &&
+                u ∉ comp_p[v][q] ||
+                u ∈ keys(comp_q) &&
+                p ∈ keys(comp_q[u]) &&
+                v ∉ comp_q[u][p]
+        end
         n += n′
     end
     return m, n

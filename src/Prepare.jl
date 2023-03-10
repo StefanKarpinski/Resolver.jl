@@ -178,31 +178,31 @@ end
 
 # compute the set of conflicts between package versions
 
-function find_conflicts!(
+function fill_conflicts!(
     X    :: AbstractMatrix{Bool},
     pkgs :: Dict{P,PkgInfo{P,V,S}},
-    p₁   :: String,
-    P₂   :: Vector{String},
+    p    :: String,
+    Q    :: Vector{String},
 ) where {P,V,S}
-    vers₁ = pkgs[p₁].versions
-    comp₁ = pkgs[p₁].compat
-    m = length(vers₁)
+    vers_p = pkgs[p].versions
+    comp_p = pkgs[p].compat
+    m = length(vers_p)
     n = 0
-    for p₂ in P₂
-        vers₂ = pkgs[p₂].versions
-        comp₂ = pkgs[p₂].compat
-        nₚ = length(vers₂)
-        X[1:m, n .+ (1:nₚ)] = [
-            v₁ ∈ keys(comp₁) &&
-            p₂ ∈ keys(comp₁[v₁]) &&
-            v₂ ∉ comp₁[v₁][p₂] ||
-            v₂ ∈ keys(comp₂) &&
-            p₁ ∈ keys(comp₂[v₂]) &&
-            v₁ ∉ comp₂[v₂][p₁] for
-            (i₁, v₁) in enumerate(vers₁),
-            (i₂, v₂) in enumerate(vers₂)
+    for q in Q
+        vers_q = pkgs[q].versions
+        comp_q = pkgs[q].compat
+        n′ = length(vers_q)
+        X[1:m, n .+ (1:n′)] = [
+            v ∈ keys(comp_p) &&
+            q ∈ keys(comp_p[v]) &&
+            u ∉ comp_p[v][q] ||
+            u ∈ keys(comp_q) &&
+            p ∈ keys(comp_q[u]) &&
+            v ∉ comp_q[u][p]
+            for v in vers_p,
+                u in vers_q
         ]
-        n += nₚ
+        n += n′
     end
     return m, n
 end
@@ -215,7 +215,7 @@ function filter_redundant!(
     L = 0
     for (p, ix) in interacts
         m = length(pkgs[p].versions)
-        n = sum(length(pkgs[p′].versions) for p′ in ix)
+        n = sum(length(pkgs[q].versions) for q in ix)
         L = max(L, m*n)
     end
     B = Array{Bool}(undef, L)
@@ -234,9 +234,9 @@ function filter_redundant!(
         m = length(info.versions)
         m > 1 || continue
         # compute conflict matrix
-        t = interacts[p]
+        Q = interacts[p]
         X = reshape(view(B, 1:(L÷m)*m), m, :)
-        _, n = find_conflicts!(X, pkgs, p, t)
+        _, n = fill_conflicts!(X, pkgs, p, Q)
         # find redundant versions
         empty!(R)
         for j = 2:m
@@ -260,6 +260,6 @@ function filter_redundant!(
         end
         deleteat!(info.versions, R)
         # interacting pkgs could have new redundancies
-        union!(work, t)
+        union!(work, Q)
     end
 end

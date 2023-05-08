@@ -187,7 +187,7 @@ end
 struct Conflicts{P}
     depends   :: Vector{P}
     interacts :: Dict{P, Int}
-    conflicts :: Matrix{Bool}
+    conflicts :: BitMatrix
 end
 
 function find_conflicts(
@@ -211,7 +211,7 @@ function find_conflicts(
     m = length(vers_p) # per package version
     n = length(dx) + # per dependency package + interacting package version
         sum(init=0, length(pkgs[q].versions) for q in intx)
-    X = fill(false, m + active, n + active) # conflicts & actives
+    X = falses(m + active, n + active) # conflicts & actives
     for (i, v) in enumerate(vers_p)
         deps_pv = info.depends[v]
         comp_pv = info.compat[v]

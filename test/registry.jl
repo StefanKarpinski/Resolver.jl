@@ -47,7 +47,7 @@ reqs = sort!(collect(keys(reg_dict)))
 filter!(!endswith("_jll"), reqs)
 filter!(!in(excludes), reqs)
 
-pkgs = find_packages(dp, reqs)
-filter_reachable!(pkgs, reqs)
-filter_redundant!(pkgs)
-cx = find_conflicts(pkgs)
+@time pkgs = find_packages(dp, reqs);
+@time filter_reachable!(pkgs, reqs);
+@time filter_redundant!(pkgs);
+@time cx = find_conflicts(pkgs);

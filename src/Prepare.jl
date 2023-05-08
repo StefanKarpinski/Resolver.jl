@@ -25,7 +25,7 @@ function find_packages(
     deps :: DepsProvider{P,V,S},
     reqs :: Vector{P},
 ) where {P,V,S}
-    pkgs = Dict{P,PkgInfo{P,V,S}}()
+    pkgs = Dict{P, PkgInfo{P,V,S}}()
     work = Set(reqs)
     while !isempty(work)
         pkg = pop!(work)
@@ -57,7 +57,7 @@ of that package that could be reached in an optimal solution. If a pacakge
 cannot appear in an optimal solution, it will not appear in this dictionary.
 """
 function find_reachable(
-    pkgs :: Dict{P,PkgInfo{P,V,S}},
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
     reqs :: Vector{P},
 ) where {P,V,S}
     reach = Dict{P,Int}(p => 0 for p in reqs)
@@ -114,8 +114,8 @@ function find_reachable(
 end
 
 function filter_reachable!(
-    pkgs  :: Dict{P,PkgInfo{P,V,S}},
-    reach :: Dict{P,Int},
+    pkgs  :: Dict{P, PkgInfo{P,V,S}},
+    reach :: Dict{P, Int},
 ) where {P,V,S}
     for pkg in sort!(collect(keys(reach)))
         k = reach[pkg]
@@ -134,14 +134,20 @@ function filter_reachable!(
     end
 end
 
+function filter_reachable!(
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    reqs :: Vector{P},
+) where {P,V,S}
+    reach = find_reachable(pkgs, reqs)
+    filter_reachable!(pkgs, reach)
+end
+
 # two packages interact if there is some conflict between them
 
 function find_interacts(
-    pkgs :: Dict{P,PkgInfo{P,V,S}},
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
 ) where {P,V,S}
-    interacts = Dict{P,Vector{P}}(
-        p => Vector{P}() for p in keys(pkgs)
-    )
+    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(pkgs))
     for (pkg₁, info₁) in pkgs
         interact₁ = interacts[pkg₁]
         for ver₁ in info₁.versions
@@ -178,88 +184,137 @@ end
 
 # compute the set of conflicts between package versions
 
-function fill_conflicts!(
-    X    :: AbstractMatrix{Bool},
-    pkgs :: Dict{P,PkgInfo{P,V,S}},
-    p    :: String,
-    Q    :: Vector{String},
+struct Conflicts{P}
+    depends   :: Vector{P}
+    interacts :: Dict{P, Int}
+    conflicts :: Matrix{Bool}
+end
+
+function find_conflicts(
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    active :: Bool,
+    p :: P,
+    intx :: Vector{P},
 ) where {P,V,S}
-    vers_p = pkgs[p].versions
-    comp_p = pkgs[p].compat
-    m = length(vers_p)
-    n = 0
-    for q in Q
-        vers_q = pkgs[q].versions
-        comp_q = pkgs[q].compat
-        n′ = length(vers_q)
-        for (j, u) in enumerate(vers_q),
-            (i, v) in enumerate(vers_p)
-            X[i, n + j] =
-                v ∈ keys(comp_p) &&
-                q ∈ keys(comp_p[v]) &&
-                u ∉ comp_p[v][q] ||
-                u ∈ keys(comp_q) &&
-                p ∈ keys(comp_q[u]) &&
-                v ∉ comp_q[u][p]
-        end
-        n += n′
+    # look up some stuff about p
+    info = pkgs[p]
+    vers_p = info.versions
+    comp_p = info.compat
+    # collect all dependency packages
+    dx = P[]
+    for (v, deps) in info.depends
+        union!(dx, deps)
     end
-    return m, n
+    sort!(dx)
+    ix = Dict{P, Int}(p => 0 for p in intx)
+    # compute interactions matrix (m × n)
+    m = length(vers_p) # per package version
+    n = length(dx) + # per dependency package + interacting package version
+        sum(init=0, length(pkgs[q].versions) for q in intx)
+    X = fill(false, m + active, n + active) # conflicts & actives
+    for (i, v) in enumerate(vers_p)
+        deps_pv = info.depends[v]
+        comp_pv = info.compat[v]
+        for (j, q) in enumerate(dx)
+            X[i, j] = q ∈ deps_pv
+        end
+        b = length(dx)
+        for q in intx
+            ix[q] = b
+            vers_q = pkgs[q].versions
+            comp_q = pkgs[q].compat
+            for (j, u) in enumerate(vers_q)
+                comp_qu = comp_q[u]
+                X[i, b + j] =
+                    v ∈ keys(comp_p) &&
+                    q ∈ keys(comp_pv) &&
+                    u ∉ comp_pv[q] ||
+                    u ∈ keys(comp_q) &&
+                    p ∈ keys(comp_qu) &&
+                    v ∉ comp_qu[p]
+            end
+            b += length(vers_q)
+        end
+    end
+    # initially all versions are active
+    if active
+        X[1:m, end] .= true
+        # columns can start inactive if they have no conflicts
+        for j = 1:n
+            X[end, j] = any(X[i, j] for i = 1:m)
+        end
+    end
+    return Conflicts(dx, ix, X)
+end
+
+function find_conflicts(
+    pkgs :: Dict{P,PkgInfo{P,V,S}},
+    active :: Bool = false,
+) where {P,V,S}
+    interacts = find_interacts(pkgs)
+    ∅ = P[] # reuse empty vector
+    Dict{P, Conflicts{P}}(
+        p => find_conflicts(pkgs, active, p, get(interacts, p, ∅))
+        for p in keys(pkgs)
+    )
 end
 
 function filter_redundant!(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
+    cx   :: Dict{P,Conflicts{P}} = find_conflicts(pkgs, true),
 ) where {P,V,S}
-    interacts = find_interacts(pkgs)
-    # precompute max boolean array size
-    L = 0
-    for (p, ix) in interacts
-        m = length(pkgs[p].versions)
-        n = sum(length(pkgs[q].versions) for q in ix)
-        L = max(L, m*n)
-    end
-    B = Array{Bool}(undef, L)
-    R = Int[]
-    # main redundancy elimination loop
-    work = copy(keys(interacts))
+    work = copy(keys(cx))
     names = sort!(collect(work))
-    sort!(names, by=p->length(interacts[p]))
+    # some work vectors
+    J = Int[] # active versions vector
+    K = Int[] # active conflicts vector
+    R = Int[] # redundant indices vector
+    sort!(names, by = p -> length(cx[p].interacts))
     for p in Iterators.cycle(names)
         isempty(work) && break
         p in work || continue
         delete!(work, p)
-        # @show length(work), p
-        info = pkgs[p]
-        # shortcut: unique version cannot be reundant
-        m = length(info.versions)
-        m > 1 || continue
-        # compute conflict matrix
-        Q = interacts[p]
-        X = reshape(view(B, 1:(L÷m)*m), m, :)
-        _, n = fill_conflicts!(X, pkgs, p, Q)
+        # get conflicts & dimensions
+        X = cx[p].conflicts
+        m = size(X, 1) - 1
+        m > 1 || continue # unique version cannot be reundant
+        n = size(X, 2) - 1
+        # active indices
+        append!(empty!(J), (j for j = 1:m if X[j, end]))
+        length(J) > 1 || continue # unique version cannot be reundant
+        append!(empty!(K), (k for k = 1:n if X[end, k]))
         # find redundant versions
         empty!(R)
-        for j = 2:m
-            for i = 1:j-1
-                i in R && continue
-                if all(!X[i, k] | X[j, k] for k = 1:n)
-                    # an earlier version is strictly more compatible
-                    # i.e. i < j and X[i, k] => X[j, k] for all k
-                    push!(R, j)
-                    break
-                end
+        for j in J
+            for i in J
+                i < j || break
+                i ∈ R && continue
+                all(!X[i, k] | X[j, k] for k in K) || continue
+                # an earlier version is strictly more compatible
+                # i.e. i < j and X[i, k] => X[j, k] for all k
+                # therefore i will always be chosen instead of j
+                push!(R, j)
+                break
             end
         end
-        r = length(R)
-        r == 0 && continue
-        # filter out redundant versions
+        isempty(R) && continue
+        # deactivate redundant versions
+        X[R, end] .= false
+        for q in keys(cx[p].interacts)
+            b = cx[q].interacts[p]
+            cx[q].conflicts[end, b .+ R] .= false
+            push!(work, q) # can create new redundancies
+        end
+    end
+    for (p, info) in pkgs
+        X = cx[p].conflicts
+        m = length(info.versions)
+        append!(empty!(R), (j for j = 1:m if !X[j, end]))
         for (i, v) in enumerate(info.versions)
             i in R || continue
             delete!(info.depends, v)
             delete!(info.compat, v)
         end
         deleteat!(info.versions, R)
-        # interacting pkgs could have new redundancies
-        union!(work, Q)
     end
 end

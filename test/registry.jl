@@ -11,7 +11,7 @@ const reg_inst = RegistryInstance(expanduser(reg_path))
 const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs))
 const excludes = push!(Set(first.(values(stdlibs()))), "julia")
 
-deps = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
+dp = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     info = init_package_info!(reg_dict[pkg])
     vers = sort!(collect(keys(info.version_info)), rev=true)
     deps = Dict(v => String[] for v in vers)
@@ -47,7 +47,7 @@ reqs = sort!(collect(keys(reg_dict)))
 filter!(!endswith("_jll"), reqs)
 filter!(!in(excludes), reqs)
 
-pkgs = find_packages(deps, reqs)
-reach = find_reachable(pkgs, reqs)
-filter_reachable!(pkgs, reach)
-@time filter_redundant!(pkgs)
+pkgs = find_packages(dp, reqs)
+filter_reachable!(pkgs, reqs)
+filter_redundant!(pkgs)
+cx = find_conflicts(pkgs)

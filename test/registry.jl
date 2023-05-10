@@ -3,9 +3,6 @@ using Pkg.Registry: RegistryInstance, init_package_info!
 using Pkg.Types: stdlibs
 using Pkg.Versions: VersionSpec
 
-using Resolver
-using Resolver: DepsProvider, PkgInfo
-
 const reg_path = joinpath(depots1(), "registries", "General.toml")
 const reg_inst = RegistryInstance(expanduser(reg_path))
 const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs))
@@ -65,8 +62,13 @@ for p in all_names, q in get(all_ix, p, String[])
 end
 =#
 
-reqs = ["Books", "Latexify"]
+solver = expanduser("~/dev/kissat/build/kissat")
+
+# reqs = String.(split("JSON", ','))
+reqs = String.(split("YaoLang,ZXCalculus", ','))
 pkgs = find_packages(dp, reqs)
 filter_reachable!(pkgs, reqs)
 filter_redundant!(pkgs)
-cx = find_conflicts(pkgs)
+
+problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
+run(ignorestatus(`$solver -q $problem`))

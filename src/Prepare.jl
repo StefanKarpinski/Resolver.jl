@@ -320,3 +320,97 @@ function filter_redundant!(
         deleteat!(info.versions, R)
     end
 end
+
+using ArgTools
+
+# variables for each package:
+#  - one for the package
+#  - one for each version
+#
+# clauses for each package:
+#  - one/zero if the package is required or not
+#  - one specifying package versions
+#  - one for each conflict
+#  - maximality clauses, one per version
+
+function gen_sat(
+    out  :: Union{ArgWrite, Nothing},
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    reqs :: Vector{P},
+    cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs),
+) where {P,V,S}
+    arg_write(out) do out
+        # compute & output header
+        names = sort!(collect(keys(pkgs)))
+        var = Dict{P, Int}() # variable indices
+        v = 0 # number of variables
+        x = 0 # number of conflicts
+        for p in names
+            var[p] = v + 1
+            v += length(pkgs[p].versions) + 1
+            x += sum(cx[p].conflicts)
+            x += sum(@view(cx[p].conflicts[:, 1:length(cx[p].depends)]))
+        end
+        # conflicts are double-counted
+        @assert iseven(x)
+        x >>= 1
+        # number of clauses
+        c = length(reqs) + v + x
+        println(out, "p cnf $v $c")
+        # output requirements clauses
+        for p in sort(reqs)
+            println(out, "$(var[p]) 0")
+        end
+        # output package version clauses
+        for p in names
+            print(out, "-$(var[p]) ")
+            for i = 1:length(pkgs[p].versions)
+                print(out, "$(var[p]+i) ")
+            end
+            println(out, "0")
+        end
+        # output dependency clauses
+        for p in names
+            for i = 1:length(pkgs[p].versions)
+                for (j, q) in enumerate(cx[p].depends)
+                    cx[p].conflicts[i, j] || continue
+                    println(out, "-$(var[p]+i) $(var[q]) 0")
+                end
+            end
+        end
+        # output incompatibility clauses
+        for p in names
+            for q in sort!(collect(keys(cx[p].interacts)))
+                q < p || break
+                b = cx[p].interacts[q]
+                for i = 1:length(pkgs[p].versions),
+                    j = 1:length(pkgs[q].versions)
+                    cx[p].conflicts[i, b+j] || continue
+                    println(out, "-$(var[p]+i) -$(var[q]+j) 0")
+                end
+            end
+        end
+        # output maximality clauses
+        for p in names
+            for i = 1:length(pkgs[p].versions)
+                print(out, "$(var[p]+i) ")
+                for q in sort!(collect(keys(cx[p].interacts)))
+                    b = cx[p].interacts[q]
+                    for j = 1:length(pkgs[q].versions)
+                        cx[p].conflicts[i, b+j] || continue
+                        print(out, "$(var[q]+j) ")
+                    end
+                end
+                println(out, "0")
+            end
+        end
+    end
+end
+
+function gen_sat(
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    reqs :: Vector{P},
+    cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs),
+) where {P,V,S}
+    gen_sat(nothing, pkgs, reqs, cx)
+end

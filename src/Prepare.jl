@@ -259,9 +259,11 @@ function find_conflicts(
     )
 end
 
+# eliminate versions that can never be chosen
+
 function filter_redundant!(
-    pkgs :: Dict{P,PkgInfo{P,V,S}},
-    cx   :: Dict{P,Conflicts{P}} = find_conflicts(pkgs, true),
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs, true),
 ) where {P,V,S}
     work = copy(keys(cx))
     names = sort!(collect(work))

@@ -43,11 +43,30 @@ dp = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
 
-reqs = sort!(collect(keys(reg_dict)))
-filter!(!endswith("_jll"), reqs)
-filter!(!in(excludes), reqs)
+#=
+all_names = sort!(collect(keys(reg_dict)))
+filter!(!endswith("_jll"), all_names)
+filter!(!in(excludes), all_names)
+all_pkgs = find_packages(dp, all_names)
+filter_reachable!(all_pkgs, all_names)
+filter_redundant!(all_pkgs)
+all_ix = find_interacts(all_pkgs)
 
-@time pkgs = find_packages(dp, reqs);
-@time filter_reachable!(pkgs, reqs);
-@time filter_redundant!(pkgs);
-@time cx = find_conflicts(pkgs);
+const pairs = Tuple{String,String}[]
+for p in all_names, q in get(all_ix, p, String[])
+    p < q || continue
+    reqs = [p, q]
+    pkgs = find_packages(dp, reqs)
+    filter_reachable!(pkgs, reqs)
+    filter_redundant!(pkgs)
+    all(length(pkgs[p].versions) > 1 for p in reqs) || continue
+    push!(pairs, (p, q))
+    @show reqs
+end
+=#
+
+reqs = ["Books", "Latexify"]
+pkgs = find_packages(dp, reqs)
+filter_reachable!(pkgs, reqs)
+filter_redundant!(pkgs)
+cx = find_conflicts(pkgs)

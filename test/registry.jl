@@ -3,7 +3,7 @@ using Pkg.Registry: RegistryInstance, init_package_info!
 using Pkg.Types: stdlibs
 using Pkg.Versions: VersionSpec
 
-const reg_path = joinpath(depots1(), "registries", "General.toml")
+const reg_path = joinpath(depots1(), "registries", "General")
 const reg_inst = RegistryInstance(expanduser(reg_path))
 const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs))
 const excludes = push!(Set(first.(values(stdlibs()))), "julia")
@@ -62,13 +62,15 @@ for p in all_names, q in get(all_ix, p, String[])
 end
 =#
 
-solver = expanduser("~/dev/kissat/build/kissat")
+# const solver = Cmd([expanduser("~/dev/kissat/build/kissat"), "-q"])
+const solver = Cmd([expanduser("~/dev/picosat/picomus")])
 
-# reqs = String.(split("JSON", ','))
-reqs = String.(split("YaoLang,ZXCalculus", ','))
-pkgs = find_packages(dp, reqs)
-filter_reachable!(pkgs, reqs)
-filter_redundant!(pkgs)
+function solve(reqs_str::AbstractString, opts::Cmd=``)
+    reqs = String.(split(reqs_str, ','))
+    pkgs = find_packages(dp, reqs)
+    filter_reachable!(pkgs, reqs)
+    filter_redundant!(pkgs)
 
-problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
-run(ignorestatus(`$solver -q $problem`))
+    problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
+    run(ignorestatus(`$solver $opts $problem`))
+end

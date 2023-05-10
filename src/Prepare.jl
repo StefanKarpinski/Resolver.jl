@@ -331,7 +331,7 @@ using ArgTools
 #  - one/zero if the package is required or not
 #  - one specifying package versions
 #  - one for each conflict
-#  - maximality clauses, one per version
+#  - optimality clauses, one per version
 
 function gen_sat(
     out  :: Union{ArgWrite, Nothing},
@@ -357,10 +357,12 @@ function gen_sat(
         # number of clauses
         c = length(reqs) + v + x
         println(out, "p cnf $v $c")
+        println(out)
         # output requirements clauses
         for p in sort(reqs)
             println(out, "$(var[p]) 0")
         end
+        println(out)
         # output package version clauses
         for p in names
             print(out, "-$(var[p]) ")
@@ -369,6 +371,7 @@ function gen_sat(
             end
             println(out, "0")
         end
+        println(out)
         # output dependency clauses
         for p in names
             for i = 1:length(pkgs[p].versions)
@@ -378,6 +381,7 @@ function gen_sat(
                 end
             end
         end
+        println(out)
         # output incompatibility clauses
         for p in names
             for q in sort!(collect(keys(cx[p].interacts)))
@@ -390,10 +394,16 @@ function gen_sat(
                 end
             end
         end
-        # output maximality clauses
+        println(out)
+        # output optimality clauses
         for p in names
             for i = 1:length(pkgs[p].versions)
-                print(out, "$(var[p]+i) ")
+                print(out, "-$(var[p]) $(var[p]+i) ")
+                # can be "excused" if a better version is chosen
+                for j = 1:i-1
+                    print(out, "$(var[p]+j) ")
+                end
+                # or if it conflicts with something else chosen
                 for q in sort!(collect(keys(cx[p].interacts)))
                     b = cx[p].interacts[q]
                     for j = 1:length(pkgs[q].versions)
@@ -413,4 +423,29 @@ function gen_sat(
     cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs),
 ) where {P,V,S}
     gen_sat(nothing, pkgs, reqs, cx)
+end
+
+function decode(
+    pkgs  :: Dict{P, PkgInfo{P,V,S}},
+    lines :: AbstractVector{<:AbstractString},
+) where {P,V,S}
+    vars = String[]
+    for p in sort!(collect(keys(pkgs)))
+        push!(vars, "$p")
+        for v in pkgs[p].versions
+            push!(vars, "$p/$v")
+        end
+    end
+    map(lines) do line
+        words = String.(split(line))
+        if !isempty(words) && words[1] != "p"
+            words = map(words) do word
+                i = parse(Int, word)
+                i > 0 && return vars[i]
+                i < 0 && return "!$(vars[-i])"
+                return word
+            end
+        end
+        join(words, " ")
+    end
 end

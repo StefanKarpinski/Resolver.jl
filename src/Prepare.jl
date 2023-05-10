@@ -49,8 +49,8 @@ could appear in pareto-optimal solutions to version resolution for the given set
 of required "root" packages, using the following recursive logic:
 
 - P in reqs => P[1] reachable
-- P[i] reachable & P[i] depends on D => D[1] reachable
-- P[i] reachable & P[i] conflicts w/ something reachable => P[i+1] reachable
+- P[i] reachable & P[i] depends on D => D[1] and P[i+1] reachable
+- P[i] reachable & P[i] conflicts w reachable => P[i+1] reachable
 
 The function returns a dictionary mapping packages to the maximum version index
 of that package that could be reached in an optimal solution. If a pacakge
@@ -64,10 +64,8 @@ function find_reachable(
     queue = Dict{P,Int}(p => 1 for p in reqs)
 
     function add_queue!(dep::P, k::Int)
-        i = get(reach, dep, 0)
-        i ≥ k && return false
-        j = get(queue, dep, 0)
-        j ≥ k && return false
+        get(reach, dep, 0) ≥ k && return false
+        get(queue, dep, 0) ≥ k && return false
         queue[dep] = k
         return true
     end
@@ -85,6 +83,7 @@ function find_reachable(
             pkg_v in keys(pkg_info.depends) &&
             for dep in pkg_info.depends[pkg_v]
                 add_queue!(dep, 1)
+                add_queue!(pkg, i+1)
             end
             # look at conflicts
             pkg_v in keys(pkg_info.compat) &&
@@ -103,8 +102,8 @@ function find_reachable(
                     end
                     compatible && continue
                     # incompatible
-                    add_queue!(pkg, i+1)
                     add_queue!(dep, m+1)
+                    add_queue!(pkg, i+1)
                 end
             end
         end
@@ -423,29 +422,4 @@ function gen_sat(
     cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs),
 ) where {P,V,S}
     gen_sat(nothing, pkgs, reqs, cx)
-end
-
-function decode(
-    pkgs  :: Dict{P, PkgInfo{P,V,S}},
-    lines :: AbstractVector{<:AbstractString},
-) where {P,V,S}
-    vars = String[]
-    for p in sort!(collect(keys(pkgs)))
-        push!(vars, "$p")
-        for v in pkgs[p].versions
-            push!(vars, "$p/$v")
-        end
-    end
-    map(lines) do line
-        words = String.(split(line))
-        if !isempty(words) && words[1] != "p"
-            words = map(words) do word
-                i = parse(Int, word)
-                i > 0 && return vars[i]
-                i < 0 && return "!$(vars[-i])"
-                return word
-            end
-        end
-        join(words, " ")
-    end
 end

@@ -62,15 +62,75 @@ for p in all_names, q in get(all_ix, p, String[])
 end
 =#
 
-# const solver = Cmd([expanduser("~/dev/kissat/build/kissat"), "-q"])
-const solver = Cmd([expanduser("~/dev/picosat/picomus")])
+const picosat = expanduser("~/dev/picosat/picosat")
+const picomus = expanduser("~/dev/picosat/picomus")
 
-function solve(reqs_str::AbstractString, opts::Cmd=``)
+function decode_line(vars::Vector{String}, line::AbstractString)
+    words = String.(split(line))
+    if !isempty(words) && words[1] ∉ ("c", "p")
+        words = map(words) do word
+            i = tryparse(Int, word)
+            i === nothing && return word
+            i > 0 && return vars[i]
+            i < 0 && return "!$(vars[-i])"
+            return ""
+        end
+    end
+    return strip(join(words, " "))
+end
+
+function solve(reqs_str::AbstractString)
     reqs = String.(split(reqs_str, ','))
     pkgs = find_packages(dp, reqs)
-    filter_reachable!(pkgs, reqs)
+    # filter_reachable!(pkgs, reqs)
     filter_redundant!(pkgs)
 
+    # generate & solve problem
     problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
-    run(ignorestatus(`$solver $opts $problem`))
+    output = "tmp/output.txt"
+    open(output, write=true) do io
+        run(pipeline(ignorestatus(`$picomus $problem`), stdout=io))
+    end
+
+    # decode output
+    vars = String[]
+    for p in sort!(collect(keys(pkgs)))
+        push!(vars, "$p")
+        for v in pkgs[p].versions
+            push!(vars, "$p/$v")
+        end
+    end
+    sat = nothing
+    open(output) do io
+        while !eof(io)
+            line = readline(io)
+            if line == "s SATISFIABLE"
+                sat = true
+                while !eof(io)
+                    line = readline(io)
+                    startswith(line, "v ") || continue
+                    line = chop(line, head=2, tail=0)
+                    println(decode_line(vars, line))
+                end
+            elseif line == "s UNSATISFIABLE"
+                sat = false
+                core = Int[]
+                while !eof(io)
+                    line = readline(io)
+                    startswith(line, "v ") || continue
+                    line = chop(line, head=2, tail=0)
+                    i = parse(Int, line)
+                    i == 0 && break
+                    push!(core, i)
+                end
+                lines = readlines(problem)
+                popfirst!(lines)
+                filter!(!isempty, lines)
+                for line in lines[core]
+                    println(decode_line(vars, line))
+                end
+            end
+        end
+    end
+    return sat
 end

@@ -39,6 +39,46 @@ function find_packages(
     return pkgs
 end
 
+# two packages interact if there is some conflict between them
+
+function find_interacts(
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+) where {P,V,S}
+    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(pkgs))
+    for (pkg₁, info₁) in pkgs
+        interact₁ = interacts[pkg₁]
+        for ver₁ in info₁.versions
+            ver₁ in keys(info₁.compat) || continue
+            compat₁ = info₁.compat[ver₁]
+            for (pkg₂, spec₁) in compat₁
+                pkg₂ in interact₁ && continue
+                interact₂ = interacts[pkg₂]
+                for ver₂ in pkgs[pkg₂].versions
+                    if ver₂ ∉ spec₁
+                        push!(interact₁, pkg₂)
+                        push!(interact₂, pkg₁)
+                        break
+                    else
+                        compat₂ = pkgs[pkg₂].compat
+                        pkg₁ in keys(compat₂) || continue
+                        spec₂ = compat₂[pkg₁]
+                        if ver₁ ∉ spec₂
+                            push!(interact₁, pkg₂)
+                            push!(interact₂, pkg₁)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    filter!(interacts) do (pkg, ix)
+        !isempty(ix)
+    end
+    foreach(sort!, values(interacts))
+    return interacts
+end
+
 # filter down to versions that resolve might actually pick
 
 """
@@ -49,8 +89,8 @@ could appear in pareto-optimal solutions to version resolution for the given set
 of required "root" packages, using the following recursive logic:
 
 - P in reqs => P[1] reachable
-- P[i] reachable & P[i] depends on D => D[1] and P[i+1] reachable
-- P[i] reachable & P[i] conflicts w reachable => P[i+1] reachable
+- P[i] reachable & P[i] depends on D => D[1] reachable
+- P[i] reachable & P[i] conflicts w. reachable => P[i+1] reachable
 
 The function returns a dictionary mapping packages to the maximum version index
 of that package that could be reached in an optimal solution. If a pacakge
@@ -60,6 +100,8 @@ function find_reachable(
     pkgs :: Dict{P, PkgInfo{P,V,S}},
     reqs :: Vector{P},
 ) where {P,V,S}
+    interacts = find_interacts(pkgs)
+
     reach = Dict{P,Int}(p => 0 for p in reqs)
     queue = Dict{P,Int}(p => 1 for p in reqs)
 
@@ -145,46 +187,6 @@ function filter_reachable!(
 ) where {P,V,S}
     reach = find_reachable(pkgs, reqs)
     filter_reachable!(pkgs, reach)
-end
-
-# two packages interact if there is some conflict between them
-
-function find_interacts(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
-) where {P,V,S}
-    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(pkgs))
-    for (pkg₁, info₁) in pkgs
-        interact₁ = interacts[pkg₁]
-        for ver₁ in info₁.versions
-            ver₁ in keys(info₁.compat) || continue
-            compat₁ = info₁.compat[ver₁]
-            for (pkg₂, spec₁) in compat₁
-                pkg₂ in interact₁ && continue
-                interact₂ = interacts[pkg₂]
-                for ver₂ in pkgs[pkg₂].versions
-                    if ver₂ ∉ spec₁
-                        push!(interact₁, pkg₂)
-                        push!(interact₂, pkg₁)
-                        break
-                    else
-                        compat₂ = pkgs[pkg₂].compat
-                        pkg₁ in keys(compat₂) || continue
-                        spec₂ = compat₂[pkg₁]
-                        if ver₁ ∉ spec₂
-                            push!(interact₁, pkg₂)
-                            push!(interact₂, pkg₁)
-                            break
-                        end
-                    end
-                end
-            end
-        end
-    end
-    filter!(interacts) do (pkg, ix)
-        !isempty(ix)
-    end
-    foreach(sort!, values(interacts))
-    return interacts
 end
 
 # compute the set of conflicts between package versions

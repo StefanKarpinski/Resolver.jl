@@ -63,51 +63,57 @@ function find_reachable(
     reach = Dict{P,Int}(p => 0 for p in reqs)
     queue = Dict{P,Int}(p => 1 for p in reqs)
 
-    function add_queue!(dep::P, k::Int)
-        get(reach, dep, 0) ≥ k && return false
-        get(queue, dep, 0) ≥ k && return false
-        queue[dep] = k
+    function add_queue!(p::P, k::Int)
+        get(reach, p, 0) ≥ k && return false
+        get(queue, p, 0) ≥ k && return false
+        queue[p] = k
         return true
     end
 
     while !isempty(queue)
         # get unprocessed package + version
-        (pkg, k) = pop!(queue)
-        pkg_info = pkgs[pkg]
-        j = get(reach, pkg, 0)
-        k = min(k, length(pkg_info.versions))
-        reach[pkg] = k
-        for i = j+1:k
-            pkg_v = pkg_info.versions[i]
+        p, k = pop!(queue)
+        p_vers = pkgs[p].versions
+        p_deps = pkgs[p].depends
+        p_comp = pkgs[p].compat
+        j = get(reach, p, 0)
+        reach[p] = k
+        for i = j+1:min(k, length(p_vers))
+            p_v = p_vers[i]
             # look at dependencies
-            pkg_v in keys(pkg_info.depends) &&
-            for dep in pkg_info.depends[pkg_v]
-                add_queue!(dep, 1)
-                add_queue!(pkg, i+1)
+            p_v in keys(p_deps) &&
+            for q in p_deps[p_v]
+                add_queue!(q, 1)
             end
             # look at conflicts
-            pkg_v in keys(pkg_info.compat) &&
-            for (dep, spec) in pkg_info.compat[pkg_v]
-                dep_info = pkgs[dep]
-                l = get(reach, dep, 0)
-                for (m, dep_v) in enumerate(dep_info.versions)
-                    m ≤ l || break
+            # BUG: we're only looking in one direction
+            # we need the interacts logic from below here
+            p_v in keys(p_comp) &&
+            for (q, spec) in p_comp[p_v]
+                q_vers = pkgs[q].versions
+                q_comp = pkgs[q].compat
+                l = get(reach, q, 0)
+                for (m, q_v) in enumerate(q_vers)
+                    m ≤ l || break # only consider reachable
                     # check compatibilty
-                    compatible = dep_v in spec
-                    if dep_v in keys(dep_info.compat)
-                        dep_v_compat = dep_info.compat[dep_v]
-                        if pkg in keys(dep_v_compat)
-                            compatible &= pkg_v in dep_v_compat[pkg]
+                    compatible = q_v in spec
+                    if compatible && q_v in keys(q_comp)
+                        compat = q_comp[q_v]
+                        if p in keys(compat)
+                            compatible = p_v in compat[p]
                         end
                     end
                     compatible && continue
                     # incompatible
-                    add_queue!(dep, m+1)
-                    add_queue!(pkg, i+1)
+                    add_queue!(p, i+1)
+                    add_queue!(q, m+1)
                 end
             end
         end
     end
+
+    # TODO: if reach[p] > length(p_vers) then if the highest reachable
+    # version of a package depends on p, we need to add it's successor
 
     return reach
 end

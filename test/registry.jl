@@ -82,7 +82,7 @@ end
 function solve(reqs_str::AbstractString)
     reqs = String.(split(reqs_str, ','))
     pkgs = find_packages(dp, reqs)
-    # filter_reachable!(pkgs, reqs)
+    filter_reachable!(pkgs, reqs)
     filter_redundant!(pkgs)
 
     # generate & solve problem
@@ -97,7 +97,7 @@ function solve(reqs_str::AbstractString)
     for p in sort!(collect(keys(pkgs)))
         push!(vars, "$p")
         for v in pkgs[p].versions
-            push!(vars, "$p/$v")
+            push!(vars, "$p=$v")
         end
     end
     sat = nothing
@@ -105,14 +105,23 @@ function solve(reqs_str::AbstractString)
         while !eof(io)
             line = readline(io)
             if line == "s SATISFIABLE"
+                println("SATISFIABLE")
                 sat = true
+                seen = Set{String}()
                 while !eof(io)
                     line = readline(io)
                     startswith(line, "v ") || continue
                     line = chop(line, head=2, tail=0)
-                    println(decode_line(vars, line))
+                    line = decode_line(vars, line)
+                    startswith(line, "!") && continue
+                    contains(line, "=") || continue
+                    pkg = String(split(line, "=")[1])
+                    pkg in seen && continue
+                    println(line)
+                    push!(seen, pkg)
                 end
             elseif line == "s UNSATISFIABLE"
+                println("UNSATISFIABLE")
                 sat = false
                 core = Int[]
                 while !eof(io)

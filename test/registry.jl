@@ -79,20 +79,25 @@ function decode_line(vars::Vector{String}, line::AbstractString)
     return strip(join(words, " "))
 end
 
+using TimerOutputs
+
 function solve(reqs_str::AbstractString)
+    to = TimerOutput()
+    @timeit to "solve" begin
     reqs = String.(split(reqs_str, ','))
-    pkgs = find_packages(dp, reqs)
-    filter_reachable!(pkgs, reqs)
-    filter_redundant!(pkgs)
+    @timeit to "collect packages" pkgs = find_packages(dp, reqs)
+    @timeit to "filter reachable" filter_reachable!(pkgs, reqs)
+    @timeit to "filter redundant" filter_redundant!(pkgs)
 
     # generate & solve problem
-    problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
+    @timeit to "generate SAT" problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
     output = "tmp/output.txt"
-    open(output, write=true) do io
+    @timeit to "solve SAT" open(output, write=true) do io
         run(pipeline(ignorestatus(`$picomus $problem`), stdout=io))
     end
 
     # decode output
+    @timeit to "decode" begin
     vars = String[]
     for p in sort!(collect(keys(pkgs)))
         push!(vars, "$p")
@@ -141,5 +146,7 @@ function solve(reqs_str::AbstractString)
             end
         end
     end
-    return sat
+    end # @timeit "decode"
+    end # @timeit "solve"
+    show(to)
 end

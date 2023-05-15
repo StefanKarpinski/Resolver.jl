@@ -40,28 +40,6 @@ dp = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
     PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
 
-#=
-all_names = sort!(collect(keys(reg_dict)))
-filter!(!endswith("_jll"), all_names)
-filter!(!in(excludes), all_names)
-all_pkgs = find_packages(dp, all_names)
-filter_reachable!(all_pkgs, all_names)
-filter_redundant!(all_pkgs)
-all_ix = find_interacts(all_pkgs)
-
-const pairs = Tuple{String,String}[]
-for p in all_names, q in get(all_ix, p, String[])
-    p < q || continue
-    reqs = [p, q]
-    pkgs = find_packages(dp, reqs)
-    filter_reachable!(pkgs, reqs)
-    filter_redundant!(pkgs)
-    all(length(pkgs[p].versions) > 1 for p in reqs) || continue
-    push!(pairs, (p, q))
-    @show reqs
-end
-=#
-
 const picosat = expanduser("~/dev/picosat/picosat")
 const picomus = expanduser("~/dev/picosat/picomus")
 
@@ -81,10 +59,11 @@ end
 
 using TimerOutputs
 
-function solve(reqs_str::AbstractString)
+solve(reqs_str::AbstractString) = solve(String.(split(reqs_str, r"\s*,\s*")))
+
+function solve(reqs::AbstractVector{<:AbstractString})
     to = TimerOutput()
     @timeit to "solve" begin
-    reqs = String.(split(reqs_str, ','))
     @timeit to "collect packages" pkgs = find_packages(dp, reqs)
     @timeit to "filter reachable" filter_reachable!(pkgs, reqs)
     @timeit to "filter redundant" filter_redundant!(pkgs)
@@ -150,3 +129,27 @@ function solve(reqs_str::AbstractString)
     end # @timeit "solve"
     show(to)
 end
+
+all_names = sort!(collect(keys(reg_dict)))
+filter!(!endswith("_jll"), all_names)
+filter!(!in(excludes), all_names)
+nothing
+
+#=
+all_pkgs = find_packages(dp, all_names)
+filter_reachable!(all_pkgs, all_names)
+filter_redundant!(all_pkgs)
+all_ix = find_interacts(all_pkgs)
+
+const pairs = Tuple{String,String}[]
+for p in all_names, q in get(all_ix, p, String[])
+    p < q || continue
+    reqs = [p, q]
+    pkgs = find_packages(dp, reqs)
+    filter_reachable!(pkgs, reqs)
+    filter_redundant!(pkgs)
+    all(length(pkgs[p].versions) > 1 for p in reqs) || continue
+    push!(pairs, (p, q))
+    @show reqs
+end
+=#

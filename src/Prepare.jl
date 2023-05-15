@@ -102,8 +102,9 @@ function find_reachable(
 ) where {P,V,S}
     interacts = find_interacts(pkgs)
 
-    reach = Dict{P,Int}(p => 0 for p in reqs)
     queue = Dict{P,Int}(p => 1 for p in reqs)
+    reach = Dict{P,Int}(p => 0 for p in reqs)
+    saturated = Set{P}()
 
     function add_queue!(p::P, k::Int)
         get(reach, p, 0) ≥ k && return false
@@ -127,6 +128,21 @@ function find_reachable(
         vers_p = info_p.versions
         deps_p = info_p.depends
         comp_p = info_p.compat
+        # check for saturation
+        if k > length(vers_p)
+            push!(saturated, p)
+            for (q, j) in reach
+                info_q = pkgs[q]
+                vers_q = info_q.versions
+                1 ≤ j ≤ length(vers_q) || continue
+                w = vers_q[j]
+                if p in get(info_q.depends, w, deps_∅)
+                    # q@j conflicts with p being uninstallable
+                    # p in saturated means that can happen
+                    add_queue!(q, j+1)
+                end
+            end
+        end
         # main work loop
         for i = j+1:min(k, length(vers_p))
             v = vers_p[i]
@@ -135,6 +151,11 @@ function find_reachable(
             # dependencies
             for q in deps_pv
                 add_queue!(q, 1)
+                if q in saturated
+                    # p@i conflicts with q being uninstallable
+                    # q in saturated means that can happen
+                    add_queue!(p, i+1)
+                end
             end
             # conflicts
             for q in intx

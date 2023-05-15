@@ -112,49 +112,56 @@ function find_reachable(
         return true
     end
 
+    # empty deps & compat
+    deps_∅ = Vector{P}()
+    comp_∅ = Dict{P,S}()
+    intx_∅ = deps_∅ # same structure
+
     while !isempty(queue)
         # get unprocessed package + version
         p, k = pop!(queue)
-        p_vers = pkgs[p].versions
-        p_deps = pkgs[p].depends
-        p_comp = pkgs[p].compat
         j = get(reach, p, 0)
-        reach[p] = k
-        for i = j+1:min(k, length(p_vers))
-            p_v = p_vers[i]
-            # look at dependencies
-            p_v in keys(p_deps) &&
-            for q in p_deps[p_v]
+        # look up some stuff about p
+        intx = get(interacts, p, intx_∅)
+        info_p = pkgs[p]
+        vers_p = info_p.versions
+        deps_p = info_p.depends
+        comp_p = info_p.compat
+        # main work loop
+        for i = j+1:min(k, length(vers_p))
+            v = vers_p[i]
+            deps_pv = get(deps_p, v, deps_∅)
+            comp_pv = get(comp_p, v, comp_∅)
+            # dependencies
+            for q in deps_pv
                 add_queue!(q, 1)
             end
-            # look at conflicts
-            # BUG: we're only looking in one direction
-            # we need the interacts logic from below here
-            p_v in keys(p_comp) &&
-            for (q, spec) in p_comp[p_v]
-                q_vers = pkgs[q].versions
-                q_comp = pkgs[q].compat
+            # conflicts
+            for q in intx
+                info_q = pkgs[q]
+                vers_q = info_q.versions
+                comp_q = info_q.compat
                 l = get(reach, q, 0)
-                for (m, q_v) in enumerate(q_vers)
+                for (m, w) in enumerate(vers_q)
                     m ≤ l || break # only consider reachable
-                    # check compatibilty
-                    compatible = q_v in spec
-                    if compatible && q_v in keys(q_comp)
-                        compat = q_comp[q_v]
-                        if p in keys(compat)
-                            compatible = p_v in compat[p]
-                        end
-                    end
-                    compatible && continue
-                    # incompatible
+                    comp_qw = get(comp_q, w, comp_∅)
+                    v ∈ keys(comp_p) &&
+                    q ∈ keys(comp_pv) &&
+                    w ∉ comp_pv[q] ||
+                    w ∈ keys(comp_q) &&
+                    p ∈ keys(comp_qw) &&
+                    v ∉ comp_qw[p] || continue
+                    # v & w have a conflict
                     add_queue!(p, i+1)
                     add_queue!(q, m+1)
                 end
             end
         end
+        # update the reach map
+        reach[p] = k
     end
 
-    # TODO: if reach[p] > length(p_vers) then if the highest reachable
+    # TODO: if reach[p] > length(vers_p) then if the highest reachable
     # version of a package depends on p, we need to add it's successor
 
     return reach
@@ -168,13 +175,12 @@ function filter_reachable!(
         k = reach[pkg]
         info = pkgs[pkg]
         vers = info.versions
-        @assert k ≤ length(vers)
         for j = k+1:length(vers)
             ver = vers[j]
             delete!(info.depends, ver)
             delete!(info.compat, ver)
         end
-        resize!(vers, k)
+        k < length(vers) && resize!(vers, k)
     end
     filter!(pkgs) do (pkg, info)
         pkg in keys(reach) && !isempty(info.versions)
@@ -204,12 +210,13 @@ function find_conflicts(
     intx :: Vector{P},
 ) where {P,V,S}
     # look up some stuff about p
-    info = pkgs[p]
-    vers_p = info.versions
-    comp_p = info.compat
+    info_p = pkgs[p]
+    vers_p = info_p.versions
+    deps_p = info_p.depends
+    comp_p = info_p.compat
     # collect all dependency packages
     dx = P[]
-    for (v, deps) in info.depends
+    for (v, deps) in deps_p
         union!(dx, deps)
     end
     sort!(dx)
@@ -219,26 +226,33 @@ function find_conflicts(
     n = length(dx) + # per dependency package + interacting package version
         sum(init=0, length(pkgs[q].versions) for q in intx)
     X = falses(m + active, n + active) # conflicts & actives
+    # empty deps & compat
+    deps_∅ = Vector{P}()
+    comp_∅ = Dict{P,S}()
+    # main work loop
     for (i, v) in enumerate(vers_p)
-        deps_pv = info.depends[v]
-        comp_pv = info.compat[v]
+        deps_pv = get(deps_p, v, deps_∅)
+        comp_pv = get(comp_p, v, comp_∅)
+        # dependencies
         for (j, q) in enumerate(dx)
             X[i, j] = q ∈ deps_pv
         end
+        # conflicts
         b = length(dx)
         for q in intx
             ix[q] = b
-            vers_q = pkgs[q].versions
-            comp_q = pkgs[q].compat
-            for (j, u) in enumerate(vers_q)
-                comp_qu = comp_q[u]
+            info_q = pkgs[q]
+            vers_q = info_q.versions
+            comp_q = info_q.compat
+            for (j, w) in enumerate(vers_q)
+                comp_qw = get(comp_q, w, comp_∅)
                 X[i, b + j] =
                     v ∈ keys(comp_p) &&
                     q ∈ keys(comp_pv) &&
-                    u ∉ comp_pv[q] ||
-                    u ∈ keys(comp_q) &&
-                    p ∈ keys(comp_qu) &&
-                    v ∉ comp_qu[p]
+                    w ∉ comp_pv[q] ||
+                    w ∈ keys(comp_q) &&
+                    p ∈ keys(comp_qw) &&
+                    v ∉ comp_qw[p]
             end
             b += length(vers_q)
         end
@@ -318,6 +332,7 @@ function filter_redundant!(
     for (p, info) in pkgs
         X = cx[p].conflicts
         m = length(info.versions)
+        # find all the redundant versions of p
         append!(empty!(R), (j for j = 1:m if !X[j, end]))
         for (i, v) in enumerate(info.versions)
             i in R || continue

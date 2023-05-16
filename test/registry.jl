@@ -63,20 +63,28 @@ solve(reqs_str::AbstractString) = solve(String.(split(reqs_str, r"\s*,\s*")))
 
 function solve(reqs::AbstractVector{<:AbstractString})
     to = TimerOutput()
-    @timeit to "solve" begin
-    @timeit to "collect packages" pkgs = find_packages(dp, reqs)
-    @timeit to "filter reachable" filter_reachable!(pkgs, reqs)
-    @timeit to "filter redundant" filter_redundant!(pkgs)
+    @timeit to "total" begin
+        @timeit to "collect packages" pkgs = find_packages(dp, reqs)
+        @timeit to "filter reachable" filter_reachable!(pkgs, reqs)
+        @timeit to "filter redundant" filter_redundant!(pkgs)
+        @timeit to "resolve versions" sat = solve(pkgs, reqs)
+    end
+    show(to)
+    return sat
+end
 
+function solve(
+    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    reqs :: AbstractVector{<:AbstractString},
+) where {P,V,S}
     # generate & solve problem
-    @timeit to "generate SAT" problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
+    problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
     output = "tmp/output.txt"
-    @timeit to "solve SAT" open(output, write=true) do io
+    open(output, write=true) do io
         run(pipeline(ignorestatus(`$picomus $problem`), stdout=io))
     end
 
     # decode output
-    @timeit to "decode" begin
     vars = String[]
     for p in sort!(collect(keys(pkgs)))
         push!(vars, "$p")
@@ -125,15 +133,29 @@ function solve(reqs::AbstractVector{<:AbstractString})
             end
         end
     end
-    end # @timeit "decode"
-    end # @timeit "solve"
-    show(to)
+    return sat
 end
 
 all_names = sort!(collect(keys(reg_dict)))
 filter!(!endswith("_jll"), all_names)
 filter!(!in(excludes), all_names)
-nothing
+# setdiff!(all_names, ["FinEtoolsDeforNonlinear"])
+# nothing
+
+uninstallable = String[]
+all_pkgs = find_packages(dp, all_names)
+filter_reachable!(all_pkgs, all_names)
+filter_redundant!(all_pkgs)
+
+for pkg in all_names
+    println("[[[ $pkg ]]]")
+    reqs = [pkg]
+    pkgs = deepcopy(all_pkgs)
+    filter_reachable!(pkgs, reqs)
+    filter_redundant!(pkgs)
+    solve(pkgs, reqs) && continue
+    push!(uninstallable, pkg)
+end
 
 #=
 all_pkgs = find_packages(dp, all_names)

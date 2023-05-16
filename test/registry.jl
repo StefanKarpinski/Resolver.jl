@@ -139,9 +139,30 @@ end
 all_names = sort!(collect(keys(reg_dict)))
 filter!(!endswith("_jll"), all_names)
 filter!(!in(excludes), all_names)
-# setdiff!(all_names, ["FinEtoolsDeforNonlinear"])
-# nothing
+all_pkgs = find_packages(dp, all_names)
+filter_reachable!(all_pkgs, all_names)
+filter_redundant!(all_pkgs)
 
+# uninstallable pair with the least total versions
+reqs = ["ClassicalOrthogonalPolynomials", "PoincareInvariants"]
+pkgs = deepcopy(all_pkgs)
+filter_reachable!(pkgs, reqs)
+filter_redundant!(pkgs)
+solve(pkgs, reqs)
+
+#=
+for line in eachline("test/pkg_pairs.csv")
+    p, q = split(line, ',')
+    reqs = String[p, q]
+    println(repr(reqs))
+    pkgs = deepcopy(all_pkgs)
+    filter_reachable!(pkgs, reqs)
+    filter_redundant!(pkgs)
+    !solve(pkgs, reqs) && break
+end
+=#
+
+#=
 uninstallable = String[]
 all_pkgs = find_packages(dp, all_names)
 filter_reachable!(all_pkgs, all_names)
@@ -156,6 +177,7 @@ for pkg in all_names
     solve(pkgs, reqs) && continue
     push!(uninstallable, pkg)
 end
+=#
 
 #=
 all_pkgs = find_packages(dp, all_names)

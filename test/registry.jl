@@ -3,12 +3,12 @@ using Pkg.Registry: RegistryInstance, init_package_info!
 using Pkg.Types: stdlibs
 using Pkg.Versions: VersionSpec
 
-const reg_path = joinpath(depots1(), "registries", "General")
-const reg_inst = RegistryInstance(expanduser(reg_path))
-const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs))
 const excludes = push!(Set(first.(values(stdlibs()))), "julia")
+const reg_path = joinpath(depots1(), "registries", "General.toml")
+const reg_inst = RegistryInstance(reg_path)
+const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs) if p.name ∉ excludes)
 
-dp = DepsProvider{String, VersionNumber, VersionSpec}() do pkg::String
+dp = DepsProvider{String, VersionNumber, VersionSpec}(keys(reg_dict)) do pkg::String
     info = init_package_info!(reg_dict[pkg])
     vers = sort!(collect(keys(info.version_info)), rev=true)
     deps = Dict(v => String[] for v in vers)

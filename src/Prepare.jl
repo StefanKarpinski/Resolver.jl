@@ -10,20 +10,29 @@ struct PkgInfo{P,V,S}
 end
 
 struct DepsProvider{P,V,S,F<:Function}
+    packages :: Vector{P}
     provider :: F
 end
 
-DepsProvider{P,V,S}(provider::Function) where {P,V,S} =
-    DepsProvider{P,V,S,typeof(provider)}(provider)
+const SetOrVec{T} = Union{AbstractSet{T}, AbstractVector{T}}
+
+function DepsProvider{P,V,S}(
+    provider :: Function,
+    packages :: SetOrVec{P},
+) where {P,V,S}
+    packages = sort!(P[p for p in packages])
+    DepsProvider{P,V,S,typeof(provider)}(packages, provider)
+end
 
 (deps::DepsProvider{P,V,S,F})(pkg::P) where {P,V,S,F<:Function} =
     deps.provider(pkg) :: PkgInfo{P,V,S}
 
-# find all packages and versions that might be needed for resolution
+# load all package info that might be needed for a set of requirements
+# given no requirements, load all packages the provider knows about
 
-function find_packages(
+function load_packages(
     deps :: DepsProvider{P,V,S},
-    reqs :: Vector{P},
+    reqs :: SetOrVec{P} = deps.packages,
 ) where {P,V,S}
     pkgs = Dict{P, PkgInfo{P,V,S}}()
     work = Set(reqs)
@@ -218,18 +227,21 @@ end
 
 # compute the set of conflicts between package versions
 
-struct Conflicts{P}
+struct PkgEntry{P,V}
+    versions  :: Vector{V}
     depends   :: Vector{P}
     interacts :: Dict{P, Int}
     conflicts :: BitMatrix
 end
 
-function find_conflicts(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
+function PkgEntry(
+    pkg    :: P,
+    pkgs   :: Dict{P, PkgInfo{P,V,S}},
+    intx   :: Vector{P},
     active :: Bool,
-    p :: P,
-    intx :: Vector{P},
 ) where {P,V,S}
+    # shorter name
+    p = pkg
     # look up some stuff about p
     info_p = pkgs[p]
     vers_p = info_p.versions
@@ -286,17 +298,17 @@ function find_conflicts(
             X[end, j] = any(X[i, j] for i = 1:m)
         end
     end
-    return Conflicts(dx, ix, X)
+    return PkgEntry(vers_p, dx, ix, X)
 end
 
-function find_conflicts(
+function pkg_entries(
     pkgs :: Dict{P,PkgInfo{P,V,S}},
     active :: Bool = false,
 ) where {P,V,S}
+    ∅ = P[] # empty vector (reused)
     interacts = find_interacts(pkgs)
-    ∅ = P[] # reuse empty vector
-    Dict{P, Conflicts{P}}(
-        p => find_conflicts(pkgs, active, p, get(interacts, p, ∅))
+    Dict{P, PkgEntry{P,V}}(
+        p => PkgEntry(p, pkgs, get(interacts, p, ∅), active)
         for p in keys(pkgs)
     )
 end
@@ -305,21 +317,21 @@ end
 
 function filter_redundant!(
     pkgs :: Dict{P, PkgInfo{P,V,S}},
-    cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs, true),
+    data :: Dict{P, PkgEntry{P,V}} = pkg_entries(pkgs, true),
 ) where {P,V,S}
-    work = copy(keys(cx))
+    work = copy(keys(data))
     names = sort!(collect(work))
     # some work vectors
     J = Int[] # active versions vector
     K = Int[] # active conflicts vector
     R = Int[] # redundant indices vector
-    sort!(names, by = p -> length(cx[p].interacts))
+    sort!(names, by = p -> length(data[p].interacts))
     for p in Iterators.cycle(names)
         isempty(work) && break
         p in work || continue
         delete!(work, p)
         # get conflicts & dimensions
-        X = cx[p].conflicts
+        X = data[p].conflicts
         m = size(X, 1) - 1
         m > 1 || continue # unique version cannot be reundant
         n = size(X, 2) - 1
@@ -344,14 +356,14 @@ function filter_redundant!(
         isempty(R) && continue
         # deactivate redundant versions
         X[R, end] .= false
-        for q in keys(cx[p].interacts)
-            b = cx[q].interacts[p]
-            cx[q].conflicts[end, b .+ R] .= false
+        for q in keys(data[p].interacts)
+            b = data[q].interacts[p]
+            data[q].conflicts[end, b .+ R] .= false
             push!(work, q) # can create new redundancies
         end
     end
     for (p, info) in pkgs
-        X = cx[p].conflicts
+        X = data[p].conflicts
         m = length(info.versions)
         # find all the redundant versions of p
         append!(empty!(R), (j for j = 1:m if !X[j, end]))
@@ -364,7 +376,63 @@ function filter_redundant!(
     end
 end
 
+# primary entry-point for loading package data
+
+function get_pkg_data(
+    deps :: DepsProvider{P,V,S},
+    reqs :: SetOrVec{P} = deps.packages,
+) where {P,V,S}
+    pkgs = load_packages(deps, reqs)
+    filter_reachable!(pkgs, reqs)
+    filter_redundant!(pkgs)
+    pkg_entries(pkgs)
+end
+
 using ArgTools
+
+const magic = "\xfapkg data v1\0"
+
+function write_strs(io::IO, v::Vector)
+    write(io, UInt16(length(v)))
+    for x in v
+        s = x isa String ? x : string(x)
+        write(io, UInt8(ncodeunits(s)))
+        write(io, s)
+    end
+end
+
+function write_strs(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
+    write(io, UInt16(length(v)))
+    for x in v
+        s = x isa String ? x : string(x)
+        write(io, UInt16(inds[s]))
+    end
+end
+
+function write_bits(io::IO, X::BitMatrix)
+    l = length(X)
+    write(io, UInt32(l))
+    bytes = @view(reinterpret(UInt8, X.chunks)[1:cld(l,8)])
+    write(io, bytes)
+end
+
+function save_pkg_data(
+    data :: Dict{P, PkgEntry{P,V}},
+    out  :: Union{ArgWrite, Nothing} = nothing,
+) where {P,V}
+    arg_write(out) do out
+        write(out, magic)
+        pv = sort!(collect(keys(data)))
+        pm = Dict{P,Int}(p => i for (i, p) in enumerate(pv))
+        write_strs(out, pv)
+        for (p, d) in data
+            write_strs(out, d.versions)
+            write_strs(out, pm, d.depends)
+            write_strs(out, pm, sort!(collect(keys(d.interacts))))
+            write_bits(out, d.conflicts)
+        end
+    end
+end
 
 # variables for each package:
 #  - one for the package
@@ -378,21 +446,20 @@ using ArgTools
 
 function gen_sat(
     out  :: Union{ArgWrite, Nothing},
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    data :: Dict{P, PkgEntry{P}},
     reqs :: Vector{P},
-    cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs),
-) where {P,V,S}
+) where {P}
     arg_write(out) do out
         # compute & output header
-        names = sort!(collect(keys(pkgs)))
+        names = sort!(collect(keys(data)))
         var = Dict{P, Int}() # variable indices
         v = 0 # number of variables
         x = 0 # number of conflicts
         for p in names
             var[p] = v + 1
-            v += length(pkgs[p].versions) + 1
-            x += sum(cx[p].conflicts)
-            x += sum(@view(cx[p].conflicts[:, 1:length(cx[p].depends)]))
+            v += length(data[p].versions) + 1
+            x += sum(data[p].conflicts)
+            x += sum(@view(data[p].conflicts[:, 1:length(data[p].depends)]))
         end
         # conflicts are double-counted
         @assert iseven(x)
@@ -409,7 +476,7 @@ function gen_sat(
         # output package version clauses
         for p in names
             print(out, "-$(var[p]) ")
-            for i = 1:length(pkgs[p].versions)
+            for i = 1:length(data[p].versions)
                 print(out, "$(var[p]+i) ")
             end
             println(out, "0")
@@ -417,9 +484,9 @@ function gen_sat(
         println(out)
         # output dependency clauses
         for p in names
-            for i = 1:length(pkgs[p].versions)
-                for (j, q) in enumerate(cx[p].depends)
-                    cx[p].conflicts[i, j] || continue
+            for i = 1:length(data[p].versions)
+                for (j, q) in enumerate(data[p].depends)
+                    data[p].conflicts[i, j] || continue
                     println(out, "-$(var[p]+i) $(var[q]) 0")
                 end
             end
@@ -427,12 +494,12 @@ function gen_sat(
         println(out)
         # output incompatibility clauses
         for p in names
-            for q in sort!(collect(keys(cx[p].interacts)))
+            for q in sort!(collect(keys(data[p].interacts)))
                 q < p || break
-                b = cx[p].interacts[q]
-                for i = 1:length(pkgs[p].versions),
-                    j = 1:length(pkgs[q].versions)
-                    cx[p].conflicts[i, b+j] || continue
+                b = data[p].interacts[q]
+                for i = 1:length(data[p].versions),
+                    j = 1:length(data[q].versions)
+                    data[p].conflicts[i, b+j] || continue
                     println(out, "-$(var[p]+i) -$(var[q]+j) 0")
                 end
             end
@@ -440,17 +507,17 @@ function gen_sat(
         println(out)
         # output optimality clauses
         for p in names
-            for i = 1:length(pkgs[p].versions)
+            for i = 1:length(data[p].versions)
                 print(out, "-$(var[p]) $(var[p]+i) ")
                 # can be "excused" if a better version is chosen
                 for j = 1:i-1
                     print(out, "$(var[p]+j) ")
                 end
                 # or if it conflicts with something else chosen
-                for q in sort!(collect(keys(cx[p].interacts)))
-                    b = cx[p].interacts[q]
-                    for j = 1:length(pkgs[q].versions)
-                        cx[p].conflicts[i, b+j] || continue
+                for q in sort!(collect(keys(data[p].interacts)))
+                    b = data[p].interacts[q]
+                    for j = 1:length(data[q].versions)
+                        data[p].conflicts[i, b+j] || continue
                         print(out, "$(var[q]+j) ")
                     end
                 end
@@ -461,9 +528,8 @@ function gen_sat(
 end
 
 function gen_sat(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    data :: Dict{P, PkgEntry{P}},
     reqs :: Vector{P},
-    cx   :: Dict{P, Conflicts{P}} = find_conflicts(pkgs),
-) where {P,V,S}
-    gen_sat(nothing, pkgs, reqs, cx)
+) where {P}
+    gen_sat(nothing, data, reqs)
 end

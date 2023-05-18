@@ -399,20 +399,45 @@ using ArgTools
 
 const magic = "\xfapkg data v1\0"
 
+# write LEB128 integer value
+function write_int(io::IO, n::Integer)
+    @assert n ≥ 0
+    more = true
+    while more
+        b = (n % UInt8) & 0x7f
+        n >>= 7
+        more = !iszero(n)
+        b |= UInt8(more) << 7
+        write(io, b)
+    end
+end
+
+# read LEB128 integer value
+function read_int(io::IO, ::Type{T} = Int) where {T<:Integer}
+    n::T = s = 0
+    while true
+        b = read(io, UInt8)
+        n |= T(b & 0x7f) << s
+        (b % Int8) ≥ 0 && break
+        s += 7
+    end
+    return n
+end
+
 function write_vals(io::IO, v::Vector)
-    write(io, UInt16(length(v)))
+    write_int(io, length(v))
     for x in v
         s = x isa String ? x : string(x)
-        write(io, UInt8(ncodeunits(s)))
+        write_int(io, ncodeunits(s))
         write(io, s)
     end
 end
 
 function read_vals(io::IO, ::Type{T}) where {T}
-    n = read(io, UInt16)
+    n = read_int(io, Int)
     v = Vector{T}(undef, n)
     for i = 1:n
-        l = read(io, UInt8)
+        l = read_int(io)
         s = String(read(io, l))
         v[i] = T === String ? s : parse(T, s)
     end
@@ -420,18 +445,18 @@ function read_vals(io::IO, ::Type{T}) where {T}
 end
 
 function write_vals(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
-    write(io, UInt16(length(v)))
+    write_int(io, length(v))
     for x in v
         s = x isa String ? x : string(x)
-        write(io, UInt16(inds[s]))
+        write_int(io, inds[s])
     end
 end
 
 function read_vals(io::IO, vals::Vector{T}) where {T}
-    n = read(io, UInt16)
+    n = read_int(io)
     v = Vector{T}(undef, n)
     for i = 1:n
-        j = read(io, UInt16)
+        j = read_int(io)
         v[i] = vals[j]
     end
     return v
@@ -439,13 +464,13 @@ end
 
 function write_bits(io::IO, X::BitMatrix)
     l = length(X)
-    write(io, UInt32(l))
+    write_int(io, l)
     bytes = @view(reinterpret(UInt8, X.chunks)[1:cld(l,8)])
     write(io, bytes)
 end
 
 function read_bits(io::IO, m::Int)
-    l = read(io, UInt32)
+    l = read_int(io)
     n, r = divrem(l, m)
     iszero(r) || error("unexpected bit matrix length: $l not divisible by $m")
     X = BitMatrix(undef, m, n)

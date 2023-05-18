@@ -401,6 +401,16 @@ function write_strs(io::IO, v::Vector)
     end
 end
 
+function read_strs(io::IO)
+    n = read(io, UInt16)
+    v = Vector{String}(undef, n)
+    for i = 1:n
+        l = read(io, UInt8)
+        v[i] = String(read(io, l))
+    end
+    return v
+end
+
 function write_strs(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
     write(io, UInt16(length(v)))
     for x in v
@@ -409,11 +419,30 @@ function write_strs(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
     end
 end
 
+function read_strs(io::IO, vals::Vector{String})
+    n = read(io, UInt16)
+    v = Vector{String}(undef, n)
+    for i = 1:n
+        j = read(io, UInt16)
+        v[i] = vals[j]
+    end
+    return v
+end
+
 function write_bits(io::IO, X::BitMatrix)
     l = length(X)
     write(io, UInt32(l))
     bytes = @view(reinterpret(UInt8, X.chunks)[1:cld(l,8)])
     write(io, bytes)
+end
+
+function read_bits(io::IO, m::Int)
+    l = read(io, UInt32)
+    n, r = divrem(l, m)
+    iszero(r) || error("unexpected bit matrix length: $l not divisible by $m")
+    X = BitMatrix(undef, m, n)
+    read!(io, @view(reinterpret(UInt8, X.chunks)[1:cld(l,8)]))
+    return X
 end
 
 function save_pkg_data(

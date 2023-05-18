@@ -234,6 +234,13 @@ struct PkgEntry{P,V}
     conflicts :: BitMatrix
 end
 
+function Base.:(==)(a::PkgEntry, b::PkgEntry)
+    a.versions  == b.versions  &&
+    a.depends   == b.depends   &&
+    a.interacts == b.interacts &&
+    a.conflicts == b.conflicts
+end
+
 function PkgEntry(
     pkg    :: P,
     pkgs   :: Dict{P, PkgInfo{P,V,S}},
@@ -392,7 +399,7 @@ using ArgTools
 
 const magic = "\xfapkg data v1\0"
 
-function write_strs(io::IO, v::Vector)
+function write_vals(io::IO, v::Vector)
     write(io, UInt16(length(v)))
     for x in v
         s = x isa String ? x : string(x)
@@ -401,17 +408,18 @@ function write_strs(io::IO, v::Vector)
     end
 end
 
-function read_strs(io::IO)
+function read_vals(io::IO, ::Type{T}) where {T}
     n = read(io, UInt16)
-    v = Vector{String}(undef, n)
+    v = Vector{T}(undef, n)
     for i = 1:n
         l = read(io, UInt8)
-        v[i] = String(read(io, l))
+        s = String(read(io, l))
+        v[i] = T === String ? s : parse(T, s)
     end
     return v
 end
 
-function write_strs(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
+function write_vals(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
     write(io, UInt16(length(v)))
     for x in v
         s = x isa String ? x : string(x)
@@ -419,9 +427,9 @@ function write_strs(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
     end
 end
 
-function read_strs(io::IO, vals::Vector{String})
+function read_vals(io::IO, vals::Vector{T}) where {T}
     n = read(io, UInt16)
-    v = Vector{String}(undef, n)
+    v = Vector{T}(undef, n)
     for i = 1:n
         j = read(io, UInt16)
         v[i] = vals[j]
@@ -453,13 +461,47 @@ function save_pkg_data(
         write(out, magic)
         pv = sort!(collect(keys(data)))
         pm = Dict{P,Int}(p => i for (i, p) in enumerate(pv))
-        write_strs(out, pv)
-        for (p, d) in data
-            write_strs(out, d.versions)
-            write_strs(out, pm, d.depends)
-            write_strs(out, pm, sort!(collect(keys(d.interacts))))
+        write_vals(out, pv)
+        for p in pv
+            d = data[p]
+            write_vals(out, d.versions)
+            write_vals(out, pm, d.depends)
+            write_vals(out, pm, sort!(collect(keys(d.interacts))))
             write_bits(out, d.conflicts)
         end
+    end
+end
+
+function load_pkg_data(
+    in :: ArgRead,
+    :: Type{P} = String,
+    :: Type{V} = VersionNumber,
+) where {P,V}
+    arg_read(in) do in
+        m = String(read(in, ncodeunits(magic)))
+        m == magic || error("""
+            Unexpected package data format, magic doesn't match:
+                $(repr(m)) != $(repr(magic))
+            """)
+        pv = read_vals(in, P)
+        data = Dict{P, PkgEntry{P,V}}()
+        for p in pv
+            vers = read_vals(in, V)
+            deps = read_vals(in, pv)
+            intx = read_vals(in, pv)
+            conf = read_bits(in, length(vers))
+            ix = Dict{P, Int}(q => 0 for q in intx)
+            data[p] = PkgEntry(vers, deps, ix, conf)
+        end
+        # compute interacts dict values
+        for (p, d) in data
+            b = length(d.depends)
+            for q in sort!(collect(keys(d.interacts)))
+                d.interacts[q] = b
+                b += length(data[q].versions)
+            end
+        end
+        return data
     end
 end
 

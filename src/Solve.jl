@@ -22,8 +22,9 @@ function gen_sat(
         for p in names
             var[p] = v + 1
             v += length(data[p].versions) + 1
+            d = length(data[p].depends)
             x += sum(data[p].conflicts)
-            x += sum(@view(data[p].conflicts[:, 1:length(data[p].depends)]))
+            x += sum(@view(data[p].conflicts[:, 1:d])) # count deps twice
         end
         # conflicts are double-counted
         @assert iseven(x)

@@ -194,3 +194,81 @@ function solve(
     end
     return sat
 end
+
+using LinearAlgebra: checksquare
+
+function gen_max_clique_sat(
+    out   :: Union{ArgWrite, Nothing},
+    G     :: AbstractMatrix{Bool},
+    parts :: Vector{Vector{Int}},
+    force :: Vector{Int} = Int[],
+)
+    arg_write(out) do out
+        # output the header
+        n = checksquare(G)
+        c = nnz(G)÷2 + length(parts) + length(force)
+        println(out, "p cnf $n $c")
+        println(out)
+        # output vertex partitions (packages)
+        for part in parts
+            for i in part
+                print(out, "$i ")
+            end
+            println(out, "0")
+        end
+        println(out)
+        # output graph structure
+        for (i, j, v) in zip(findnz(G)...)
+            i < j && v || continue
+            println(out, "-$i -$j 0")
+        end
+        isempty(force) || println(out)
+        # output forced nodes
+        for i in force
+            println(out, "$i 0")
+        end
+    end
+end
+
+function gen_max_clique_sat(
+    G     :: AbstractMatrix{Bool},
+    parts :: Vector{Vector{Int}},
+    force :: Vector{Int} = Int[],
+)
+    gen_max_clique_sat(nothing, G, parts, force)
+end
+
+function parse_picosat_output(io::ArgRead)
+    arg_read(io) do io
+        sat = nothing
+        vals = Int[]
+        while !eof(io)
+            line = readline(io)
+            if line == "s SATISFIABLE"
+                sat = true
+            elseif line == "s UNSATISFIABLE"
+                sat = false
+            elseif startswith(line, "v ")
+                val = parse(Int, chop(line, head=2, tail=0))
+                val != 0 && push!(vals, val)
+            end
+        end
+        sat === nothing && error("error parsing picosat output")
+        return sat, vals
+    end
+end
+
+function solve_max_clique(
+    G     :: AbstractMatrix{Bool},
+    parts :: Vector{Vector{Int}},
+    force :: Vector{Int} = Int[],
+)
+    problem = "tmp/problem.cnf"
+    output = "tmp/output.txt"
+
+    problem = gen_max_clique_sat(problem, G, parts, force)
+    open(output, write=true) do io
+        run(pipeline(ignorestatus(`$picomus $problem`), stdout=io))
+    end
+    parse_picosat_output(output)
+end

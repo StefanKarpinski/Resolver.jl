@@ -529,3 +529,56 @@ function load_pkg_data(
         return data
     end
 end
+
+using SparseArrays
+
+const ⛔️ = v"0-"
+
+function to_graph(
+    data :: Dict{P, PkgEntry{P,V}},
+) where {P,V}
+    nodes = Tuple{P,V}[]
+    for p in sort!(collect(keys(data)))
+        d = data[p]
+        push!(nodes, (p, ⛔️))
+        for v in d.versions
+            push!(nodes, (p, v))
+        end
+    end
+    inds = Dict(pv => i for (i, pv) in enumerate(nodes))
+    n = length(nodes)
+    I = Int[]; J = Int[]
+    for (p, d) in data
+        vers = [⛔️; d.versions]
+        for (i_plus_1, v) in enumerate(vers)
+            i = i_plus_1 - 1
+            ii = inds[p, v]
+            # incompatible with other versions of same package
+            for w in vers
+                v == w && continue
+                jj = inds[p, w]
+                push!(I, ii)
+                push!(J, jj)
+            end
+            v == ⛔️ && continue
+            # incompatible with the "non version" of dependencies
+            for q in data[p].depends
+                jj = inds[q, ⛔️]
+                push!(I, ii, jj)
+                push!(J, jj, ii)
+            end
+            # incompatible with explicit incompatibilities
+            for (q, b) in data[p].interacts
+                for (j, w) in enumerate(data[q].versions)
+                    if d.conflicts[i, b + j]
+                        jj = inds[q, w]
+                        push!(I, ii)
+                        push!(J, jj)
+                    end
+                end
+            end
+        end
+    end
+    G = sparse(I, J, true, n, n)
+    return nodes, G
+end

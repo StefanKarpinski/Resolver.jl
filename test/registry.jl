@@ -40,14 +40,32 @@ dp = DepsProvider{String, VersionNumber, VersionSpec}(keys(reg_dict)) do pkg::St
     PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
 
-#=
-all_names = sort!(collect(keys(reg_dict)))
-filter!(!endswith("_jll"), all_names)
-filter!(!in(excludes), all_names)
-all_pkgs = find_packages(dp, all_names)
-filter_reachable!(all_pkgs, all_names)
-filter_redundant!(all_pkgs)
+using GraphModularDecomposition
+using GraphModularDecomposition.StrongModuleTrees
 
+reqs = String.(split("MultivariatePolynomials,MultivariateSeries", ','))
+data = get_pkg_data(dp, reqs)
+nodes, G = to_graph(data)
+parts = let d = Dict{String,Vector{Int}}()
+    for (i, (p, v)) in enumerate(nodes)
+        push!(get!(()->valtype(d)(), d, p), i)
+    end
+    sort!(collect(values(d)))
+end
+
+L = [v == v"0-" ? "!$p" : "$p/$v" for (p, v) in nodes]
+S = sort!(StrongModuleTree(G))
+L[S] # labeled strong module tree
+L[S[1]] # labeled prime subtree
+x = first_leaf.(S[1])
+G1 = G[x,x] # prime module quotient subgraph
+
+
+
+# filter_reachable!(all_pkgs, all_names)
+# filter_redundant!(all_pkgs)
+
+#=
 # uninstallable pair with the least total versions
 reqs = ["ClassicalOrthogonalPolynomials", "PoincareInvariants"]
 pkgs = deepcopy(all_pkgs)

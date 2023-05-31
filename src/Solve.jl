@@ -270,5 +270,45 @@ function solve_max_clique(
     open(output, write=true) do io
         run(pipeline(ignorestatus(`$picomus $problem`), stdout=io))
     end
-    parse_picosat_output(output)
+    sat, sol = parse_picosat_output(output)
+    filter!(>(0), sol)
+    return sat, sol
+end
+
+function complete_graph!(
+    G::AbstractMatrix{Bool},
+    parts::Vector{Vector{Int}},
+)
+    n = checksquare(G)
+    C = Set{Tuple{Int,Int}}() # compat set
+    for i = 1:n-1, j = i+1:n
+        G[i, j] && continue # explicit incompatibility
+        (i, j) in C && continue # known compatible
+        sat, sol = solve_max_clique(G, parts, [i, j])
+        if !sat
+            # implicit incompatibility
+            G[i, j] = G[j, i] = true
+            continue
+        end
+        # solution including i & j
+        # println(repr(sol))
+        for k = 1:n
+            sum(G[sol, k]) > 1 && continue
+            # 0 or 1 incompatibilities with solution
+            # 0 => k is already in the solution
+            # 1 => k is swappable into solution
+            for l in sol
+                l < k && push!(C, (l, k))
+                k < l && push!(C, (k, l))
+            end
+        end
+    end
+    return G
+end
+
+function complete_graph(
+    G::AbstractMatrix{Bool},
+    parts::Vector{Vector{Int}},
+)
+    complete_graph!(copy(G), parts)
 end

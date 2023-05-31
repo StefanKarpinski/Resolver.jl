@@ -52,6 +52,7 @@ parts = let d = Dict{String,Vector{Int}}()
     end
     sort!(collect(values(d)))
 end
+complete_graph!(G, parts)
 
 L = [v == v"0-" ? "!$p" : "$p/$v" for (p, v) in nodes]
 S = sort!(StrongModuleTree(G))
@@ -59,6 +60,7 @@ L[S] # labeled strong module tree
 L[S[1]] # labeled prime subtree
 x = first_leaf.(S[1])
 G1 = G[x,x] # prime module quotient subgraph
+
 
 
 

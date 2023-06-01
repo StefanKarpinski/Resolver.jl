@@ -52,16 +52,18 @@ parts = let d = Dict{String,Vector{Int}}()
     end
     sort!(collect(values(d)))
 end
-complete_graph!(G, parts)
+G′ = complete_graph(G, parts)
+D = G′ - G
+# E = sort!([(i, j) for (i, j) in zip(findnz(D)...) if i < j])
 
-L = [v == v"0-" ? "!$p" : "$p/$v" for (p, v) in nodes]
 S = sort!(StrongModuleTree(G))
+S′ = sort!(StrongModuleTree(G′))
+L = [v == v"0-" ? "!$p" : "$p/$v" for (p, v) in nodes]
 L[S] # labeled strong module tree
 L[S[1]] # labeled prime subtree
-x = first_leaf.(S[1])
+x = map(first_leaf, S[1])
+y = setdiff(1:length(nodes), leaves(S[1]))
 G1 = G[x,x] # prime module quotient subgraph
-
-
 
 
 # filter_reachable!(all_pkgs, all_names)

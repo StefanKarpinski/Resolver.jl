@@ -43,7 +43,7 @@ end
 using GraphModularDecomposition
 using GraphModularDecomposition.StrongModuleTrees
 
-reqs = String.(split("MultivariatePolynomials,MultivariateSeries", ','))
+reqs = String.(split("Druid,HTTP", ','))
 data = get_pkg_data(dp, reqs)
 nodes, G = to_graph(data)
 parts = let d = Dict{String,Vector{Int}}()
@@ -52,18 +52,34 @@ parts = let d = Dict{String,Vector{Int}}()
     end
     sort!(collect(values(d)))
 end
-G′ = complete_graph(G, parts)
-D = G′ - G
+L = [v == v"0-" ? "!$p" : "$p/$v" for (p, v) in nodes]
+
+H = complete_graph(G, parts)
+D = H .!= G
 # E = sort!([(i, j) for (i, j) in zip(findnz(D)...) if i < j])
 
 S = sort!(StrongModuleTree(G))
-S′ = sort!(StrongModuleTree(G′))
-L = [v == v"0-" ? "!$p" : "$p/$v" for (p, v) in nodes]
-L[S] # labeled strong module tree
-L[S[1]] # labeled prime subtree
+T = sort!(StrongModuleTree(H))
+
+# get a prime node
+P = S[1]
+v = map(first_leaf, P)
+c = Tuple{Int,Int}[]
+for i in v, j in v
+    i < j || continue
+    r = setdiff(v, (i, j))
+    x = G[r, i] .!= G[r, j]
+    y = D[r, i] .| D[r, j]
+    z = count(@. x & !y)
+    # println("$i, $j => $z")
+    z == 0 && println("$i, $j")
+    push!(c, (i, j))
+end
+
 x = map(first_leaf, S[1])
 y = setdiff(1:length(nodes), leaves(S[1]))
 G1 = G[x,x] # prime module quotient subgraph
+
 
 
 # filter_reachable!(all_pkgs, all_names)

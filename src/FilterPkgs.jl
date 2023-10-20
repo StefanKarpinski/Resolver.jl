@@ -28,7 +28,7 @@ function find_reachable(
     function enqueue(p::P, i::Int)
         i > get(reach, p, 0) || return false
         i > get(queue, p, 0) || return false
-        queue[p] = i
+        queue[p] = min(i, length(info[p].versions)+1)
         return true
     end
 

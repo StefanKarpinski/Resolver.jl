@@ -1,5 +1,7 @@
 using ArgTools
 
+# TODO: need to handle presence of active bits in conflicts
+
 function save_pkg_info_file(
     info :: Dict{P, PkgInfo{P,V}},
     out  :: Union{ArgWrite, Nothing} = nothing,

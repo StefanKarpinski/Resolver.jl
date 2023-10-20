@@ -176,6 +176,7 @@ function filter_redundant!(
         # find redundant versions
         empty!(R)
         for j in J
+            # don't combine loops--it changes what break & continue do
             for i in J
                 i < j || break
                 i ∈ R && continue

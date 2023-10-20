@@ -111,15 +111,13 @@ function load_pkg_info(
         # mark all versions as active
         X[1:m, end] .= true
         X[end, 1:n] .= true
+        X[end, end] = false
         # add the PkgInfo struct to dict
         info[p] = PkgInfo(vers_p, dx, ix, X)
     end
     return info
 end
 
-# # mark all rows & columns as active
-# X[1:m, end] .= true
-# X[end, 1:n] .= true
 # TODO: more this to the redundancy filtering code
 # # columns can start inactive if they have no conflicts
 # for j = 1:n

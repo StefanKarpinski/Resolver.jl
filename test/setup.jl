@@ -1,7 +1,7 @@
 using Test
 using Random
 using Resolver
-using Resolver: resolve_core, SetOrVector, DepsProvider, PkgInfo
+using Resolver: resolve_core, SetOrVector, DepsProvider, PkgEntry
 
 function resolve_brute_force(
     versions  :: AbstractVector,
@@ -110,6 +110,6 @@ function make_deps(
         filter!(C) do (v, c)
             !isempty(c)
         end
-        PkgInfo{P, V, Set{V}}(collect(vers), D, C)
+        PkgEntry{P, V, Set{V}}(collect(vers), D, C)
     end
 end

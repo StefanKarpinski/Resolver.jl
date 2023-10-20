@@ -11,7 +11,7 @@ const SetOrVector{T} = Union{AbstractSet{T}, AbstractVector{T}}
 #  V = version type
 #  S = version set type
 
-struct PkgInfo{P,V,S}
+struct PkgEntry{P,V,S}
     vers :: Vector{V}
     deps :: Dict{V, Vector{P}}
     comp :: Dict{V, Dict{P, S}}
@@ -25,7 +25,7 @@ DepsProvider{P,V,S}(provider::Function) where {P,V,S} =
     DepsProvider{P,V,S,typeof(provider)}(provider)
 
 (deps::DepsProvider{P,V,S,F})(pkg::P) where {P,V,S,F<:Function} =
-    deps.provider(pkg) :: PkgInfo{P,V,S}
+    deps.provider(pkg) :: PkgEntry{P,V,S}
 
 function resolve(deps::DepsProvider{P,V}, reqs::Vector{P}) where {P,V}
     @eval t₀::Float64 = time()
@@ -74,7 +74,7 @@ function prepare(deps::DepsProvider{P,V,S}, reqs::Vector{P}) where {P,V,S}
     interact = Dict{P, Vector{Int}}()
 
     # pkg info cache
-    cache = Dict{P, PkgInfo{P, V, S}}()
+    cache = Dict{P, PkgEntry{P, V, S}}()
     pkg!(p) = get!(() -> deps(p), cache, p)
     vers!(p) = pkg!(p).vers
     deps!(p) = pkg!(p).deps
@@ -232,9 +232,9 @@ function resolve_core(
     relax     :: Integer = 0,
 ) where {P}
     # package maps
-    pkgs = unique(packages)
-    inds = Dict{P, Int}(p => k for (k, p) in enumerate(pkgs))
-    versions = [Int[] for _ = 1:length(pkgs)]
+    pkg_entries = unique(packages)
+    inds = Dict{P, Int}(p => k for (k, p) in enumerate(pkg_entries))
+    versions = [Int[] for _ = 1:length(pkg_entries)]
     for (v, p) in enumerate(packages)
         push!(versions[inds[p]], v)
     end

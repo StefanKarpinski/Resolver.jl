@@ -10,7 +10,7 @@
 
 function gen_sat(
     out  :: Union{ArgWrite, Nothing},
-    data :: Dict{P, PkgEntry{P}},
+    data :: Dict{P, PkgInfo{P}},
     reqs :: Vector{P},
 ) where {P}
     arg_write(out) do out
@@ -93,7 +93,7 @@ function gen_sat(
 end
 
 function gen_sat(
-    data :: Dict{P, PkgEntry{P}},
+    data :: Dict{P, PkgInfo{P}},
     reqs :: Vector{P},
 ) where {P}
     gen_sat(nothing, data, reqs)
@@ -120,10 +120,10 @@ solve(reqs_str::AbstractString) = solve(String.(split(reqs_str, r"\s*,\s*")))
 function solve(reqs::AbstractVector{<:AbstractString})
     to = TimerOutput()
     @timeit to "total" begin
-        @timeit to "collect packages" pkgs = find_packages(dp, reqs)
-        @timeit to "filter reachable" filter_reachable!(pkgs, reqs)
-        @timeit to "filter redundant" filter_redundant!(pkgs)
-        @timeit to "resolve versions" sat = solve(pkgs, reqs)
+        @timeit to "collect packages" pkg_entries = load_pkg_entries(dp, reqs)
+        @timeit to "filter reachable" filter_reachable!(pkg_entries, reqs)
+        @timeit to "filter redundant" filter_redundant!(pkg_entries)
+        @timeit to "resolve versions" sat = solve(pkg_entries, reqs)
     end
     show(to)
     return sat
@@ -133,11 +133,11 @@ const picosat = expanduser("~/dev/picosat/picosat")
 const picomus = expanduser("~/dev/picosat/picomus")
 
 function solve(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    pkg_entries :: Dict{P, PkgEntry{P,V,S}},
     reqs :: AbstractVector{<:AbstractString},
 ) where {P,V,S}
     # generate & solve problem
-    problem = gen_sat("tmp/problem.cnf", pkgs, reqs)
+    problem = gen_sat("tmp/problem.cnf", pkg_entries, reqs)
     output = "tmp/output.txt"
     open(output, write=true) do io
         run(pipeline(ignorestatus(`$picomus $problem`), stdout=io))
@@ -145,9 +145,9 @@ function solve(
 
     # decode output
     vars = String[]
-    for p in sort!(collect(keys(pkgs)))
+    for p in sort!(collect(keys(pkg_entries)))
         push!(vars, "$p")
-        for v in pkgs[p].versions
+        for v in pkg_entries[p].versions
             push!(vars, "$p=$v")
         end
     end

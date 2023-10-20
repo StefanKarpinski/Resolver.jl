@@ -6,7 +6,7 @@ using Pkg.Versions: VersionSpec
 const excludes = push!(Set(first.(values(stdlibs()))), "julia")
 const reg_path = joinpath(depots1(), "registries", "General.toml")
 const reg_inst = RegistryInstance(reg_path)
-const reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs) if p.name ∉ excludes)
+const reg_dict = Dict(p.name => p for p in values(reg_inst.pkg_entries) if p.name ∉ excludes)
 
 dp = DepsProvider{String, VersionNumber, VersionSpec}(keys(reg_dict)) do pkg::String
     info = init_package_info!(reg_dict[pkg])
@@ -36,8 +36,8 @@ dp = DepsProvider{String, VersionNumber, VersionSpec}(keys(reg_dict)) do pkg::St
         deps[v] == deps[w] && (deps[v] = deps[w])
         comp[v] == comp[w] && (comp[v] = comp[w])
     end
-    # return resolver PkgInfo data structure
-    PkgInfo{String, VersionNumber, VersionSpec}(vers, deps, comp)
+    # return resolver PkgEntry data structure
+    PkgEntry{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
 
 using GraphModularDecomposition
@@ -82,16 +82,16 @@ G1 = G[x,x] # prime module quotient subgraph
 
 
 
-# filter_reachable!(all_pkgs, all_names)
-# filter_redundant!(all_pkgs)
+# filter_reachable!(all_pkg_entries, all_names)
+# filter_redundant!(all_pkg_entries)
 
 #=
 # uninstallable pair with the least total versions
 reqs = ["ClassicalOrthogonalPolynomials", "PoincareInvariants"]
-pkgs = deepcopy(all_pkgs)
-filter_reachable!(pkgs, reqs)
-filter_redundant!(pkgs)
-solve(pkgs, reqs)
+pkg_entries = deepcopy(all_pkg_entries)
+filter_reachable!(pkg_entries, reqs)
+filter_redundant!(pkg_entries)
+solve(pkg_entries, reqs)
 =#
 
 #=
@@ -99,44 +99,44 @@ for line in eachline("test/pkg_pairs.csv")
     p, q = split(line, ',')
     reqs = String[p, q]
     println(repr(reqs))
-    pkgs = deepcopy(all_pkgs)
-    filter_reachable!(pkgs, reqs)
-    filter_redundant!(pkgs)
-    !solve(pkgs, reqs) && break
+    pkg_entries = deepcopy(all_pkg_entries)
+    filter_reachable!(pkg_entries, reqs)
+    filter_redundant!(pkg_entries)
+    !solve(pkg_entries, reqs) && break
 end
 =#
 
 #=
 uninstallable = String[]
-all_pkgs = find_packages(dp, all_names)
-filter_reachable!(all_pkgs, all_names)
-filter_redundant!(all_pkgs)
+all_pkg_entries = load_pkg_entries(dp, all_names)
+filter_reachable!(all_pkg_entries, all_names)
+filter_redundant!(all_pkg_entries)
 
 for pkg in all_names
     println("[[[ $pkg ]]]")
     reqs = [pkg]
-    pkgs = deepcopy(all_pkgs)
-    filter_reachable!(pkgs, reqs)
-    filter_redundant!(pkgs)
-    solve(pkgs, reqs) && continue
+    pkg_entries = deepcopy(all_pkg_entries)
+    filter_reachable!(pkg_entries, reqs)
+    filter_redundant!(pkg_entries)
+    solve(pkg_entries, reqs) && continue
     push!(uninstallable, pkg)
 end
 =#
 
 #=
-all_pkgs = find_packages(dp, all_names)
-filter_reachable!(all_pkgs, all_names)
-filter_redundant!(all_pkgs)
-all_ix = find_interacts(all_pkgs)
+all_pkg_entries = load_pkg_entries(dp, all_names)
+filter_reachable!(all_pkg_entries, all_names)
+filter_redundant!(all_pkg_entries)
+all_ix = find_interacts(all_pkg_entries)
 
 const pairs = Tuple{String,String}[]
 for p in all_names, q in get(all_ix, p, String[])
     p < q || continue
     reqs = [p, q]
-    pkgs = find_packages(dp, reqs)
-    filter_reachable!(pkgs, reqs)
-    filter_redundant!(pkgs)
-    all(length(pkgs[p].versions) > 1 for p in reqs) || continue
+    pkg_entries = load_pkg_entries(dp, reqs)
+    filter_reachable!(pkg_entries, reqs)
+    filter_redundant!(pkg_entries)
+    all(length(pkg_entries[p].versions) > 1 for p in reqs) || continue
     push!(pairs, (p, q))
     @show reqs
 end

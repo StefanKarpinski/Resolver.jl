@@ -1,91 +1,14 @@
-# Type Parameters:
-#  P = package type (String)
-#  V = version type (VersionNumber)
-#  S = version set type (VersionSpec)
+# primary entry-point for loading package data
 
-struct PkgInfo{P,V,S}
-    versions :: Vector{V}
-    depends  :: Dict{V, Vector{P}}
-    compat   :: Dict{V, Dict{P, S}}
-end
-
-struct DepsProvider{P,V,S,F<:Function}
-    packages :: Vector{P}
-    provider :: F
-end
-
-const SetOrVec{T} = Union{AbstractSet{T}, AbstractVector{T}}
-
-function DepsProvider{P,V,S}(
-    provider :: Function,
-    packages :: SetOrVec{P},
-) where {P,V,S}
-    packages = sort!(P[p for p in packages])
-    DepsProvider{P,V,S,typeof(provider)}(packages, provider)
-end
-
-(deps::DepsProvider{P,V,S,F})(pkg::P) where {P,V,S,F<:Function} =
-    deps.provider(pkg) :: PkgInfo{P,V,S}
-
-# load all package info that might be needed for a set of requirements
-# given no requirements, load all packages the provider knows about
-
-function load_packages(
+function get_pkg_data(
     deps :: DepsProvider{P,V,S},
     reqs :: SetOrVec{P} = deps.packages,
 ) where {P,V,S}
-    pkgs = Dict{P, PkgInfo{P,V,S}}()
-    work = Set(reqs)
-    while !isempty(work)
-        pkg = pop!(work)
-        @assert pkg ∉ keys(pkgs)
-        info = pkgs[pkg] = deps(pkg)
-        for pkgs′ in values(info.depends), pkg′ in pkgs′
-            pkg′ in keys(pkgs) && continue
-            push!(work, pkg′)
-        end
-    end
-    return pkgs
-end
-
-# two packages interact if there is some conflict between them
-
-function find_interacts(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
-) where {P,V,S}
-    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(pkgs))
-    for (pkg₁, info₁) in pkgs
-        interact₁ = interacts[pkg₁]
-        for ver₁ in info₁.versions
-            ver₁ in keys(info₁.compat) || continue
-            compat₁ = info₁.compat[ver₁]
-            for (pkg₂, spec₁) in compat₁
-                pkg₂ in interact₁ && continue
-                interact₂ = interacts[pkg₂]
-                for ver₂ in pkgs[pkg₂].versions
-                    if ver₂ ∉ spec₁
-                        push!(interact₁, pkg₂)
-                        push!(interact₂, pkg₁)
-                        break
-                    else
-                        compat₂ = pkgs[pkg₂].compat
-                        pkg₁ in keys(compat₂) || continue
-                        spec₂ = compat₂[pkg₁]
-                        if ver₁ ∉ spec₂
-                            push!(interact₁, pkg₂)
-                            push!(interact₂, pkg₁)
-                            break
-                        end
-                    end
-                end
-            end
-        end
-    end
-    filter!(interacts) do (pkg, ix)
-        !isempty(ix)
-    end
-    foreach(sort!, values(interacts))
-    return interacts
+    pkg_entries = load_pkg_entries(deps, reqs)
+    filter_reachable!(pkg_entries, reqs)
+    pkg_info = pkg_info_dict(pkg_entries)
+    filter_redundant!(pkg_info)
+    pkg_info_dict(pkg_entries)
 end
 
 # filter down to versions that resolve might actually pick
@@ -106,10 +29,10 @@ of that package that could be reached in an optimal solution. If a pacakge
 cannot appear in an optimal solution, it will not appear in this dictionary.
 """
 function find_reachable(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    pkg_entries :: Dict{P, PkgEntry{P,V,S}},
     reqs :: Vector{P},
 ) where {P,V,S}
-    interacts = find_interacts(pkgs)
+    interacts = find_interacts(pkg_entries)
 
     queue = Dict{P,Int}(p => 1 for p in reqs)
     reach = Dict{P,Int}(p => 0 for p in reqs)
@@ -133,7 +56,7 @@ function find_reachable(
         j = get(reach, p, 0)
         # look up some stuff about p
         intx = get(interacts, p, intx_∅)
-        info_p = pkgs[p]
+        info_p = pkg_entries[p]
         vers_p = info_p.versions
         deps_p = info_p.depends
         comp_p = info_p.compat
@@ -141,7 +64,7 @@ function find_reachable(
         if k > length(vers_p)
             push!(saturated, p)
             for (q, j) in reach
-                info_q = pkgs[q]
+                info_q = pkg_entries[q]
                 vers_q = info_q.versions
                 1 ≤ j ≤ length(vers_q) || continue
                 w = vers_q[j]
@@ -168,7 +91,7 @@ function find_reachable(
             end
             # conflicts
             for q in intx
-                info_q = pkgs[q]
+                info_q = pkg_entries[q]
                 vers_q = info_q.versions
                 comp_q = info_q.compat
                 l = get(reach, q, 0)
@@ -198,134 +121,38 @@ function find_reachable(
 end
 
 function filter_reachable!(
-    pkgs  :: Dict{P, PkgInfo{P,V,S}},
+    pkg_entries  :: Dict{P, PkgEntry{P,V,S}},
     reach :: Dict{P, Int},
 ) where {P,V,S}
     for pkg in sort!(collect(keys(reach)))
         k = reach[pkg]
-        info = pkgs[pkg]
-        vers = info.versions
+        entry = pkg_entries[pkg]
+        vers = entry.versions
         for j = k+1:length(vers)
             ver = vers[j]
-            delete!(info.depends, ver)
-            delete!(info.compat, ver)
+            delete!(entry.depends, ver)
+            delete!(entry.compat, ver)
         end
         k < length(vers) && resize!(vers, k)
     end
-    filter!(pkgs) do (pkg, info)
-        pkg in keys(reach) && !isempty(info.versions)
+    filter!(pkg_entries) do (pkg, entry)
+        pkg in keys(reach) && !isempty(entry.versions)
     end
 end
 
 function filter_reachable!(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
+    pkg_entries :: Dict{P, PkgEntry{P,V,S}},
     reqs :: Vector{P},
 ) where {P,V,S}
-    reach = find_reachable(pkgs, reqs)
-    filter_reachable!(pkgs, reach)
-end
-
-# compute the set of conflicts between package versions
-
-struct PkgEntry{P,V}
-    versions  :: Vector{V}
-    depends   :: Vector{P}
-    interacts :: Dict{P, Int}
-    conflicts :: BitMatrix
-end
-
-function Base.:(==)(a::PkgEntry, b::PkgEntry)
-    a.versions  == b.versions  &&
-    a.depends   == b.depends   &&
-    a.interacts == b.interacts &&
-    a.conflicts == b.conflicts
-end
-
-function PkgEntry(
-    pkg    :: P,
-    pkgs   :: Dict{P, PkgInfo{P,V,S}},
-    intx   :: Vector{P},
-    active :: Bool,
-) where {P,V,S}
-    # shorter name
-    p = pkg
-    # look up some stuff about p
-    info_p = pkgs[p]
-    vers_p = info_p.versions
-    deps_p = info_p.depends
-    comp_p = info_p.compat
-    # collect all dependency packages
-    dx = P[]
-    for (v, deps) in deps_p
-        union!(dx, deps)
-    end
-    sort!(dx)
-    ix = Dict{P, Int}(p => 0 for p in intx)
-    # compute interactions matrix (m × n)
-    m = length(vers_p) # per package version
-    n = length(dx) + # per dependency package + interacting package version
-        sum(init=0, length(pkgs[q].versions) for q in intx)
-    X = falses(m + active, n + active) # conflicts & actives
-    # empty deps & compat
-    deps_∅ = Vector{P}()
-    comp_∅ = Dict{P,S}()
-    # main work loop
-    for (i, v) in enumerate(vers_p)
-        deps_pv = get(deps_p, v, deps_∅)
-        comp_pv = get(comp_p, v, comp_∅)
-        # dependencies
-        for (j, q) in enumerate(dx)
-            X[i, j] = q ∈ deps_pv
-        end
-        # conflicts
-        b = length(dx)
-        for q in intx
-            ix[q] = b
-            info_q = pkgs[q]
-            vers_q = info_q.versions
-            comp_q = info_q.compat
-            for (j, w) in enumerate(vers_q)
-                comp_qw = get(comp_q, w, comp_∅)
-                X[i, b + j] =
-                    v ∈ keys(comp_p) &&
-                    q ∈ keys(comp_pv) &&
-                    w ∉ comp_pv[q] ||
-                    w ∈ keys(comp_q) &&
-                    p ∈ keys(comp_qw) &&
-                    v ∉ comp_qw[p]
-            end
-            b += length(vers_q)
-        end
-    end
-    # initially all versions are active
-    if active
-        X[1:m, end] .= true
-        # columns can start inactive if they have no conflicts
-        for j = 1:n
-            X[end, j] = any(X[i, j] for i = 1:m)
-        end
-    end
-    return PkgEntry(vers_p, dx, ix, X)
-end
-
-function pkg_entries(
-    pkgs :: Dict{P,PkgInfo{P,V,S}},
-    active :: Bool = false,
-) where {P,V,S}
-    ∅ = P[] # empty vector (reused)
-    interacts = find_interacts(pkgs)
-    Dict{P, PkgEntry{P,V}}(
-        p => PkgEntry(p, pkgs, get(interacts, p, ∅), active)
-        for p in keys(pkgs)
-    )
+    reach = find_reachable(pkg_entries, reqs)
+    filter_reachable!(pkg_entries, reach)
 end
 
 # eliminate versions that can never be chosen
 
 function filter_redundant!(
-    pkgs :: Dict{P, PkgInfo{P,V,S}},
-    data :: Dict{P, PkgEntry{P,V}} = pkg_entries(pkgs, true),
-) where {P,V,S}
+    data :: Dict{P, PkgInfo{P,V}},
+) where {P,V}
     work = copy(keys(data))
     names = sort!(collect(work))
     # some work vectors
@@ -369,30 +196,6 @@ function filter_redundant!(
             push!(work, q) # can create new redundancies
         end
     end
-    for (p, info) in pkgs
-        X = data[p].conflicts
-        m = length(info.versions)
-        # find all the redundant versions of p
-        append!(empty!(R), (j for j = 1:m if !X[j, end]))
-        for (i, v) in enumerate(info.versions)
-            i in R || continue
-            delete!(info.depends, v)
-            delete!(info.compat, v)
-        end
-        deleteat!(info.versions, R)
-    end
-end
-
-# primary entry-point for loading package data
-
-function get_pkg_data(
-    deps :: DepsProvider{P,V,S},
-    reqs :: SetOrVec{P} = deps.packages,
-) where {P,V,S}
-    pkgs = load_packages(deps, reqs)
-    filter_reachable!(pkgs, reqs)
-    filter_redundant!(pkgs)
-    pkg_entries(pkgs)
 end
 
 using ArgTools
@@ -479,7 +282,7 @@ function read_bits(io::IO, m::Int)
 end
 
 function save_pkg_data(
-    data :: Dict{P, PkgEntry{P,V}},
+    data :: Dict{P, PkgInfo{P,V}},
     out  :: Union{ArgWrite, Nothing} = nothing,
 ) where {P,V}
     arg_write(out) do out
@@ -509,14 +312,14 @@ function load_pkg_data(
                 $(repr(m)) != $(repr(magic))
             """)
         pv = read_vals(in, P)
-        data = Dict{P, PkgEntry{P,V}}()
+        data = Dict{P, PkgInfo{P,V}}()
         for p in pv
             vers = read_vals(in, V)
             deps = read_vals(in, pv)
             intx = read_vals(in, pv)
             conf = read_bits(in, length(vers))
             ix = Dict{P, Int}(q => 0 for q in intx)
-            data[p] = PkgEntry(vers, deps, ix, conf)
+            data[p] = PkgInfo(vers, deps, ix, conf)
         end
         # compute interacts dict values
         for (p, d) in data
@@ -535,7 +338,7 @@ using SparseArrays
 const ⛔️ = v"0-"
 
 function to_graph(
-    data :: Dict{P, PkgEntry{P,V}},
+    data :: Dict{P, PkgInfo{P,V}},
 ) where {P,V}
     nodes = Tuple{P,V}[]
     for p in sort!(collect(keys(data)))

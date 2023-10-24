@@ -114,5 +114,117 @@ function find_reachable!(
         info_p.conflicts[1:r, end] .= true
         info_p.conflicts[r+1:end, end] .= false
     end
+    return reach
 end
 
+function find_redundant!(
+    info :: Dict{P, PkgInfo{P,V}},
+) where {P,V}
+    work = copy(keys(info))
+    names = sort!(collect(work))
+    # initialize active column flags
+    for (p, info_p) in info
+        X = info_p.conflicts
+        m = size(X, 1)-1
+        n = size(X, 2)-1
+        for j = 1:n
+            # we don't have to look at columns that have no
+            # conflicts for any active versions of package
+            X[end, j] = any(X[i, j] for i = 1:m if X[i, end])
+        end
+    end
+    # some work vectors
+    J = Int[] # active versions vector
+    K = Int[] # active conflicts vector
+    R = Int[] # redundant indices vector
+    sort!(names, by = p -> length(info[p].interacts))
+    for p in Iterators.cycle(names)
+        isempty(work) && break
+        p in work || continue
+        delete!(work, p)
+        # get conflicts & dimensions
+        X = info[p].conflicts
+        m = size(X, 1) - 1
+        m > 1 || continue # unique version cannot be reundant
+        n = size(X, 2) - 1
+        # active indices
+        append!(empty!(J), (j for j = 1:m if X[j, end]))
+        length(J) > 1 || continue # unique version cannot be reundant
+        append!(empty!(K), (k for k = 1:n if X[end, k]))
+        # find redundant versions
+        empty!(R)
+        for j in J
+            # don't combine loops--it changes what break & continue do
+            for i in J
+                i < j || break
+                i ∈ R && continue
+                all(!X[i, k] | X[j, k] for k in K) || continue
+                # an earlier version is strictly more compatible
+                # i.e. i < j and X[i, k] => X[j, k] for all k
+                # therefore i will always be chosen instead of j
+                push!(R, j)
+                break
+            end
+        end
+        isempty(R) && continue
+        # deactivate redundant versions
+        X[R, end] .= false
+        for q in keys(info[p].interacts)
+            b = info[q].interacts[p]
+            info[q].conflicts[end, b .+ R] .= false
+            push!(work, q) # can create new redundancies
+        end
+    end
+end
+
+function shrink_pkg_info!(
+    info′ :: Dict{P, PkgInfo{P,V}},
+    info  :: Dict{P, PkgInfo{P,V}} = info′,
+) where {P,V}
+    # info[p].conflicts[:, end] bits are definitive
+    # first, set info[p].conflicts[end, :] bits to match
+    for (p, info_p) in info
+        X = info_p.conflicts
+        X[end, :] .= false
+        # fill in active flags for dependencies
+        for (k, q) in enumerate(info_p.depends)
+            X[end, k] = any(X[i, k] for i = 1:size(X,1)-1)
+        end
+        # fill in active flags for interactions
+        for (q, b) in info_p.interacts
+            K = findall(info[q].conflicts[1:end-1, end])
+            X[end, b .+ K] .= true
+        end
+    end
+    # save original version counts
+    N = Dict{P, Int}(
+        p => length(info_p.versions)
+        for (p, info_p) in info
+    )
+    # go through again and shrink each PkgInfo
+    for (p, info_p) in info
+        # abbreviate components
+        D = info_p.depends
+        T = info_p.interacts
+        X = info_p.conflicts
+        # active version masks
+        I = X[1:end-1, end]
+        K = X[end, 1:end-1]
+        # compute shrunken components
+        V′ = info_p.versions[I]
+        D′ = D[K[1:length(D)]]
+        T′ = Dict{P, Int}()
+        let b′ = length(D)
+            for (q, b) in sort!(collect(info_p.interacts), by=last)
+                n′ = count(K[b .+ (1:N[q])])
+                if n′ > 0
+                    T′[q] = b′
+                    b′ += n′
+                end
+            end
+        end
+        X′ = X[[I; true], [K; true]]
+        # assign new struct into info′
+        info′[p] = PkgInfo(V′, D′, T′, X′)
+    end
+end

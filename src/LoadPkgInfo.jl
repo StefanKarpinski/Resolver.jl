@@ -117,9 +117,3 @@ function load_pkg_info(
     end
     return info
 end
-
-# TODO: more this to the redundancy filtering code
-# # columns can start inactive if they have no conflicts
-# for j = 1:n
-#     X[end, j] = any(X[i, j] for i = 1:m)
-# end

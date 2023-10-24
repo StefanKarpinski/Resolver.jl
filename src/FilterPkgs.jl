@@ -227,4 +227,5 @@ function shrink_pkg_info!(
         # assign new struct into info′
         info′[p] = PkgInfo(V′, D′, T′, X′)
     end
+    return info′
 end

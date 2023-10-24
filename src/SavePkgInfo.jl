@@ -34,7 +34,7 @@ function load_pkg_info_file(
             vers = read_vals(in, V)
             deps = read_vals(in, pv)
             intx = read_vals(in, pv)
-            conf = read_bits(in, length(vers))
+            conf = read_bits(in, length(vers)+1)
             ix = Dict{P, Int}(q => 0 for q in intx)
             info[p] = PkgInfo(vers, deps, ix, conf)
         end

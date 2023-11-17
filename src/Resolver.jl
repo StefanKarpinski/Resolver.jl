@@ -7,12 +7,14 @@ export
     load_pkg_info_file,
     find_reachable!,
     find_redundant!,
-    shrink_pkg_info!
+    shrink_pkg_info!,
+    resolve
 
 include("DepsProvider.jl")
 include("RegistryProvider.jl")
 include("LoadPkgInfo.jl")
 include("SavePkgInfo.jl")
 include("FilterPkgs.jl")
+include("Solve.jl")
 
 end # module

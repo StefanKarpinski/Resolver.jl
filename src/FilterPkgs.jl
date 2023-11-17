@@ -109,8 +109,8 @@ function find_reachable!(
     reqs :: SetOrVec{P},
 ) where {P,V}
     reach = find_reachable(info, reqs)
-    for (p, r) in reach
-        info_p = info[p]
+    for (p, info_p) in info
+        r = get(reach, p, 0)
         info_p.conflicts[1:r, end] .= true
         info_p.conflicts[r+1:end, end] .= false
     end
@@ -210,20 +210,26 @@ function shrink_pkg_info!(
         # active version masks
         I = X[1:end-1, end]
         K = X[end, 1:end-1]
+        # delete if no active versions
+        if !any(I)
+            delete!(info′, p)
+            continue
+        end
         # compute shrunken components
         V′ = info_p.versions[I]
         D′ = D[K[1:length(D)]]
         T′ = Dict{P, Int}()
-        let b′ = length(D)
-            for (q, b) in sort!(collect(info_p.interacts), by=last)
-                n′ = count(K[b .+ (1:N[q])])
-                if n′ > 0
-                    T′[q] = b′
-                    b′ += n′
-                end
+        b′ = length(D′)
+        for (q, b) in sort!(collect(info_p.interacts), by=last)
+            n′ = count(K[b .+ (1:N[q])])
+            if n′ > 0
+                T′[q] = b′
+                b′ += n′
             end
         end
         X′ = X[[I; true], [K; true]]
+        @assert size(X′, 1) == length(V′) + 1
+        @assert size(X′, 2) == b′ + 1
         # assign new struct into info′
         info′[p] = PkgInfo(V′, D′, T′, X′)
     end

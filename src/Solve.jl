@@ -111,26 +111,38 @@ function resolve(
         end
     end
 
-    # solve the SAT problem
-    sat = picosat_sat(ps)
-    sat == PICOSAT_SATISFIABLE || error("unsatisfiable")
+    # find all optimal solutions
+    sols = Vector{Dict{P,V}}()
+    while true
+        sat = picosat_sat(ps)
+        sat == PICOSAT_SATISFIABLE || break
 
-    # extract the solution
-    sol = Dict{P,V}()
-    for (p, info_p) in infos
-        var_p = var[p]
-        picosat_deref(ps, var_p) < 0 && continue
-        for (i, ver) in enumerate(info_p.versions)
-            if picosat_deref(ps, var_p + i) > 0
-                sol[p] = ver
-                break
+        # extract one solution
+        sol = Dict{P,V}()
+        blk = Int[]
+        for (p, info_p) in infos
+            var_p = var[p]
+            picosat_deref(ps, var_p) < 0 && continue
+            for (i, ver) in enumerate(info_p.versions)
+                if picosat_deref(ps, var_p + i) > 0
+                    push!(blk, var_p + i)
+                    sol[p] = ver
+                    break
+                end
             end
         end
+        push!(sols, sol)
+
+        # block it for next time
+        for v in blk
+            picosat_add(ps, -v)
+        end
+        picosat_add(ps, 0)
     end
 
     # destroy picosat solver
     picosat_reset(ps)
 
     # return solution
-    return sol
+    return sols
 end

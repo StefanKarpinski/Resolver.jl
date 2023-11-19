@@ -4,111 +4,142 @@ const PICOSAT_UNKNOWN = 0
 const PICOSAT_SATISFIABLE = 10
 const PICOSAT_UNSATISFIABLE = 20
 
-# TODO: search and replace this when done
-const PicoPtr = Ptr{Cvoid}
-
 picosat_init() =
-    ccall((:picosat_init, libpicosat), PicoPtr, ())
-picosat_reset(p::PicoPtr) =
-    ccall((:picosat_reset, libpicosat), Cvoid, (PicoPtr,), p)
-picosat_adjust(p::PicoPtr, n::Integer) =
-    ccall((:picosat_adjust, libpicosat), Cvoid, (PicoPtr, Cint), p, n)
-picosat_add(p::PicoPtr, lit::Integer) =
-    ccall((:picosat_add, libpicosat), Cint, (PicoPtr, Cint), p, lit)
-picosat_sat(p::PicoPtr, limit::Integer = -1) =
-    ccall((:picosat_sat, libpicosat), Cint, (PicoPtr, Cint), p, limit)
-picosat_deref(p::PicoPtr, lit::Integer) =
-    ccall((:picosat_deref, libpicosat), Cint, (PicoPtr, Cint), p, lit)
+    ccall((:picosat_init, libpicosat), Ptr{Cvoid}, ())
+picosat_reset(p::Ptr{Cvoid}) =
+    ccall((:picosat_reset, libpicosat), Cvoid, (Ptr{Cvoid},), p)
+picosat_adjust(p::Ptr{Cvoid}, N::Integer) =
+    ccall((:picosat_adjust, libpicosat), Cvoid, (Ptr{Cvoid}, Cint), p, N)
+picosat_add(p::Ptr{Cvoid}, lit::Integer) =
+    ccall((:picosat_add, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, lit)
+picosat_sat(p::Ptr{Cvoid}, limit::Integer = -1) =
+    ccall((:picosat_sat, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, limit)
+picosat_deref(p::Ptr{Cvoid}, lit::Integer) =
+    ccall((:picosat_deref, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, lit)
 
 function resolve(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
-    # replace args with sorted versions
-    infos = sort!(collect(info), by=first)
+    # sort stuff for determinism
+    names = sort!(collect(keys(info)))
     reqs = sort!(collect(reqs))
 
-    # compute variable indices
-    n = 0 # number of variables
-    var = Dict{P, Int}() # variable indices
-    for (p, info_p) in infos
-        var[p] = n + 1
-        n += 1 + length(info_p.versions)
+    # variable indices:
+    #   var[p]      package p chosen
+    #   var[p]+i    version p@i chosen
+    N = 0
+    var = Dict{P, Int}()
+    for p in names
+        var[p] = N += 1
+        N += length(info[p].versions)
     end
 
     # instantiate picosat solver
     ps = picosat_init()
-    picosat_adjust(ps, n)
+    picosat_adjust(ps, N)
 
-    # add requirements clauses
-    for p in reqs
-        picosat_add(ps, var[p])
-        picosat_add(ps, 0)
-    end
+    # track reverse dependencies
+    rdeps = Dict{P, Vector{Pair{P,Int}}}()
 
-    # add package version clauses
-    for (p, info_p) in infos
-        var_p = var[p]
-        picosat_add(ps, -var_p)
-        for i = 1:length(info_p.versions)
-            picosat_add(ps, var_p + i)
+    # generate SAT problem
+    for p in names
+        info_p = info[p]
+        v_p = var[p]
+        n_p = length(info_p.versions)
+
+        # package implies some version
+        #   p => OR_i p@i
+        picosat_add(ps, -v_p)
+        for i = 1:n_p
+            picosat_add(ps, v_p + i)
         end
         picosat_add(ps, 0)
-    end
 
-    # output dependency clauses
-    for (p, info_p) in infos
-        var_p = var[p]
-        for i = 1:length(info_p.versions)
+        # version implies its package
+        #   p@i => p
+        for i = 1:n_p
+            picosat_add(ps, -(v_p + i))
+            picosat_add(ps, v_p)
+            picosat_add(ps, 0)
+        end
+
+        # versions are mutually exclusive
+        #   !p@i OR !p@j
+        for i = 1:n_p, j = 1:i-1
+            picosat_add(ps, -(v_p + i))
+            picosat_add(ps, -(v_p + j))
+            picosat_add(ps, 0)
+        end
+
+        # dependencies
+        #   ∀ q ∈ deps(p, i): p@i => q
+        for i = 1:n_p
             for (j, q) in enumerate(info_p.depends)
                 info_p.conflicts[i, j] || continue
-                picosat_add(ps, -(var_p + i))
+                picosat_add(ps, -(v_p + i))
                 picosat_add(ps, var[q])
                 picosat_add(ps, 0)
+                # save reverse dependency
+                push!(get!(() -> Pair{P,Int}[], rdeps, q), p => i)
             end
         end
-    end
 
-    # output incompatibility clauses
-    for (p, info_p) in infos
-        var_p = var[p]
+        # conflicts
+        #   !p@i OR !q@j
         for q in sort!(collect(keys(info_p.interacts)))
-            q < p || break # info recorded twice, only emit once
+            # symmetric, only emit once
+            q ≥ p && break
             b = info_p.interacts[q]
-            info_q = info[q]
-            var_q = var[q]
-            for i = 1:length(info_p.versions),
-                j = 1:length(info_q.versions)
+            v_q = var[q]
+            n_q = length(info[q].versions)
+            for i = 1:n_p, j = 1:n_q
                 info_p.conflicts[i, b+j] || continue
-                picosat_add(ps, -(var_p + i))
-                picosat_add(ps, -(var_q + j))
+                picosat_add(ps, -(v_p + i))
+                picosat_add(ps, -(v_q + j))
                 picosat_add(ps, 0)
             end
         end
-    end
 
-    # output optimality clauses
-    for (p, info_p) in infos
-        var_p = var[p]
-        for i = 1:length(info_p.versions)
-            picosat_add(ps, -var_p)
-            picosat_add(ps, var_p + i)
-            # can be "excused" if a better version is chosen
-            for j = 1:i-1
-                picosat_add(ps, var_p + j)
+        # optimality -- one of these has to hold:
+        #   1. package isn't chosen
+        #   2. version or better chosen
+        #   3. conflicting version chosen
+        # that is:
+        #   !p OR p@1 ... p@i OR conflicts(p, i)
+        for i = 1:n_p
+            picosat_add(ps, -v_p)
+            for j = 1:i
+                picosat_add(ps, v_p + j)
             end
-            # or if it conflicts with something else chosen
             for q in sort!(collect(keys(info_p.interacts)))
                 b = info_p.interacts[q]
                 info_q = info[q]
-                var_q = var[q]
+                v_q = var[q]
                 for j = 1:length(info_q.versions)
                     info_p.conflicts[i, b+j] || continue
-                    picosat_add(ps, var_q + j)
+                    picosat_add(ps, v_q + j)
                 end
             end
             picosat_add(ps, 0)
         end
+    end
+
+    # minimality -- only choose necessary packages
+    #   p => revdeps(p)
+    for (q, rdeps_q) in sort!(collect(rdeps), by=first)
+        picosat_add(ps, -var[q])
+        for (p, i) in rdeps_q
+            picosat_add(ps, -(var[p] + i))
+        end
+        picosat_add(ps, 0)
+    end
+
+    # add requirements clauses
+    #   these are the packages that are required
+    for p in reqs
+        picosat_add(ps, var[p])
+        picosat_add(ps, 0)
     end
 
     # find all optimal solutions
@@ -120,12 +151,12 @@ function resolve(
         # extract one solution
         sol = Dict{P,V}()
         blk = Int[]
-        for (p, info_p) in infos
-            var_p = var[p]
-            picosat_deref(ps, var_p) < 0 && continue
-            for (i, ver) in enumerate(info_p.versions)
-                if picosat_deref(ps, var_p + i) > 0
-                    push!(blk, var_p + i)
+        for p in names
+            v_p = var[p]
+            picosat_deref(ps, v_p) < 0 && continue
+            for (i, ver) in enumerate(info[p].versions)
+                if picosat_deref(ps, v_p + i) > 0
+                    push!(blk, v_p + i)
                     sol[p] = ver
                     break
                 end

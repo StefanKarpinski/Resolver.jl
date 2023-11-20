@@ -254,10 +254,11 @@ function resolve(
             push!(sols, copy(sol))
 
             # next solution has to improve somehow
-            for (p, i) in sol, j = 1:i-1
-                v_i = info[p].versions[i]
-                v_j = info[p].versions[j]
-                picosat_add(ps, var[p] + j)
+            for (p, i) in sol
+                v_p = var[p]
+                for j = 1:i-1
+                    picosat_add(ps, var[p] + j)
+                end
             end
             picosat_add(ps, 0)
         end
@@ -278,9 +279,9 @@ function resolve(
     end
 
     # sort solutions
-    # for p in reverse(pkgs)
-    #     sort!(sols, by = sol -> get(sol, p, 0))
-    # end
+    for p in reverse(pkgs)
+        sort!(sols, by = sol -> get(sol, p, 0))
+    end
 
     # versions as a matrix
     vers = Union{V, Nothing}[

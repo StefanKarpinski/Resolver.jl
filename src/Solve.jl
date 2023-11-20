@@ -241,6 +241,15 @@ function resolve(
                 sat′ == PICOSAT_SATISFIABLE || break
             end
 
+            # drop earlier solutions that are strictly worse
+            filter!(sols) do sol′
+                for (p, i) in sol
+                    j = get(sol′, p, i)
+                    j < i && return true # keep
+                end
+                return false # reject
+            end
+
             # save minimized solution
             push!(sols, copy(sol))
 
@@ -260,16 +269,18 @@ function resolve(
         picosat_reset(ps)
     end
 
-    # sort solutions lexicographically
+    # sort packages
     if !isempty(sols)
         pkgs = sort!(collect(mapreduce(keys, union, sols)))
         sort!(pkgs, by = !in(reqs)) # required ones first
-        for p in reverse(pkgs)
-            sort!(sols, by = sol -> get(sol, p, 0))
-        end
     else
         pkgs = Vector{P}()
     end
+
+    # sort solutions
+    # for p in reverse(pkgs)
+    #     sort!(sols, by = sol -> get(sol, p, 0))
+    # end
 
     # versions as a matrix
     vers = Union{V, Nothing}[

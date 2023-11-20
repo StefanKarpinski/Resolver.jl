@@ -138,8 +138,15 @@ function resolve(
             picosat_add(ps, 0)
         end
 
-        # optimality -- version => all better have conflicts
-        #   ∀ j < i: p@i => p#i
+        # optimality (package-wise unilateral improvement)
+        #   ∀ j < i: p@i => p!j
+        #
+        # note: it's still possible to get a suboptimal solution in a case where
+        # p@i′ > p@i and p@j′ > p@j but p@i conflicts p@j′ and p@j conflicts
+        # p@i′ so you have to change both at once in order to actually improve;
+        # this rule can't prevent that but we force actual improvement when
+        # searching and then we filter out fully dominated solutions
+        #
         for i = 1:n_p, j = 1:i-1
             picosat_add(ps, -(v_p + i))
             picosat_add(ps, x_p + j)
@@ -147,8 +154,13 @@ function resolve(
         end
     end
 
-    # minimality -- only choose necessary packages
+    # minimality (only packages that something depends on)
     #   p => revdeps(p)
+    #
+    # note: this can be foiled by dependency loops, e.g. where p@i depends on
+    # q@j and vice versa, but nothing external actually depends on either one;
+    # this rule can't't prevent that, but we filter these out later
+    #
     for (q, rdeps_q) in sort!(collect(rdeps), by=first)
         picosat_add(ps, -var[q])
         for (p, i) in rdeps_q
@@ -172,13 +184,13 @@ function resolve(
 
         # extract one solution
         sol = Dict{P,V}()
-        blk = Int[]
+        blk = Vector{Pair{Int,Int}}()
         for p in names
             v_p = var[p]
             picosat_deref(ps, v_p) < 0 && continue
             for (i, ver) in enumerate(info[p].versions)
                 if picosat_deref(ps, v_p + i) > 0
-                    push!(blk, v_p + i)
+                    push!(blk, v_p => i)
                     sol[p] = ver
                     break
                 end
@@ -186,9 +198,14 @@ function resolve(
         end
         push!(sols, sol)
 
-        # block it for next time
-        for v in blk
-            picosat_add(ps, -v)
+        # next solution has to improve somehow
+        for (v_p, i) in blk
+            for j = 1:i-1
+                # by using a better version
+                picosat_add(ps, v_p + j)
+            end
+            # or dropping a package
+            picosat_add(ps, -v_p)
         end
         picosat_add(ps, 0)
     end
@@ -220,12 +237,3 @@ function resolve(
     # return solution
     return pkgs, vers
 end
-
-#=
-using DataFrames
-x = vec(mapslices(!allequal, vers, dims=2))
-df = DataFrame(pkgs = pkgs[x])
-for (i, col) in enumerate(eachslice(vers[x, :], dims=2))
-    df[:, "$i"] = col
-end
-=#

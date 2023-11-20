@@ -174,6 +174,32 @@ function resolve(
     # destroy picosat solver
     picosat_reset(ps)
 
+    # filter out solutions that strictly contain other solutions
+    filter!(sols) do sol
+        !any(sol ⊇ sol′ for sol′ in sols if sol′ ≠ sol)
+    end
+
+    # sort solutions lexicographically
+    pkgs = sort!(collect(mapreduce(keys, union, sols)))
+    sort!(pkgs, by = !in(reqs)) # required ones first
+    for p in reverse(pkgs)
+        sort!(sols, by = sol -> get(sol, p, v"0-"), rev=true)
+    end
+
+    # versions as a matrix
+    vers = Union{V, Nothing}[
+        get(sol, p, nothing) for p in pkgs, sol in sols
+    ]
+
     # return solution
-    return sols
+    return pkgs, vers
 end
+
+#=
+using DataFrames
+x = vec(mapslices(!allequal, vers, dims=2))
+df = DataFrame(pkgs = pkgs[x])
+for (i, col) in enumerate(eachslice(vers[x, :], dims=2))
+    df[:, "$i"] = col
+end
+=#

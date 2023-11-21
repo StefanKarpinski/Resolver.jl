@@ -292,3 +292,15 @@ function resolve(
     # return solution
     return pkgs, vers
 end
+
+#=
+using PrettyTables
+pkgs, vers = resolve(info, reqs)
+max_vers = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
+pretty_table([pkgs vers],
+    highlighters = Highlighter(
+        (data, i, j) -> j > 1 && something(data[i, j], max_vers[i]) < max_vers[i],
+        foreground = :red,
+    )
+)
+=#

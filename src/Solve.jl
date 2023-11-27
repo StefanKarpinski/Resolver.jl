@@ -140,94 +140,101 @@ function resolve(
         sols = Vector{Dict{P,Int}}()
         sol = Dict{P,Int}()
 
-        while true
-            @show N
-            sat = picosat_sat(ps)
-            sat == PICOSAT_SATISFIABLE || break
-            extract_solution!(sol)
+        function find_solutions(
+            opts :: Set{P}, # packages to optimize next
+            rest :: Set{P}, # other unoptimized packages
+        )
+            while true
+                # find some solution
+                sat = picosat_sat(ps)
+                sat == PICOSAT_SATISFIABLE || break
+                extract_solution!(sol)
 
-            # have undominated solution, incrementally optimize it
-            optimize = Set{P}(reqs)
-            optimal = Set{P}()
-
-            stack = 0
-            while !isempty(optimize)
-                # optimize the optimize set
+                # optimize solution wrt opts
                 while true
-                    # push outer temporary clause context
-                    picosat_push(ps); stack += 1
-                    # clause: disallow non-improvements
-                    for p in optimize
-                        i = get(sol, p, 0)
-                        i == 0 && continue
+                    picosat_push(ps)
+
+                    # clauses: disallow non-improvements
+                    for p in opts
+                        v_p, i = var[p], sol[p]
                         # allow as-good-or-better versions
-                        v_p = var[p]
                         for j = 1:i
                             picosat_add(ps, v_p + j)
                         end
                         picosat_add(ps, 0)
                     end
-                    # push inner temporary clause context
-                    picosat_push(ps); stack += 1
-                    # clause: require a some improvement
-                    for p in optimize
-                        i = get(sol, p, 0)
-                        i == 0 && continue
-                        v_p = var[p]
+
+                    # clause: require some improvement
+                    for p in opts
+                        v_p, i = var[p], sol[p]
+                        # any strictly better versions
                         for j = 1:i-1
                             picosat_add(ps, v_p + j)
                         end
                     end
                     picosat_add(ps, 0)
+
                     # check satisfiability
                     sat′ = picosat_sat(ps)
                     sat′ == PICOSAT_SATISFIABLE && extract_solution!(sol)
-                    # pop inner temporary clauses
-                    picosat_pop(ps); stack -= 1
-                    # fully optimized if not satisfiable
+
+                    # pop temporary clauses
+                    picosat_pop(ps)
+
                     sat′ == PICOSAT_SATISFIABLE || break
-                    # pop outer temporary clauses
-                    picosat_pop(ps); stack -= 1
                 end
-                union!(optimal, optimize)
-                # find next optimization package set
-                optimize′ = empty(optimize)
-                for p in optimize
-                    i = get(sol, p, 0)
-                    i == 0 && continue
-                    info_p = info[p]
+
+                # find next optimization set
+                opts′ = empty(opts)
+                for p in opts
+                    info_p, i = info[p], sol[p]
                     for (j, q) in enumerate(info_p.depends)
                         info_p.conflicts[i, j] || continue
-                        q ∈ optimal && continue
-                        push!(optimize′, q)
+                        q ∈ rest && push!(opts′, q)
                     end
                 end
-                optimize = optimize′
-            end
-            # pop all temporary clauses
-            @assert stack >= 0
-            while stack > 0
-                picosat_pop(ps); stack -= 1
-            end
 
-            # delete unreachable packages
-            for p in keys(sol)
-                p in optimal || delete!(sol, p)
-            end
+                if isempty(opts′) # nothing left to optimize
+                    # delete unreachable packages
+                    for p in rest
+                        delete!(sol, p)
+                    end
 
-            # save minimal optimized solution
-            push!(sols, copy(sol))
+                    # save optimal solution
+                    push!(sols, copy(sol))
 
-            # next solution must improve some package
-            for p in reqs
-                i = get(sol, p, 0)
-                v_p = var[p]
-                for j = (i ≠ 0):i-1
-                    picosat_add(ps, v_p + j)
+                else # recursion required
+                    picosat_push(ps)
+
+                    # clauses: fix optimized versions
+                    for p in opts
+                        picosat_add(ps, var[p] + sol[p])
+                        picosat_add(ps, 0)
+                    end
+
+                    # recursive search call
+                    find_solutions(opts′, setdiff(rest, opts′))
+
+                    # pop version fixing clauses
+                    picosat_pop(ps)
                 end
+
+                # clause: require some improvement
+                for p in opts
+                    v_p, i = var[p], sol[p]
+                    # any strictly better versions
+                    for j = 1:i-1
+                        picosat_add(ps, v_p + j)
+                    end
+                end
+                picosat_add(ps, 0)
             end
-            picosat_add(ps, 0)
         end
+
+        # start recursion
+        opts = Set{P}(reqs)
+        rest = setdiff!(Set{P}(names), opts)
+        find_solutions(opts, rest)
 
         sols # value of the try block
     finally

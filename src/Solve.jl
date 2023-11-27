@@ -219,17 +219,14 @@ function resolve(
             push!(sols, copy(sol))
 
             # next solution must improve some package
-            picosat_print(ps, "tmp/before.cnf")
-            for (p, j) in sort!(collect(sol), by=first)
+            for p in reqs
+                i = get(sol, p, 0)
                 v_p = var[p]
-                for i = 1:j-1
-                    @show p, v_p, j, i, v_p + i
-                    picosat_add(ps, v_p + i)
+                for j = (i ≠ 0):i-1
+                    picosat_add(ps, v_p + j)
                 end
             end
             picosat_add(ps, 0)
-            picosat_print(ps, "tmp/after.cnf")
-            break
         end
 
         sols # value of the try block

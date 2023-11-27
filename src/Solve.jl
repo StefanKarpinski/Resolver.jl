@@ -251,9 +251,9 @@ function resolve(
     end
 
     # sort solutions
-    # for p in reverse(pkgs)
-    #     sort!(sols, by = sol -> get(sol, p, 0))
-    # end
+    for p in reverse(pkgs)
+        sort!(sols, by = sol -> get(sol, p, 0))
+    end
 
     # versions as a matrix
     vers = Union{V, Nothing}[
@@ -276,4 +276,22 @@ let max_vers = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2
         )
     )
 end
+=#
+
+#=
+(str -> begin
+    reqs = String.(split(str, ','))
+    info = load_pkg_info(deps, reqs)
+    find_reachable!(info, reqs)
+    find_redundant!(info)
+    shrink_pkg_info!(info)
+    pkgs, vers = resolve(info, reqs)
+    max_vers = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
+    pretty_table([pkgs vers],
+        highlighters = Highlighter(
+            (data, i, j) -> j > 1 && something(data[i, j], max_vers[i]) < max_vers[i],
+            foreground = :red,
+        )
+    )
+end)("CEnum,CUDAdrv,HELICS,DocStringExtensions,FunctionalTables")
 =#

@@ -266,19 +266,6 @@ function resolve(
 end
 
 #=
-using PrettyTables
-pkgs, vers = resolve(info, reqs)
-let max_vers = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
-    pretty_table([pkgs vers],
-        highlighters = Highlighter(
-            (data, i, j) -> j > 1 && something(data[i, j], max_vers[i]) < max_vers[i],
-            foreground = :red,
-        )
-    )
-end
-=#
-
-#=
 (str -> begin
     reqs = String.(split(str, ','))
     info = load_pkg_info(deps, reqs)
@@ -286,10 +273,10 @@ end
     find_redundant!(info)
     shrink_pkg_info!(info)
     pkgs, vers = resolve(info, reqs)
-    max_vers = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
+    mv = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
     pretty_table([pkgs vers],
         highlighters = Highlighter(
-            (data, i, j) -> j > 1 && something(data[i, j], max_vers[i]) < max_vers[i],
+            (data, i, j) -> j > 1 && something(data[i, j], mv[i]) < mv[i],
             foreground = :red,
         )
     )

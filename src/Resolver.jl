@@ -15,6 +15,6 @@ include("RegistryProvider.jl")
 include("LoadPkgInfo.jl")
 include("SavePkgInfo.jl")
 include("FilterPkgs.jl")
-include("Solve.jl")
+include("Resolve.jl")
 
 end # module

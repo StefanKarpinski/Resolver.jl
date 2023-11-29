@@ -21,36 +21,36 @@ function load_pkg_info(
     data = Dict{P, PkgData{P,V,S}}()
     work = Set(reqs)
     while !isempty(work)
-        pkg = pop!(work)
-        @assert pkg ∉ keys(data)
-        entry = data[pkg] = deps(pkg)
-        for entries′ in values(entry.depends), pkg′ in entries′
-            pkg′ in keys(data) && continue
-            push!(work, pkg′)
+        p = pop!(work)
+        @assert p ∉ keys(data)
+        data_p = data[p] = deps(p)
+        for deps_p in values(data_p.depends), q in deps_p
+            q in keys(data) && continue
+            push!(work, q)
         end
     end
     # now, compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
-    for (pkg₁, data₁) in data
-        interact₁ = interacts[pkg₁]
-        for ver₁ in data₁.versions
-            ver₁ in keys(data₁.compat) || continue
-            compat₁ = data₁.compat[ver₁]
-            for (pkg₂, spec₁) in compat₁
-                pkg₂ in interact₁ && continue
-                interact₂ = interacts[pkg₂]
-                for ver₂ in data[pkg₂].versions
-                    if ver₂ ∉ spec₁
-                        push!(interact₁, pkg₂)
-                        push!(interact₂, pkg₁)
+    for (p, data_p) in data
+        interacts_p = interacts[p]
+        for v in data_p.versions
+            v in keys(data_p.compat) || continue
+            compat_pv = data_p.compat[v]
+            for (q, spec_q) in compat_pv
+                q in interacts_p && continue
+                interacts_q = interacts[q]
+                for w in data[q].versions
+                    if w ∉ spec_q
+                        push!(interacts_p, q)
+                        push!(interacts_q, p)
                         break
                     else
-                        compat₂ = data[pkg₂].compat
-                        pkg₁ in keys(compat₂) || continue
-                        spec₂ = compat₂[pkg₁]
-                        if ver₁ ∉ spec₂
-                            push!(interact₁, pkg₂)
-                            push!(interact₂, pkg₁)
+                        compat_q = data[q].compat
+                        p in keys(compat_q) || continue
+                        spec_qp = compat_q[p]
+                        if v ∉ spec_qp
+                            push!(interacts_p, q)
+                            push!(interacts_q, p)
                             break
                         end
                     end
@@ -61,11 +61,11 @@ function load_pkg_info(
     foreach(sort!, values(interacts))
     # construct dict of PkgInfo structs
     info = Dict{P, PkgInfo{P,V}}()
-    for (p, entry) in data
+    for (p, data_p) in data
         interacts_p = interacts[p]
-        vers_p = entry.versions
-        deps_p = entry.depends
-        comp_p = entry.compat
+        vers_p = data_p.versions
+        deps_p = data_p.depends
+        comp_p = data_p.compat
         # collect all dependency packages
         dx = P[]
         for (v, deps) in deps_p

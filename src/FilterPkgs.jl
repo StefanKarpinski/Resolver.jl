@@ -104,7 +104,7 @@ function find_reachable(
     return reach
 end
 
-function find_reachable!(
+function mark_reachable!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
@@ -117,7 +117,7 @@ function find_reachable!(
     return reach
 end
 
-function find_redundant!(
+function mark_necessary!(
     info :: Dict{P, PkgInfo{P,V}},
 ) where {P,V}
     work = copy(keys(info))
@@ -177,7 +177,7 @@ function find_redundant!(
     end
 end
 
-function shrink_pkg_info!(
+function drop_unmarked!(
     info′ :: Dict{P, PkgInfo{P,V}},
     info  :: Dict{P, PkgInfo{P,V}} = info′,
 ) where {P,V}

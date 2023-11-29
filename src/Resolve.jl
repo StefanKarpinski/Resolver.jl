@@ -1,4 +1,12 @@
 function resolve(
+    deps :: DepsProvider{P,V,S},
+    reqs :: SetOrVec{P} = deps.packages,
+) where {P,V,S}
+    info = load_pkg_info(deps, reqs)
+    resolve(info, reqs)
+end
+
+function resolve(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
@@ -239,11 +247,7 @@ end
 #=
 (str -> begin
     reqs = String.(split(str, ','))
-    info = load_pkg_info(deps, reqs)
-    find_reachable!(info, reqs)
-    find_redundant!(info)
-    shrink_pkg_info!(info)
-    pkgs, vers = resolve(info, reqs)
+    pkgs, vers = resolve(deps, reqs)
     mv = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
     pretty_table([pkgs vers],
         highlighters = Highlighter(

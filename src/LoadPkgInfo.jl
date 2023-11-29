@@ -14,7 +14,8 @@ end
 
 function load_pkg_info(
     deps :: DepsProvider{P,V,S},
-    reqs :: SetOrVec{P} = deps.packages,
+    reqs :: SetOrVec{P} = deps.packages;
+    filter :: Bool = true,
 ) where {P,V,S}
     # first, load dict of PkgEntry structs
     entries = Dict{P, PkgEntry{P,V,S}}()
@@ -114,6 +115,11 @@ function load_pkg_info(
         X[end, end] = false
         # add the PkgInfo struct to dict
         info[p] = PkgInfo(vers_p, dx, ix, X)
+    end
+    if filter
+        mark_reachable!(info, reqs)
+        mark_necessary!(info)
+        drop_unmarked!(info)
     end
     return info
 end

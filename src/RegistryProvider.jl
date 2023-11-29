@@ -45,7 +45,7 @@ function registry_provider(
             deps[v] == deps[w] && (deps[v] = deps[w])
             comp[v] == comp[w] && (comp[v] = comp[w])
         end
-        # return resolver PkgEntry data structure
-        PkgEntry{String, VersionNumber, Pkg.VersionSpec}(vers, deps, comp)
+        # return resolver PkgData structure
+        PkgData{String, VersionNumber, Pkg.VersionSpec}(vers, deps, comp)
     end
 end

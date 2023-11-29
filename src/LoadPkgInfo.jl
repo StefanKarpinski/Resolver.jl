@@ -17,35 +17,35 @@ function load_pkg_info(
     reqs :: SetOrVec{P} = deps.packages;
     filter :: Bool = true,
 ) where {P,V,S}
-    # first, load dict of PkgEntry structs
-    entries = Dict{P, PkgEntry{P,V,S}}()
+    # first, load dict of PkgData structs
+    data = Dict{P, PkgData{P,V,S}}()
     work = Set(reqs)
     while !isempty(work)
         pkg = pop!(work)
-        @assert pkg ∉ keys(entries)
-        entry = entries[pkg] = deps(pkg)
+        @assert pkg ∉ keys(data)
+        entry = data[pkg] = deps(pkg)
         for entries′ in values(entry.depends), pkg′ in entries′
-            pkg′ in keys(entries) && continue
+            pkg′ in keys(data) && continue
             push!(work, pkg′)
         end
     end
     # now, compute interactions between packages
-    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(entries))
-    for (pkg₁, info₁) in entries
+    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
+    for (pkg₁, data₁) in data
         interact₁ = interacts[pkg₁]
-        for ver₁ in info₁.versions
-            ver₁ in keys(info₁.compat) || continue
-            compat₁ = info₁.compat[ver₁]
+        for ver₁ in data₁.versions
+            ver₁ in keys(data₁.compat) || continue
+            compat₁ = data₁.compat[ver₁]
             for (pkg₂, spec₁) in compat₁
                 pkg₂ in interact₁ && continue
                 interact₂ = interacts[pkg₂]
-                for ver₂ in entries[pkg₂].versions
+                for ver₂ in data[pkg₂].versions
                     if ver₂ ∉ spec₁
                         push!(interact₁, pkg₂)
                         push!(interact₂, pkg₁)
                         break
                     else
-                        compat₂ = entries[pkg₂].compat
+                        compat₂ = data[pkg₂].compat
                         pkg₁ in keys(compat₂) || continue
                         spec₂ = compat₂[pkg₁]
                         if ver₁ ∉ spec₂
@@ -61,7 +61,7 @@ function load_pkg_info(
     foreach(sort!, values(interacts))
     # construct dict of PkgInfo structs
     info = Dict{P, PkgInfo{P,V}}()
-    for (p, entry) in entries
+    for (p, entry) in data
         interacts_p = interacts[p]
         vers_p = entry.versions
         deps_p = entry.depends
@@ -76,7 +76,7 @@ function load_pkg_info(
         # compute interactions matrix (m × n)
         m = length(vers_p) # per package version
         n = length(dx) + # per dependency package + interacting package version
-            sum(init=0, length(entries[q].versions) for q in interacts_p)
+            sum(init=0, length(data[q].versions) for q in interacts_p)
         X = falses(m + 1, n + 1) # conflicts & active flags
         # empty deps & compat
         deps_∅ = Vector{P}()
@@ -93,7 +93,7 @@ function load_pkg_info(
             b = length(dx)
             for q in interacts_p
                 ix[q] = b
-                info_q = entries[q]
+                info_q = data[q]
                 vers_q = info_q.versions
                 comp_q = info_q.compat
                 for (j, w) in enumerate(vers_q)

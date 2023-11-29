@@ -5,7 +5,7 @@
 
 const SetOrVec{T} = Union{AbstractSet{T}, AbstractVector{T}}
 
-struct PkgEntry{P,V,S}
+struct PkgData{P,V,S}
     versions :: Vector{V}
     depends  :: Dict{V, Vector{P}}
     compat   :: Dict{V, Dict{P, S}}
@@ -25,4 +25,4 @@ function DepsProvider{P,V,S}(
 end
 
 (deps::DepsProvider{P,V,S,F})(pkg::P) where {P,V,S,F<:Function} =
-    deps.provider(pkg) :: PkgEntry{P,V,S}
+    deps.provider(pkg) :: PkgData{P,V,S}

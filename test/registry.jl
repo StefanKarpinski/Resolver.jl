@@ -36,8 +36,8 @@ dp = DepsProvider{String, VersionNumber, VersionSpec}(keys(reg_dict)) do pkg::St
         deps[v] == deps[w] && (deps[v] = deps[w])
         comp[v] == comp[w] && (comp[v] = comp[w])
     end
-    # return resolver PkgEntry data structure
-    PkgEntry{String, VersionNumber, VersionSpec}(vers, deps, comp)
+    # return resolver PkgData structure
+    PkgData{String, VersionNumber, VersionSpec}(vers, deps, comp)
 end
 
 using GraphModularDecomposition

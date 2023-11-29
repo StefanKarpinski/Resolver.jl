@@ -1,32 +1,3 @@
-using PicoSAT_jll
-
-const PICOSAT_UNKNOWN = 0
-const PICOSAT_SATISFIABLE = 10
-const PICOSAT_UNSATISFIABLE = 20
-
-picosat_init() =
-    ccall((:picosat_init, libpicosat), Ptr{Cvoid}, ())
-picosat_reset(p::Ptr{Cvoid}) =
-    ccall((:picosat_reset, libpicosat), Cvoid, (Ptr{Cvoid},), p)
-picosat_adjust(p::Ptr{Cvoid}, N::Integer) =
-    ccall((:picosat_adjust, libpicosat), Cvoid, (Ptr{Cvoid}, Cint), p, N)
-picosat_add(p::Ptr{Cvoid}, lit::Integer) =
-    ccall((:picosat_add, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, lit)
-picosat_sat(p::Ptr{Cvoid}, limit::Integer = -1) =
-    ccall((:picosat_sat, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, limit)
-picosat_deref(p::Ptr{Cvoid}, lit::Integer) =
-    ccall((:picosat_deref, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, lit)
-picosat_push(p::Ptr{Cvoid}) =
-    ccall((:picosat_push, libpicosat), Cint, (Ptr{Cvoid},), p)
-picosat_pop(p::Ptr{Cvoid}) =
-    ccall((:picosat_pop, libpicosat), Cint, (Ptr{Cvoid},), p)
-
-function picosat_print(p::Ptr{Cvoid}, path::AbstractString)
-    f = ccall(:fopen, Ptr{Cvoid}, (Cstring, Cstring), path, "w")
-    ccall((:picosat_print, libpicosat), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}), p, f)
-    @assert ccall(:fclose, Cint, (Ptr{Cvoid},), f) == 0
-end
-
 function resolve(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
@@ -51,9 +22,9 @@ function resolve(
     N -= 1 # last used variable
 
     # instantiate picosat solver
-    ps = picosat_init()
+    ps = PicoSAT.init()
     sols = try
-        picosat_adjust(ps, N)
+        PicoSAT.adjust(ps, N)
 
         # generate SAT problem
         for p in names
@@ -63,26 +34,26 @@ function resolve(
 
             # package implies some version
             #   p => OR_i p@i
-            picosat_add(ps, -v_p)
+            PicoSAT.add(ps, -v_p)
             for i = 1:n_p
-                picosat_add(ps, v_p + i)
+                PicoSAT.add(ps, v_p + i)
             end
-            picosat_add(ps, 0)
+            PicoSAT.add(ps, 0)
 
             # version implies its package
             #   p@i => p
             for i = 1:n_p
-                picosat_add(ps, -(v_p + i))
-                picosat_add(ps, v_p)
-                picosat_add(ps, 0)
+                PicoSAT.add(ps, -(v_p + i))
+                PicoSAT.add(ps, v_p)
+                PicoSAT.add(ps, 0)
             end
 
             # versions are mutually exclusive
             #   !p@i OR !p@j
             for i = 1:n_p-1, j = i+1:n_p
-                picosat_add(ps, -(v_p + i))
-                picosat_add(ps, -(v_p + j))
-                picosat_add(ps, 0)
+                PicoSAT.add(ps, -(v_p + i))
+                PicoSAT.add(ps, -(v_p + j))
+                PicoSAT.add(ps, 0)
             end
 
             # dependencies
@@ -90,9 +61,9 @@ function resolve(
             for i = 1:n_p
                 for (j, q) in enumerate(info_p.depends)
                     info_p.conflicts[i, j] || continue
-                    picosat_add(ps, -(v_p + i))
-                    picosat_add(ps, var[q])
-                    picosat_add(ps, 0)
+                    PicoSAT.add(ps, -(v_p + i))
+                    PicoSAT.add(ps, var[q])
+                    PicoSAT.add(ps, 0)
                 end
             end
 
@@ -106,9 +77,9 @@ function resolve(
                     for j = 1:n_q
                         info_p.conflicts[i, b+j] || continue
                         # conflicting versions are mutually exclusive
-                        picosat_add(ps, -(v_p + i))
-                        picosat_add(ps, -(v_q + j))
-                        picosat_add(ps, 0)
+                        PicoSAT.add(ps, -(v_p + i))
+                        PicoSAT.add(ps, -(v_q + j))
+                        PicoSAT.add(ps, 0)
                     end
                 end
             end
@@ -117,17 +88,17 @@ function resolve(
         # add requirements clauses
         #   ∀ p in reqs: p
         for p in reqs
-            picosat_add(ps, var[p])
-            picosat_add(ps, 0)
+            PicoSAT.add(ps, var[p])
+            PicoSAT.add(ps, 0)
         end
 
         # helper for finding optimal solutions
         function extract_solution!(sol::Dict{P,Int})
             empty!(sol)
             for (p, v_p) in var
-                picosat_deref(ps, v_p) < 0 && continue
+                PicoSAT.deref(ps, v_p) < 0 && continue
                 for i = 1:length(info[p].versions)
-                    if picosat_deref(ps, v_p + i) > 0
+                    if PicoSAT.deref(ps, v_p + i) > 0
                         sol[p] = i
                         break
                     end
@@ -146,22 +117,22 @@ function resolve(
         )
             while true
                 # find some solution
-                sat = picosat_sat(ps)
-                sat == PICOSAT_SATISFIABLE || break
+                sat = PicoSAT.sat(ps)
+                sat == PicoSAT.SATISFIABLE || break
                 extract_solution!(sol)
 
                 # optimize solution wrt opts
                 while true
-                    picosat_push(ps)
+                    PicoSAT.push(ps)
 
                     # clauses: disallow non-improvements
                     for p in opts
                         v_p, i = var[p], sol[p]
                         # allow as-good-or-better versions
                         for j = 1:i
-                            picosat_add(ps, v_p + j)
+                            PicoSAT.add(ps, v_p + j)
                         end
-                        picosat_add(ps, 0)
+                        PicoSAT.add(ps, 0)
                     end
 
                     # clause: require some improvement
@@ -169,19 +140,19 @@ function resolve(
                         v_p, i = var[p], sol[p]
                         # any strictly better versions
                         for j = 1:i-1
-                            picosat_add(ps, v_p + j)
+                            PicoSAT.add(ps, v_p + j)
                         end
                     end
-                    picosat_add(ps, 0)
+                    PicoSAT.add(ps, 0)
 
                     # check satisfiability
-                    sat′ = picosat_sat(ps)
-                    sat′ == PICOSAT_SATISFIABLE && extract_solution!(sol)
+                    sat′ = PicoSAT.sat(ps)
+                    sat′ == PicoSAT.SATISFIABLE && extract_solution!(sol)
 
                     # pop temporary clauses
-                    picosat_pop(ps)
+                    PicoSAT.pop(ps)
 
-                    sat′ == PICOSAT_SATISFIABLE || break
+                    sat′ == PicoSAT.SATISFIABLE || break
                 end
 
                 # find next optimization set
@@ -204,19 +175,19 @@ function resolve(
                     push!(sols, copy(sol))
 
                 else # recursion required
-                    picosat_push(ps)
+                    PicoSAT.push(ps)
 
                     # clauses: fix optimized versions
                     for p in opts
-                        picosat_add(ps, var[p] + sol[p])
-                        picosat_add(ps, 0)
+                        PicoSAT.add(ps, var[p] + sol[p])
+                        PicoSAT.add(ps, 0)
                     end
 
                     # recursive search call
                     find_solutions(opts′, setdiff(rest, opts′))
 
                     # pop version fixing clauses
-                    picosat_pop(ps)
+                    PicoSAT.pop(ps)
                 end
 
                 # clause: require some improvement
@@ -224,10 +195,10 @@ function resolve(
                     v_p, i = var[p], sol[p]
                     # any strictly better versions
                     for j = 1:i-1
-                        picosat_add(ps, v_p + j)
+                        PicoSAT.add(ps, v_p + j)
                     end
                 end
-                picosat_add(ps, 0)
+                PicoSAT.add(ps, 0)
             end
         end
 
@@ -239,7 +210,7 @@ function resolve(
         sols # value of the try block
     finally
         # destroy picosat solver
-        picosat_reset(ps)
+        PicoSAT.reset(ps)
     end
 
     # sort packages

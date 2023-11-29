@@ -15,6 +15,7 @@ include("RegistryProvider.jl")
 include("LoadPkgInfo.jl")
 include("SavePkgInfo.jl")
 include("FilterPkgs.jl")
+include("PicoSAT.jl")
 include("Resolve.jl")
 
 end # module

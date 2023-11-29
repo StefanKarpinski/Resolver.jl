@@ -1,5 +1,5 @@
 """
-    find_reachable(info, init) :: Dict{P, Int}
+    find_reachable(info, reqs) :: Dict{P, Int}
 
 This function finds a minimal "reachable" subset of package and versions that
 could appear in pareto-optimal solutions to version resolution for the given set

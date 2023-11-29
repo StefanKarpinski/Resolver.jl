@@ -1,12 +1,16 @@
-using ArgTools
-
-# TODO: need to handle presence of active bits in conflicts
+function save_pkg_info_file(
+    info :: Dict{P, PkgInfo{P,V}},
+) where {P,V}
+    path = tempname()
+    save_pkg_info_file(info, path)
+    return path
+end
 
 function save_pkg_info_file(
     info :: Dict{P, PkgInfo{P,V}},
-    out  :: Union{ArgWrite, Nothing} = nothing,
+    path :: AbstractString,
 ) where {P,V}
-    arg_write(out) do out
+    open(path, write=true) do out
         write_magic(out)
         pv = sort!(collect(keys(info)))
         pm = Dict{P,Int}(p => i for (i, p) in enumerate(pv))
@@ -22,21 +26,21 @@ function save_pkg_info_file(
 end
 
 function load_pkg_info_file(
-    in :: ArgRead,
-    :: Type{P} = String,
-    :: Type{V} = VersionNumber,
+    :: Type{P},
+    :: Type{V},
+    path :: AbstractString,
 ) where {P,V}
-    arg_read(in) do in
+    open(path, read=true) do in
         read_magic(in)
         pv = read_vals(in, P)
         info = Dict{P, PkgInfo{P,V}}()
         for p in pv
-            vers = read_vals(in, V)
-            deps = read_vals(in, pv)
-            intx = read_vals(in, pv)
-            conf = read_bits(in, length(vers)+1)
-            ix = Dict{P, Int}(q => 0 for q in intx)
-            info[p] = PkgInfo(vers, deps, ix, conf)
+            versions  = read_vals(in, V)
+            depends   = read_vals(in, pv)
+            interacts = read_vals(in, pv)
+            conflicts = read_bits(in, length(versions) + 1)
+            interacts = Dict{P, Int}(q => 0 for q in interacts)
+            info[p] = PkgInfo(versions, depends, interacts, conflicts)
         end
         # compute interacts dict values
         for (p, d) in info
@@ -49,6 +53,8 @@ function load_pkg_info_file(
         return info
     end
 end
+
+## de/serialization functions ##
 
 const magic = "\xfapkg data v1\0"
 

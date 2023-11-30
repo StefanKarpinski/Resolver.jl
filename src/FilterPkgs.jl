@@ -1,3 +1,12 @@
+function filter_pkg_info!(
+    info :: Dict{P, PkgInfo{P,V}},
+    reqs :: SetOrVec{P},
+) where {P,V}
+    mark_reachable!(info, reqs)
+    mark_necessary!(info)
+    drop_unmarked!(info)
+end
+
 """
     find_reachable(info, reqs) :: Dict{P, Int}
 

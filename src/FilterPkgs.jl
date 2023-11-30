@@ -211,6 +211,17 @@ function drop_unmarked!(
         # active version masks
         I = X[1:end-1, end]
         K = X[end, 1:end-1]
+        # copy if everything is active
+        if all(I) && all(K)
+            if info !== info′
+                V′ = copy(V)
+                D′ = copy(D)
+                T′ = copy(T)
+                X′ = copy(X)
+                info′[p] = PkgInfo(V′, D′, T′, X′)
+            end
+            continue
+        end
         # delete if no active versions
         if !any(I)
             delete!(info′, p)

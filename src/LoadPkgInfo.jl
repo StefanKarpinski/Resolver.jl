@@ -18,13 +18,13 @@ function load_pkg_info(
     filter :: Bool = true,
 ) where {P,V,S}
     # first, load dict of PkgData structs
-    data = Dict{P, PkgData{P,V,S}}()
+    data = Dict{P,PkgData{P,V,S}}()
     work = Set(reqs)
     while !isempty(work)
         p = pop!(work)
         @assert p ∉ keys(data)
         data_p = data[p] = deps(p)
-        for deps_p in values(data_p.depends), q in deps_p
+        for (v, deps_pv) in data_p.depends, q in deps_pv
             q in keys(data) && continue
             push!(work, q)
         end
@@ -39,16 +39,16 @@ function load_pkg_info(
             for (q, spec_q) in compat_pv
                 q in interacts_p && continue
                 interacts_q = interacts[q]
-                for w in data[q].versions
+                data_q = data[q]
+                for w in data_q.versions
                     if w ∉ spec_q
                         push!(interacts_p, q)
                         push!(interacts_q, p)
                         break
                     else
-                        compat_q = data[q].compat
+                        compat_q = data_q.compat
                         p in keys(compat_q) || continue
-                        spec_qp = compat_q[p]
-                        if v ∉ spec_qp
+                        if v ∉ compat_q[p]
                             push!(interacts_p, q)
                             push!(interacts_q, p)
                             break
@@ -60,23 +60,18 @@ function load_pkg_info(
     end
     foreach(sort!, values(interacts))
     # construct dict of PkgInfo structs
-    info = Dict{P, PkgInfo{P,V}}()
+    info = Dict{P,PkgInfo{P,V}}()
     for (p, data_p) in data
-        interacts_p = interacts[p]
         vers_p = data_p.versions
         deps_p = data_p.depends
         comp_p = data_p.compat
-        # collect all dependency packages
-        dx = P[]
-        for (v, deps) in deps_p
-            union!(dx, deps)
-        end
-        sort!(dx)
-        ix = Dict{P, Int}(p => 0 for p in interacts_p)
+        # collect dependencies across all versions
+        deps_pa = sort!(reduce(union!, values(deps_p), init=P[]))
+        interacts_p = Dict{P, Int}(p => 0 for p in interacts[p])
         # compute interactions matrix (m × n)
         m = length(vers_p) # per package version
-        n = length(dx) + # per dependency package + interacting package version
-            sum(init=0, length(data[q].versions) for q in interacts_p)
+        n = length(deps_pa) + # per dependency + per interacting version
+            sum(init=0, length(data[q].versions) for q in keys(interacts_p))
         X = falses(m + 1, n + 1) # conflicts & active flags
         # empty deps & compat
         deps_∅ = Vector{P}()
@@ -86,13 +81,13 @@ function load_pkg_info(
             deps_pv = get(deps_p, v, deps_∅)
             comp_pv = get(comp_p, v, comp_∅)
             # dependencies
-            for (j, q) in enumerate(dx)
+            for (j, q) in enumerate(deps_pa)
                 X[i, j] = q ∈ deps_pv
             end
             # conflicts
-            b = length(dx)
-            for q in interacts_p
-                ix[q] = b
+            b = length(deps_pa)
+            for q in interacts[p]
+                interacts_p[q] = b
                 info_q = data[q]
                 vers_q = info_q.versions
                 comp_q = info_q.compat
@@ -114,7 +109,7 @@ function load_pkg_info(
         X[end, 1:n] .= true
         X[end, end] = false
         # add the PkgInfo struct to dict
-        info[p] = PkgInfo(vers_p, dx, ix, X)
+        info[p] = PkgInfo(vers_p, deps_pa, interacts_p, X)
     end
     filter && filter_pkg_info!(info, reqs)
     return info

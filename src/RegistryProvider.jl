@@ -28,7 +28,7 @@ function registry_provider(
                 v in r && union!(deps[v], keys(d))
             end
             for (r, c) in info.compat
-                v in r && mergewith!(intersect, comp[v], c)
+                v in r && mergewith!(∩, comp[v], c)
             end
         end
         foreach(sort!, values(deps))

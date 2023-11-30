@@ -1,44 +1,48 @@
+using Serialization
+
 function save_pkg_info_file(
     info :: Dict{P, PkgInfo{P,V}},
+    path :: AbstractString = tempname(),
 ) where {P,V}
-    path = tempname()
-    save_pkg_info_file(info, path)
+    open(path, write=true) do io
+        write_magic(io)
+        serialize(io, P)
+        serialize(io, V)
+        pv = sort!(collect(keys(info)))
+        pm = Dict{P,Int}(p => i for (i, p) in enumerate(pv))
+        write_vals(io, pv)
+        for p in pv
+            d = info[p]
+            write_vals(io, d.versions)
+            write_vals(io, pm, d.depends)
+            write_vals(io, pm, sort!(collect(keys(d.interacts))))
+            write_bits(io, d.conflicts)
+        end
+    end
     return path
 end
 
-function save_pkg_info_file(
-    info :: Dict{P, PkgInfo{P,V}},
-    path :: AbstractString,
-) where {P,V}
-    open(path, write=true) do out
-        write_magic(out)
-        pv = sort!(collect(keys(info)))
-        pm = Dict{P,Int}(p => i for (i, p) in enumerate(pv))
-        write_vals(out, pv)
-        for p in pv
-            d = info[p]
-            write_vals(out, d.versions)
-            write_vals(out, pm, d.depends)
-            write_vals(out, pm, sort!(collect(keys(d.interacts))))
-            write_bits(out, d.conflicts)
-        end
-    end
-end
-
 function load_pkg_info_file(
-    :: Type{P},
-    :: Type{V},
     path :: AbstractString,
-) where {P,V}
-    open(path, read=true) do in
-        read_magic(in)
-        pv = read_vals(in, P)
+    :: Type{P⁺} = Any,
+    :: Type{V⁺} = Any,
+) where {P⁺,V⁺}
+    open(path, read=true) do io
+        read_magic(io)
+        P = deserialize(io)
+        V = deserialize(io)
+        P <: P⁺ && V <: V⁺ || throw(ArgumentError("""
+            Expected pkg info file for types package-version types \
+            ($(P⁺),$(V⁺)), got ($P,$V) instead.
+            """
+        ))
+        pv = read_vals(io, P)
         info = Dict{P, PkgInfo{P,V}}()
         for p in pv
-            versions  = read_vals(in, V)
-            depends   = read_vals(in, pv)
-            interacts = read_vals(in, pv)
-            conflicts = read_bits(in, length(versions) + 1)
+            versions  = read_vals(io, V)
+            depends   = read_vals(io, pv)
+            interacts = read_vals(io, pv)
+            conflicts = read_bits(io, length(versions) + 1)
             interacts = Dict{P, Int}(q => 0 for q in interacts)
             info[p] = PkgInfo(versions, depends, interacts, conflicts)
         end
@@ -50,13 +54,13 @@ function load_pkg_info_file(
                 b += length(info[q].versions)
             end
         end
-        return info
+        return info :: Dict{P, PkgInfo{P,V}} where {P<:P⁺, V<:V⁺}
     end
 end
 
-## de/serialization functions ##
+## bespoke de/serialization functions ##
 
-const magic = "\xfapkg data v1\0"
+const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v1\0"
 
 function write_magic(io::IO)
     write(io, magic)

@@ -178,9 +178,9 @@ function mark_necessary!(
 end
 
 function drop_unmarked!(
-    info′ :: Dict{P, PkgInfo{P,V}},
-    info  :: Dict{P, PkgInfo{P,V}} = info′,
-) where {P,V}
+    info′ :: Dict{P, <: PkgInfo{P}},
+    info  :: Dict{P, <: PkgInfo{P}} = info′,
+) where {P}
     # info[p].conflicts[:, end] bits are definitive
     # first, set info[p].conflicts[end, :] bits to match
     for (p, info_p) in info
@@ -196,7 +196,7 @@ function drop_unmarked!(
             X[end, b .+ K] .= true
         end
     end
-    # save original version counts
+    # save original version counts (needed if info′ === info)
     N = Dict{P, Int}(
         p => length(info_p.versions)
         for (p, info_p) in info
@@ -204,6 +204,7 @@ function drop_unmarked!(
     # go through again and shrink each PkgInfo
     for (p, info_p) in info
         # abbreviate components
+        V = info_p.versions
         D = info_p.depends
         T = info_p.interacts
         X = info_p.conflicts
@@ -216,11 +217,11 @@ function drop_unmarked!(
             continue
         end
         # compute shrunken components
-        V′ = info_p.versions[I]
+        V′ = V[I]
         D′ = D[K[1:length(D)]]
         T′ = Dict{P, Int}()
         b′ = length(D′)
-        for (q, b) in sort!(collect(info_p.interacts), by=last)
+        for (q, b) in sort!(collect(T), by=last)
             n′ = count(K[b .+ (1:N[q])])
             if n′ > 0
                 T′[q] = b′

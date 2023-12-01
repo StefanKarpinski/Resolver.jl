@@ -54,7 +54,7 @@ function load_pkg_info(
 
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()
-    @timeit "construct PkgInfo dict" for (p, data_p) in data
+    @timeit "construct pkg info" for (p, data_p) in data
         D = sort!(reduce(union!, values(data_p.depends), init=P[]))
         T = Dict{P,Int}(p => 0 for p in interacts[p])
         n = length(D)
@@ -79,36 +79,32 @@ function load_pkg_info(
         D⁻¹ = Dict{P,Int}(q => j for (j, q) in enumerate(info_p.depends))
         data_p = data[p]
         # set dependency bits
-        @timeit "deps" begin
-            for (v, deps_pv) in data_p.depends
-                i = V⁻¹[v]
-                for q in deps_pv
-                    X[i, D⁻¹[q]] = true
-                end
+        for (v, deps_pv) in data_p.depends
+            i = V⁻¹[v]
+            for q in deps_pv
+                X[i, D⁻¹[q]] = true
             end
         end
-        # set compat bits
-        @timeit "compat" begin
-            for (v, comp_pv) in data_p.compat
-                i = V⁻¹[v]
-                for (q, comp_pvq) in comp_pv
-                    haskey(info_p.interacts, q) || continue
-                    info_q = info[q]
-                    Y = info_q.conflicts
-                    b = info_p.interacts[q]
-                    c = info_q.interacts[p]
-                    for (j, w) in enumerate(info_q.versions)
-                        w ∈ comp_pvq && continue
-                        X[i, b + j] = true
-                        Y[j, c + i] = true
-                    end
+        # set compatibility bits
+        for (v, comp_pv) in data_p.compat
+            i = V⁻¹[v]
+            for (q, comp_pvq) in comp_pv
+                haskey(info_p.interacts, q) || continue
+                info_q = info[q]
+                Y = info_q.conflicts
+                b = info_p.interacts[q]
+                c = info_q.interacts[p]
+                for (j, w) in enumerate(info_q.versions)
+                    w ∈ comp_pvq && continue
+                    X[i, b + j] = true
+                    Y[j, c + i] = true
                 end
             end
         end
     end
 
     # only keep reachable, necessary packages & versions
-    @timeit "filter pkg info" filter && filter_pkg_info!(info, reqs)
+    filter && @timeit "filter pkg info" filter_pkg_info!(info, reqs)
 
     return info
 end

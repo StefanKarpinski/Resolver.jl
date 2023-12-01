@@ -116,7 +116,7 @@ function mark_reachable!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
-    @timeit "find reachable" reach = find_reachable(info, reqs)
+    reach = find_reachable(info, reqs)
     for (p, info_p) in info
         r = get(reach, p, 0)
         info_p.conflicts[1:r, end] .= true

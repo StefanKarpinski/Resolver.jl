@@ -1,8 +1,9 @@
 function resolve(
     deps :: DepsProvider{P,V,S},
-    reqs :: SetOrVec{P} = deps.packages,
+    reqs :: SetOrVec{P} = deps.packages;
+    filter :: Bool = true,
 ) where {P,V,S}
-    info = load_pkg_info(deps, reqs)
+    info = load_pkg_info(deps, reqs; filter)
     resolve(info, reqs)
 end
 

@@ -83,7 +83,7 @@ function load_pkg_info(
     end
 
     # initialize conflicts matrices
-    @timeit "initialize conflicts matrices" for (p, info_p) in info
+    @timeit "initialize conflicts" for (p, info_p) in info
         X = info_p.conflicts
         V⁻¹ = Dict{V,Int}(v => i for (i, v) in enumerate(info_p.versions))
         D⁻¹ = Dict{P,Int}(q => j for (j, q) in enumerate(info_p.depends))
@@ -97,8 +97,8 @@ function load_pkg_info(
                 end
             end
         end
-        # set conflict bits
-        @timeit "conflicts" begin
+        # set compat bits
+        @timeit "compat" begin
             for (v, comp_pv) in data_p.compat
                 i = V⁻¹[v]
                 for (q, comp_pvq) in comp_pv

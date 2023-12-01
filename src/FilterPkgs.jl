@@ -219,6 +219,11 @@ function drop_unmarked!(
         # active version masks
         I = X[1:end-1, end]
         K = X[end, 1:end-1]
+        # delete if no active versions
+        if !any(I)
+            delete!(info′, p)
+            continue
+        end
         # copy if everything is active
         if all(I) && all(K)
             if info !== info′
@@ -228,11 +233,6 @@ function drop_unmarked!(
                 X′ = copy(X)
                 info′[p] = PkgInfo(V′, D′, T′, X′)
             end
-            continue
-        end
-        # delete if no active versions
-        if !any(I)
-            delete!(info′, p)
             continue
         end
         # compute shrunken components

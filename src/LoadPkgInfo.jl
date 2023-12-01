@@ -34,11 +34,6 @@ function load_pkg_info(
 
     # now, compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
-    # POSSIBLE TODO: more efficient data structure
-    #   - sort names, use Vector{Vector{Int}}
-    #   - indices imply names
-    #   - 50% less memory
-    #   - sorted construction
     @timeit "compute interacts" for (p, data_p) in data
         interacts_p = interacts[p]
         for (v, comp_pv) in data_p.compat,
@@ -56,11 +51,6 @@ function load_pkg_info(
         end
     end
     foreach(sort!, values(interacts))
-
-    ## interacts is symmetrical in this sense:
-    # for (p, ip) in interacts, (q, iq) in interacts
-    #     @assert (p ∈ iq) == (q ∈ ip)
-    # end
 
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()

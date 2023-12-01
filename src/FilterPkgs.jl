@@ -17,6 +17,7 @@ of required "root" packages, using the following recursive logic:
 - P in reqs => P[1] reachable
 - P[i] reachable & P[i] depends on D => D[1] reachable
 - P[i] reachable & P[i] conflicts w. reachable => P[i+1] reachable
+- D[end] conflicts w. reachable & P[i] depends on D => P[i+1] reachable
 
 The function returns a dictionary mapping packages to the maximum version index
 of that package that could be reached in an optimal solution. If a pacakge
@@ -26,11 +27,11 @@ function find_reachable(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
-    reach = Dict{P,Int}(p => 0 for p in reqs)
-    queue = Dict{P,Int}(p => 1 for p in reqs)
     # meaning (both map packages to version indices):
     #   - reach tracks fully processed reachable versions
     #   - queue tracks newly reachable versions not yet processed
+    reach = Dict{P,Int}(p => 0 for p in reqs)
+    queue = Dict{P,Int}(p => 1 for p in reqs)
 
     # add next active version of p *after* i to the queue
     # do nothing if there's already version > i in reach/queue
@@ -40,11 +41,9 @@ function find_reachable(
         info_p = info[p]
         n = length(info_p.versions)
         for j = i+1:n
-            if info_p.conflicts[j, end]
-                # active version
-                queue[p] = j
-                return true
-            end
+            info_p.conflicts[j, end] || continue # inactive
+            queue[p] = j
+            return true
         end
         # we're out of versions (i.e. saturated; see below)
         queue[p] = n+1

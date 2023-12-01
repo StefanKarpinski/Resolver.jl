@@ -12,6 +12,8 @@ function Base.:(==)(a::PkgInfo, b::PkgInfo)
     a.conflicts == b.conflicts
 end
 
+using TimerOutputs
+
 function load_pkg_info(
     deps :: DepsProvider{P,V,S},
     reqs :: SetOrVec{P} = deps.packages;
@@ -20,7 +22,7 @@ function load_pkg_info(
     # first, load dict of PkgData structs
     data = Dict{P,PkgData{P,V,S}}()
     work = Set(reqs)
-    while !isempty(work)
+    @timeit "load pkg data" while !isempty(work)
         p = pop!(work)
         @assert p ∉ keys(data)
         data_p = data[p] = deps(p)
@@ -31,7 +33,12 @@ function load_pkg_info(
     end
     # now, compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
-    for (p, data_p) in data
+    # POSSIBLE TODO: more efficient data structure
+    #   - sort names, use Vector{Vector{Int}}
+    #   - indices imply names
+    #   - 50% less memory
+    #   - sorted construction
+    @timeit "compute interacts" for (p, data_p) in data
         interacts_p = interacts[p]
         for v in data_p.versions
             v in keys(data_p.compat) || continue
@@ -61,7 +68,7 @@ function load_pkg_info(
     foreach(sort!, values(interacts))
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()
-    for (p, data_p) in data
+    @timeit "construct PkgInfo dict" for (p, data_p) in data
         vers_p = data_p.versions
         deps_p = data_p.depends
         comp_p = data_p.compat
@@ -81,12 +88,12 @@ function load_pkg_info(
             deps_pv = get(deps_p, v, deps_∅)
             comp_pv = get(comp_p, v, comp_∅)
             # dependencies
-            for (j, q) in enumerate(deps_pa)
+            @timeit "deps" for (j, q) in enumerate(deps_pa)
                 X[i, j] = q ∈ deps_pv
             end
             # conflicts
             b = length(deps_pa)
-            for q in interacts[p]
+            @timeit "conflicts" for q in interacts[p]
                 interacts_p[q] = b
                 info_q = data[q]
                 vers_q = info_q.versions
@@ -111,6 +118,6 @@ function load_pkg_info(
         # add the PkgInfo struct to dict
         info[p] = PkgInfo(vers_p, deps_pa, interacts_p, X)
     end
-    filter && filter_pkg_info!(info, reqs)
+    @timeit "filter pkg info" filter && filter_pkg_info!(info, reqs)
     return info
 end

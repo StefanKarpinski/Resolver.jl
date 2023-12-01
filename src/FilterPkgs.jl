@@ -2,9 +2,9 @@ function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
-    mark_reachable!(info, reqs)
-    mark_necessary!(info)
-    drop_unmarked!(info)
+    @timeit "mark reachable" mark_reachable!(info, reqs)
+    @timeit "mark necessary" mark_necessary!(info)
+    @timeit "drop unmarked" drop_unmarked!(info)
 end
 
 """
@@ -117,7 +117,7 @@ function mark_reachable!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P},
 ) where {P,V}
-    reach = find_reachable(info, reqs)
+    @timeit "find reachable" reach = find_reachable(info, reqs)
     for (p, info_p) in info
         r = get(reach, p, 0)
         info_p.conflicts[1:r, end] .= true

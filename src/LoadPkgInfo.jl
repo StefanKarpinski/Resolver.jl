@@ -31,6 +31,7 @@ function load_pkg_info(
             push!(work, q)
         end
     end
+
     # now, compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
     # POSSIBLE TODO: more efficient data structure
@@ -42,20 +43,19 @@ function load_pkg_info(
         interacts_p = interacts[p]
         for v in data_p.versions
             v in keys(data_p.compat) || continue
-            compat_pv = data_p.compat[v]
-            for (q, spec_q) in compat_pv
+            for (q, comp_pvq) in data_p.compat[v]
                 q in interacts_p && continue
                 interacts_q = interacts[q]
                 data_q = data[q]
                 for w in data_q.versions
-                    if w ∉ spec_q
+                    if w ∉ comp_pvq
                         push!(interacts_p, q)
                         push!(interacts_q, p)
                         break
                     else
-                        compat_q = data_q.compat
-                        p in keys(compat_q) || continue
-                        if v ∉ compat_q[p]
+                        comp_qw = data_q.compat[w]
+                        p in keys(comp_qw) || continue
+                        if v ∉ comp_qw[p]
                             push!(interacts_p, q)
                             push!(interacts_q, p)
                             break

@@ -56,59 +56,69 @@ function load_pkg_info(
         end
     end
     foreach(sort!, values(interacts))
+
+    ## interacts is symmetrical in this sense:
+    # for (p, ip) in interacts, (q, iq) in interacts
+    #     @assert (p ∈ iq) == (q ∈ ip)
+    # end
+
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()
     @timeit "construct PkgInfo dict" for (p, data_p) in data
-        vers_p = data_p.versions
-        deps_p = data_p.depends
-        comp_p = data_p.compat
-        # collect dependencies across all versions
-        deps_pa = sort!(reduce(union!, values(deps_p), init=P[]))
-        deps_pd = Dict{P,Int}(p => i for (i, p) in enumerate(deps_pa))
-        interacts_p = Dict{P, Int}(p => 0 for p in interacts[p])
-        # compute interactions matrix (m × n)
-        m = length(vers_p) # per package version
-        n = length(deps_pd) + # per dependency + per interacting version
-            sum(init=0, length(data[q].versions) for q in keys(interacts_p))
-        X = falses(m + 1, n + 1) # conflicts & active flags
-        # set dependency bits
-        @timeit "deps" for (i, v) in enumerate(vers_p)
-            for q in deps_p[v]
-                j = deps_pd[q]
-                X[i, j] = true
-            end
+        D = sort!(reduce(union!, values(data_p.depends), init=P[]))
+        T = Dict{P,Int}(p => 0 for p in interacts[p])
+        n = length(D)
+        for q in interacts[p]
+            T[q] = n
+            n += length(data[q].versions)
         end
-        # empty deps & compat
-        comp_∅ = Dict{P,S}()
-        # set conflict bits
-        b = length(deps_pd)
-        @timeit "conflicts" for q in interacts[p]
-            info_q = data[q]
-            vers_q = info_q.versions
-            comp_q = info_q.compat
-            for (j, w) in enumerate(vers_q)
-                comp_qw = get(comp_q, w, comp_∅)
-                for (i, v) in enumerate(vers_p)
-                    comp_pv = get(comp_p, v, comp_∅)
-                    X[i, b + j] =
-                        v ∈ keys(comp_p) &&
-                        q ∈ keys(comp_pv) &&
-                        w ∉ comp_pv[q] ||
-                        w ∈ keys(comp_q) &&
-                        p ∈ keys(comp_qw) &&
-                        v ∉ comp_qw[p]
-                end
-            end
-            interacts_p[q] = b
-            b += length(vers_q)
-        end
+        # conflicts matrix (m + 1) × (n + 1)
+        m = length(data_p.versions)
+        X = falses(m + 1, n + 1)
         # mark all versions as active
         X[1:m, end] .= true
         X[end, 1:n] .= true
-        X[end, end] = false
         # add the PkgInfo struct to dict
-        info[p] = PkgInfo(vers_p, deps_pa, interacts_p, X)
+        info[p] = PkgInfo(data_p.versions, D, T, X)
     end
+
+    # initialize conflicts matrices
+    @timeit "initialize conflicts matrices" for (p, info_p) in info
+        X = info_p.conflicts
+        V⁻¹ = Dict{V,Int}(v => i for (i, v) in enumerate(info_p.versions))
+        D⁻¹ = Dict{P,Int}(q => j for (j, q) in enumerate(info_p.depends))
+        data_p = data[p]
+        # set dependency bits
+        @timeit "deps" begin
+            for (v, deps_pv) in data_p.depends
+                i = V⁻¹[v]
+                for q in deps_pv
+                    X[i, D⁻¹[q]] = true
+                end
+            end
+        end
+        # set conflict bits
+        @timeit "conflicts" begin
+            for (v, comp_pv) in data_p.compat
+                i = V⁻¹[v]
+                for (q, comp_pvq) in comp_pv
+                    haskey(info_p.interacts, q) || continue
+                    info_q = info[q]
+                    Y = info_q.conflicts
+                    b = info_p.interacts[q]
+                    c = info_q.interacts[p]
+                    for (j, w) in enumerate(info_q.versions)
+                        w ∈ comp_pvq && continue
+                        X[i, b + j] = true
+                        Y[j, c + i] = true
+                    end
+                end
+            end
+        end
+    end
+
+    # only keep reachable, necessary packages & versions
     @timeit "filter pkg info" filter && filter_pkg_info!(info, reqs)
+
     return info
 end

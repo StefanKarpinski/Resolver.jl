@@ -41,25 +41,15 @@ function load_pkg_info(
     #   - sorted construction
     @timeit "compute interacts" for (p, data_p) in data
         interacts_p = interacts[p]
-        for v in data_p.versions
-            v in keys(data_p.compat) || continue
-            for (q, comp_pvq) in data_p.compat[v]
-                q in interacts_p && continue
+        for (v, comp_pv) in data_p.compat,
+            (q, comp_pvq) in comp_pv
+            if q ∉ interacts_p
                 interacts_q = interacts[q]
-                data_q = data[q]
-                for w in data_q.versions
+                for w in data[q].versions
                     if w ∉ comp_pvq
                         push!(interacts_p, q)
                         push!(interacts_q, p)
                         break
-                    else
-                        comp_qw = data_q.compat[w]
-                        p in keys(comp_qw) || continue
-                        if v ∉ comp_qw[p]
-                            push!(interacts_p, q)
-                            push!(interacts_q, p)
-                            break
-                        end
                     end
                 end
             end

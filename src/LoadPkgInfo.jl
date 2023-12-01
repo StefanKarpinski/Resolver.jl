@@ -75,11 +75,10 @@ function load_pkg_info(
         # collect dependencies across all versions
         deps_pa = sort!(reduce(union!, values(deps_p), init=P[]))
         deps_pd = Dict{P,Int}(p => i for (i, p) in enumerate(deps_pa))
-        deps_n = length(deps_pd)
         interacts_p = Dict{P, Int}(p => 0 for p in interacts[p])
         # compute interactions matrix (m × n)
         m = length(vers_p) # per package version
-        n = deps_n + # per dependency + per interacting version
+        n = length(deps_pd) + # per dependency + per interacting version
             sum(init=0, length(data[q].versions) for q in keys(interacts_p))
         X = falses(m + 1, n + 1) # conflicts & active flags
         # set dependency bits
@@ -92,17 +91,15 @@ function load_pkg_info(
         # empty deps & compat
         comp_∅ = Dict{P,S}()
         # set conflict bits
-        @timeit "conflicts" for (i, v) in enumerate(vers_p)
-            comp_pv = get(comp_p, v, comp_∅)
-            # conflicts
-            b = deps_n
-            for q in interacts[p]
-                interacts_p[q] = b
-                info_q = data[q]
-                vers_q = info_q.versions
-                comp_q = info_q.compat
-                for (j, w) in enumerate(vers_q)
-                    comp_qw = get(comp_q, w, comp_∅)
+        b = length(deps_pd)
+        @timeit "conflicts" for q in interacts[p]
+            info_q = data[q]
+            vers_q = info_q.versions
+            comp_q = info_q.compat
+            for (j, w) in enumerate(vers_q)
+                comp_qw = get(comp_q, w, comp_∅)
+                for (i, v) in enumerate(vers_p)
+                    comp_pv = get(comp_p, v, comp_∅)
                     X[i, b + j] =
                         v ∈ keys(comp_p) &&
                         q ∈ keys(comp_pv) &&
@@ -111,8 +108,9 @@ function load_pkg_info(
                         p ∈ keys(comp_qw) &&
                         v ∉ comp_qw[p]
                 end
-                b += length(vers_q)
             end
+            interacts_p[q] = b
+            b += length(vers_q)
         end
         # mark all versions as active
         X[1:m, end] .= true

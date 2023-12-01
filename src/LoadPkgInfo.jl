@@ -74,26 +74,29 @@ function load_pkg_info(
         comp_p = data_p.compat
         # collect dependencies across all versions
         deps_pa = sort!(reduce(union!, values(deps_p), init=P[]))
+        deps_pd = Dict{P,Int}(p => i for (i, p) in enumerate(deps_pa))
+        deps_n = length(deps_pd)
         interacts_p = Dict{P, Int}(p => 0 for p in interacts[p])
         # compute interactions matrix (m × n)
         m = length(vers_p) # per package version
-        n = length(deps_pa) + # per dependency + per interacting version
+        n = deps_n + # per dependency + per interacting version
             sum(init=0, length(data[q].versions) for q in keys(interacts_p))
         X = falses(m + 1, n + 1) # conflicts & active flags
-        # empty deps & compat
-        deps_∅ = Vector{P}()
-        comp_∅ = Dict{P,S}()
-        # main work loop
-        for (i, v) in enumerate(vers_p)
-            deps_pv = get(deps_p, v, deps_∅)
-            comp_pv = get(comp_p, v, comp_∅)
-            # dependencies
-            @timeit "deps" for (j, q) in enumerate(deps_pa)
-                X[i, j] = q ∈ deps_pv
+        # set dependency bits
+        @timeit "deps" for (i, v) in enumerate(vers_p)
+            for q in deps_p[v]
+                j = deps_pd[q]
+                X[i, j] = true
             end
+        end
+        # empty deps & compat
+        comp_∅ = Dict{P,S}()
+        # set conflict bits
+        @timeit "conflicts" for (i, v) in enumerate(vers_p)
+            comp_pv = get(comp_p, v, comp_∅)
             # conflicts
-            b = length(deps_pa)
-            @timeit "conflicts" for q in interacts[p]
+            b = deps_n
+            for q in interacts[p]
                 interacts_p[q] = b
                 info_q = data[q]
                 vers_q = info_q.versions

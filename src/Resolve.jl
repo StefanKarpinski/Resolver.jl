@@ -4,7 +4,7 @@ function resolve(
     filter :: Bool = true,
 ) where {P,V,S}
     info = load_pkg_info(deps, reqs; filter)
-    resolve(info, reqs)
+    @timeit "resolve" resolve(info, reqs)
 end
 
 function resolve(

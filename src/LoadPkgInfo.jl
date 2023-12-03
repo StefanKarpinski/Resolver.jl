@@ -36,16 +36,16 @@ function load_pkg_info(
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
     @timeit "compute interacts" for (p, data_p) in data
         interacts_p = interacts[p]
-        for (v, comp_pv) in data_p.compat,
-            (q, comp_pvq) in comp_pv
-            if q ∉ interacts_p
+        for (v, comp_pv) in data_p.compat
+            # don't combine loops--it changes what continue does
+            for (q, comp_pvq) in comp_pv
+                q in interacts_p && continue
                 interacts_q = interacts[q]
                 for w in data[q].versions
-                    if w ∉ comp_pvq
-                        push!(interacts_p, q)
-                        push!(interacts_q, p)
-                        break
-                    end
+                    w in comp_pvq && continue
+                    push!(interacts_p, q)
+                    push!(interacts_q, p)
+                    break
                 end
             end
         end
@@ -95,7 +95,7 @@ function load_pkg_info(
                 b = info_p.interacts[q]
                 c = info_q.interacts[p]
                 for (j, w) in enumerate(info_q.versions)
-                    w ∈ comp_pvq && continue
+                    w in comp_pvq && continue
                     X[i, b + j] = true
                     Y[j, c + i] = true
                 end

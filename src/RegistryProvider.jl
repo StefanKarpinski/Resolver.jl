@@ -15,9 +15,10 @@ function registry_provider(
     excludes :: SetOrVec{<:AbstractString} = EXCLUDES,
 )
     reg_inst = Pkg.RegistryInstance(reg_path)
-    reg_dict = Dict(p.name => p for p in values(reg_inst.pkgs) if p.name ∉ excludes)
+    reg_dict = Dict(p.name => p
+        for p in values(reg_inst.pkgs) if p.name ∉ excludes)
 
-    DepsProvider{String, VersionNumber, Pkg.VersionSpec}(keys(reg_dict)) do pkg::String
+    DepsProvider(keys(reg_dict)) do pkg :: AbstractString
         info = Pkg.init_package_info!(reg_dict[pkg])
         vers = sort!(collect(keys(info.version_info)), rev=true)
         deps = Dict(v => String[] for v in vers)
@@ -39,13 +40,13 @@ function registry_provider(
         for c in values(comp), x in excludes
             delete!(c, x)
         end
-        # deduplicate data structures to save memory
+        # deduplicate data structures to save some memory
         for i = 1:length(vers)-1, j = i+1:length(vers)
             v, w = vers[i], vers[j]
             deps[v] == deps[w] && (deps[v] = deps[w])
             comp[v] == comp[w] && (comp[v] = comp[w])
         end
         # return resolver PkgData structure
-        PkgData{String, VersionNumber, Pkg.VersionSpec}(vers, deps, comp)
+        PkgData(vers, deps, comp)
     end
 end

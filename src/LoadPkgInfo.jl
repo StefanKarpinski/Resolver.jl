@@ -15,24 +15,31 @@ end
 using TimerOutputs
 
 function load_pkg_info(
-    deps :: DepsProvider{P,V,S},
+    deps :: DepsProvider{P, D},
     reqs :: SetOrVec{P} = deps.packages;
     filter :: Bool = true,
-) where {P,V,S}
+) where {P,D}
     # first, load dict of PkgData structs
-    data = Dict{P,PkgData{P,V,S}}()
+    data = Dict{P,D}()
     work = Set(reqs)
     @timeit "load pkg data" while !isempty(work)
         p = pop!(work)
         @assert p ∉ keys(data)
-        data_p = data[p] = deps(p)
+        data_p = data[p] = pkg_data(deps, p)
         for (v, deps_pv) in data_p.depends, q in deps_pv
             q in keys(data) && continue
             push!(work, q)
         end
     end
+    return load_pkg_info(data, reqs; filter)
+end
 
-    # now, compute interactions between packages
+function load_pkg_info(
+    data :: AbstractDict{P, <:PkgData{P,V}},
+    reqs :: SetOrVec{P} = keys(data);
+    filter :: Bool = true,
+) where {P,V}
+    # compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
     @timeit "compute interacts" for (p, data_p) in data
         interacts_p = interacts[p]

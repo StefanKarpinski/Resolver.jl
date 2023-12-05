@@ -1,12 +1,22 @@
 module TinyTypes
 
-export TinyDict, TinyVec
+export TinyDict, TinyVec, TinyRange
 
-import Base: getindex, iterate, length, size, in
+import Base: getindex, iterate, length, size, in, first, last
 
 struct TinyDict{b,T} <: AbstractDict{Int,T}
     bits :: UInt64
 end
+
+struct TinyVec <: AbstractVector{Int}
+    bits :: UInt64
+end
+
+struct TinyRange{n} <: AbstractUnitRange{Int}
+    # no fields
+end
+
+# TinyDict
 
 getbits(d::TinyDict{b}, k::Int) where {b} =
     (d.bits >> (b*(k-1))) & ((1 << b) - 1)
@@ -25,9 +35,7 @@ end
 length(d::TinyDict{b,T}) where {b,T} =
     count(getbits(d, k) ≠ 0 for k = 1:64÷b)
 
-struct TinyVec <: AbstractVector{Int}
-    bits :: UInt64
-end
+# TinyVec
 
 size(v::TinyVec) = (count_ones(v.bits),)
 
@@ -50,6 +58,28 @@ end
 
 in(x::Int, v::TinyVec) = (v.bits >> x) ≠ 0
 
+# TinyRange
+
+TinyRange(n::Integer) = TinyRange{n}()
+
+first(r::TinyRange) = 1
+last(r::TinyRange{n}) where {n} = n::Int
+
 end # module
 
 using .TinyTypes
+
+#=
+p, v = 3, 2
+
+randbits(n::Int) = rand(UInt64) & ((1 << n) - 1)
+
+depends = randbits(p*v*p) |>
+    TinyDict{v*p, TinyDict{p, TinyVec}}
+compats = randbits(p*v*p*v) |>
+    TinyDict{v*p*v, TinyDict{p*v, TinyDict{v, TinyVec}}}
+
+data = Dict(
+    i => PkgData(TinyRange(v), depends[i], compats[i]) for i = 1:p
+)
+=#

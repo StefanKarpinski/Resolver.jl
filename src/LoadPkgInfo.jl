@@ -15,7 +15,7 @@ end
 using TimerOutputs
 
 function load_pkg_info(
-    deps :: DepsProvider{P, D},
+    deps :: DepsProvider{P,D},
     reqs :: SetOrVec{P} = deps.packages;
     filter :: Bool = true,
 ) where {P,D}
@@ -31,10 +31,10 @@ function load_pkg_info(
             push!(work, q)
         end
     end
-    return load_pkg_info(data, reqs; filter)
+    return make_pkg_info(data, reqs; filter)
 end
 
-function load_pkg_info(
+function make_pkg_info(
     data :: AbstractDict{P, <:PkgData{P,V}},
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,
@@ -46,7 +46,7 @@ function load_pkg_info(
         for (v, comp_pv) in data_p.compat
             # don't combine loops--it changes what continue does
             for (q, comp_pvq) in comp_pv
-                q in interacts_p && continue
+                (q == p || q in interacts_p) && continue
                 interacts_q = interacts[q]
                 for w in data[q].versions
                     w in comp_pvq && continue

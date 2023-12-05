@@ -14,24 +14,31 @@ end
 
 using TimerOutputs
 
-function load_pkg_info(
+function load_pkg_data(
     deps :: DepsProvider{P,D},
     reqs :: SetOrVec{P} = deps.packages;
-    filter :: Bool = true,
 ) where {P,D}
-    # first, load dict of PkgData structs
     data = Dict{P,D}()
     work = Set(reqs)
     @timeit "load pkg data" while !isempty(work)
         p = pop!(work)
-        @assert p ∉ keys(data)
         data_p = data[p] = pkg_data(deps, p)
         for (v, deps_pv) in data_p.depends, q in deps_pv
             q in keys(data) && continue
             push!(work, q)
         end
     end
-    return make_pkg_info(data, reqs; filter)
+    return data
+end
+
+function load_pkg_info(
+    deps :: DepsProvider{P},
+    reqs :: SetOrVec{P} = deps.packages;
+    filter :: Bool = true,
+) where {P}
+    data = load_pkg_data(deps, reqs)
+    info = make_pkg_info(data, reqs; filter)
+    return info
 end
 
 function make_pkg_info(
@@ -111,7 +118,9 @@ function make_pkg_info(
     end
 
     # only keep reachable, necessary packages & versions
-    filter && @timeit "filter pkg info" filter_pkg_info!(info, reqs)
+    if filter
+        @timeit "filter pkg info" filter_pkg_info!(info, reqs)
+    end
 
     return info
 end

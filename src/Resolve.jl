@@ -1,9 +1,18 @@
 function resolve(
-    deps :: DepsProvider{P,V,S},
+    deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
     filter :: Bool = true,
-) where {P,V,S}
+) where {P}
     info = load_pkg_info(deps, reqs; filter)
+    @timeit "resolve" resolve(info, reqs)
+end
+
+function resolve(
+    data :: AbstractDict{P, <:PkgData{P}},
+    reqs :: SetOrVec{P} = keys(data);
+    filter :: Bool = true,
+) where {P}
+    info = make_pkg_info(data, reqs; filter)
     @timeit "resolve" resolve(info, reqs)
 end
 

@@ -83,7 +83,7 @@ function make_pkg_info(
         X[1:m, end] .= true
         X[end, 1:n] .= true
         # add the PkgInfo struct to dict
-        info[p] = PkgInfo(data_p.versions, D, T, X)
+        info[p] = PkgInfo{P,V}(data_p.versions, D, T, X)
     end
 
     # initialize conflicts matrices
@@ -96,6 +96,7 @@ function make_pkg_info(
         for (v, deps_pv) in data_p.depends
             i = V⁻¹[v]
             for q in deps_pv
+                q == p && continue
                 X[i, D⁻¹[q]] = true
             end
         end

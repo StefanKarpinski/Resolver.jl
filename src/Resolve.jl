@@ -18,7 +18,7 @@ end
 
 function resolve(
     info :: Dict{P, PkgInfo{P,V}},
-    reqs :: SetOrVec{P},
+    reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
     # sort stuff for determinism
     reqs = sort!(collect(reqs))

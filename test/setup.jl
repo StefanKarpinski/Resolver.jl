@@ -3,6 +3,31 @@ using Random
 using Resolver
 using Resolver: resolve_core, SetOrVector, DepsProvider, PkgData
 
+function resolve(
+    data :: AbstractDict{P, <:PkgData{P}},
+    reqs :: SetOrVec{P} = keys(data),
+) where {P}
+    pkgs = sort!(collect(keys(data)))
+    sols = Vector{Int}[]
+    sol  = [0 for _ = 1:length(pkgs)]
+
+    function find_solutions!(i::Int = 1)
+        i > length(pkgs) && return
+        p = pkgs[i]
+        data_p = data[p]
+        for (j, v) in enumerate(data_p.versions)
+            for k = 1:i-1
+                q = pkgs[k]
+                if haskey(data_p.compat, v)
+                    
+                end
+                w = data[q].versions[sol[k]]
+            end
+        end
+    end
+
+end
+
 function resolve_brute_force(
     versions  :: AbstractVector,
     conflicts :: SetOrVector{<:NTuple{2,Integer}};

@@ -71,27 +71,3 @@ last(r::TinyRange{n}) where {n} = n::Int
 end # module
 
 using .TinyTypes
-
-#=
-using Revise
-using Resolver
-includet("test/TinyTypes.jl")
-
-p, v = 3, 2
-
-randbits(n::Int) = rand(UInt64) & ((1 << n) - 1)
-
-begin
-    depends = randbits(p*v*p) |>
-        TinyDict{v*p, TinyDict{p, TinyVec}}
-    compats = randbits(p*v*p*v) |>
-        TinyDict{v*p*v, TinyDict{p*v, TinyDict{v, TinyVec}}}
-
-    data = Dict(
-        i => PkgData(TinyRange(v), depends[i], compats[i]) for i = 1:p
-    )
-
-    pkgs, vers = resolve(data, [1])
-    [pkgs vers]
-end
-=#

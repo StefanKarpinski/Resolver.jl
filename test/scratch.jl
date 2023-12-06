@@ -4,12 +4,9 @@ includet("TinyTypes.jl")
 
 # [(m, n, m*n*(m-1)) for m=2:5 for n=2:5 if (m*n)^2 <= 128]
 const m = 3 # number of packages
-const n = 3 # number of versions
+const n = 2 # number of versions
 
 @assert m*n*m*n ≤ TinyTypes.N
-
-const Deps = TinyDict{n*m, TinyDict{m, TinyVec}}
-const Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec}}}
 
 const deps_mask = reduce(|,
     TinyTypes.UIntN(1) << ((p-1)*n*m + (v-1)*m + (q-1))
@@ -21,31 +18,30 @@ const comp_mask = reduce(|,
     if isodd(p + q) ? p < q : p > q
 )
 
-const deps_ones = count_ones(deps_mask)
-const comp_ones = count_ones(comp_mask)
+const d = count_ones(deps_mask)
+const c = count_ones(comp_mask)
 
-rand_deps() = deposit_bits(deps_mask, randbits(deps_ones)) |> Deps
-rand_comp() = deposit_bits(comp_mask, randbits(comp_ones)) |> Comp
+const Deps = TinyDict{n*m, TinyDict{m, TinyVec}}
+const Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec}}}
+
+rand_deps() = deposit_bits(deps_mask, randbits(d)) |> Deps
+rand_comp() = deposit_bits(comp_mask, randbits(c)) |> Comp
 
 #=
-for _ = 1:10^6
-    deps = rand_deps()
-    for (p, deps_p) in deps,
-        (v, deps_pv) in deps_p,
-        q in deps_pv
-        @assert p != q
-    end
-end
-
-for _ = 1:10^6
-    comp = rand_comp()
-    for (p, comp_p) in comp,
-        (v, comp_pv) in comp_p,
-        (q, comp_pvq) in comp_pv
-        @assert p != q
+const configs = []
+for deps_bits in BinomialBits(d, d÷2)
+    deps = deposit_bits(deps_mask, deps_bits) |> Deps
+    all(deps[i].bits ≥ deps[i+1].bits for i=1:m-1) || continue
+    for comp_bits in BinomialBits(c, c÷2)
+        comp = deposit_bits(comp_mask, comp_bits) |> Comp
+        for reqs_bits = 1:2^m-1
+            reqs = TinyVec(reqs_bits)
+            push!(configs, (deps, comp, reqs))
+        end
     end
 end
 =#
+
 #=
 begin
     deps = rand_deps()

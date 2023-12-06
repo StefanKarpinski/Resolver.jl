@@ -2,8 +2,6 @@ module TinyTypes
 
 export TinyDict, TinyVec, TinyRange, randbits, deposit_bits
 
-import Base: haskey, getindex, iterate, length, size, in, first, last
-
 const UIntN = UInt128
 const N = 8*sizeof(UIntN)
 
@@ -24,13 +22,13 @@ end
 getbits(d::TinyDict{b}, k::Int) where {b} =
     (d.bits >> (b*(k-1))) & ((1 << b) - 1)
 
-haskey(d::TinyDict{b,T}, k::Int) where {b,T} =
+Base.haskey(d::TinyDict{b,T}, k::Int) where {b,T} =
     getbits(d, k) ≠ 0
 
-getindex(d::TinyDict{b,T}, k::Int) where {b,T} =
+Base.getindex(d::TinyDict{b,T}, k::Int) where {b,T} =
     T(getbits(d, k))
 
-function iterate(d::TinyDict{b,T}, k::Int = 1) where {b,T}
+function Base.iterate(d::TinyDict{b,T}, k::Int = 1) where {b,T}
     while b*k ≤ N
         v = getbits(d, k)
         v ≠ 0 && return k => T(v), k+1
@@ -38,14 +36,14 @@ function iterate(d::TinyDict{b,T}, k::Int = 1) where {b,T}
     end
 end
 
-length(d::TinyDict{b,T}) where {b,T} =
+Base.length(d::TinyDict{b,T}) where {b,T} =
     count(getbits(d, k) ≠ 0 for k = 1:N÷b)
 
 # TinyVec
 
-size(v::TinyVec) = (count_ones(v.bits),)
+Base.size(v::TinyVec) = (count_ones(v.bits),)
 
-function getindex(v::TinyVec, i::Int)
+function Base.getindex(v::TinyVec, i::Int)
     x = 0
     b = v.bits
     for j = 1:i
@@ -56,20 +54,20 @@ function getindex(v::TinyVec, i::Int)
     return x
 end
 
-function iterate(v::TinyVec, x::Int = 0)
+function Base.iterate(v::TinyVec, x::Int = 0)
     b = v.bits >> x
     x += trailing_zeros(b) + 1
     x ≤ N ? (x, x) : nothing
 end
 
-in(x::Int, v::TinyVec) = (v.bits >> x) ≠ 0
+Base.in(x::Int, v::TinyVec) = (v.bits >> x) ≠ 0
 
 # TinyRange
 
 TinyRange(n::Integer) = TinyRange{n}()
 
-first(r::TinyRange) = 1
-last(r::TinyRange{n}) where {n} = n::Int
+Base.first(r::TinyRange) = 1
+Base.last(r::TinyRange{n}) where {n} = n::Int
 
 randbits(b::Int) = rand(TinyTypes.UIntN) & ((1 << b) - 1)
 

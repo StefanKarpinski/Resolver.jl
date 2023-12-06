@@ -1,6 +1,6 @@
 module TinyTypes
 
-export TinyDict, TinyVec, TinyRange, randbits, deposit_bits
+export TinyDict, TinyVec, TinyRange, BinomialBits, randbits, deposit_bits
 
 const UIntN = UInt128
 const N = 8*sizeof(UIntN)
@@ -94,6 +94,39 @@ function deposit_bits(mask::Integer, bits::Integer)
         bits >>>= 1
     end
     return r
+end
+
+struct BinomialBits{T<:Base.BitInteger}
+    n :: T
+    k :: T
+    function BinomialBits{T}(n::Integer, k::Integer) where {T}
+        0 ≤ n ≤ 8*sizeof(T) ||
+            throw(ArgumentError("n = $n must be in [0, 8*sizeof($T)]"))
+        0 ≤ k ≤ n ||
+            throw(ArgumentError("k = $k must be in [0, n]"))
+        n == k == 8*sizeof(T) &&
+            throw(ArgumentError("n = k = 8*sizeof($T) unsupported"))
+        new{T}(n, k)
+    end
+end
+BinomialBits(n::Integer, k::Integer) = BinomialBits{typeof(n)}(n, k)
+
+Base.eltype(b::BinomialBits{T}) where {T} = T
+Base.length(b::BinomialBits) = binomial(b.n, b.k)
+
+Base.first(b::BinomialBits) = (one(b.k) << b.k) - one(b.k)
+Base.last(b::BinomialBits) = first(b) << (b.n - b.k)
+
+function Base.iterate(
+    b :: BinomialBits{T},
+    s :: T = -one(T),
+) where {T<:Integer}
+    s == last(b) && return nothing
+    z = trailing_zeros(s)
+    s += one(T) << z
+    d = b.k - count_ones(s)
+    s += one(T) << d - one(T)
+    return s, s
 end
 
 end # module

@@ -2,36 +2,21 @@ using Revise
 using Resolver
 includet("TinyTypes.jl")
 
-randbits(b::Int) = rand(UInt64) & ((1 << b) - 1)
+# [(m, n, m*n*(m-1)) for m=2:5 for n=2:5 if (m*n)^2 <= 128]
+const m = 3 # number of packages
+const n = 3 # number of versions
 
-function deposit_bits(mask::UInt64, bits::UInt64)
-    r = zero(UInt64)
-    j = 0
-    for i = 0:63
-        if isodd(mask >> i)
-            if isodd(bits >> j)
-                r |= one(UInt64) << i
-            end
-            j += 1
-        end
-    end
-    return r
-end
-
-const m = 4 # number of packages
-const n = 2 # number of versions
-
-@assert m*n*m*n ≤ 64
+@assert m*n*m*n ≤ TinyTypes.N
 
 const Deps = TinyDict{n*m, TinyDict{m, TinyVec}}
 const Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec}}}
 
 const deps_mask = reduce(|,
-    UInt64(1) << ((p-1)*n*m + (v-1)*m + (q-1))
+    TinyTypes.UIntN(1) << ((p-1)*n*m + (v-1)*m + (q-1))
     for v=1:n for w=1:n for p=1:m for q=1:m if p ≠ q
 )
 const comp_mask = reduce(|,
-    UInt64(1) << ((p-1)*n*m*n + (v-1)*m*n + (q-1)*n + (w-1))
+    TinyTypes.UIntN(1) << ((p-1)*n*m*n + (v-1)*m*n + (q-1)*n + (w-1))
     for v=1:n for w=1:n for p=1:m for q=1:m
     if isodd(p + q) ? p < q : p > q
 )

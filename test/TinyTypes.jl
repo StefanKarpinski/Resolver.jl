@@ -39,6 +39,19 @@ end
 Base.length(d::TinyDict{b,T}) where {b,T} =
     count(getbits(d, k) ≠ 0 for k = 1:N÷b)
 
+function Base.show(io::IO, d::TinyDict)
+    print(io, '{')
+    first = true
+    for (k, v) in d
+        first || print(io, ", ")
+        show(io, k)
+        print(io, ": ")
+        show(io, v)
+        first = false
+    end
+    print(io, '}')
+end
+
 # TinyVec
 
 Base.size(v::TinyVec) = (count_ones(v.bits),)
@@ -71,16 +84,14 @@ Base.last(r::TinyRange{n}) where {n} = n::Int
 
 randbits(b::Int) = rand(TinyTypes.UIntN) & ((1 << b) - 1)
 
-function deposit_bits(mask::UIntN, bits::UIntN)
-    r = zero(UIntN)
-    j = 0
-    for i = 0:N-1
-        if isodd(mask >> i)
-            if isodd(bits >> j)
-                r |= one(UIntN) << i
-            end
-            j += 1
-        end
+function deposit_bits(mask::Integer, bits::Integer)
+    s = 0
+    r = zero(mask)
+    while !iszero(mask)
+        s += t = trailing_zeros(mask) + 1
+        r |= (bits & one(r)) << (s - 1)
+        mask >>>= t
+        bits >>>= 1
     end
     return r
 end

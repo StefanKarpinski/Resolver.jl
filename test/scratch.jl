@@ -28,17 +28,26 @@ rand_deps() = deposit_bits(deps_mask, randbits(d)) |> Deps
 rand_comp() = deposit_bits(comp_mask, randbits(c)) |> Comp
 
 #=
-const configs = []
-for deps_bits in BinomialBits(d, d÷2)
-    deps = deposit_bits(deps_mask, deps_bits) |> Deps
-    all(deps[i].bits ≥ deps[i+1].bits for i=1:m-1) || continue
-    for comp_bits in BinomialBits(c, c÷2)
-        comp = deposit_bits(comp_mask, comp_bits) |> Comp
-        for reqs_bits = 1:2^m-1
-            reqs = TinyVec(reqs_bits)
-            push!(configs, (deps, comp, reqs))
+let i = 0
+    data = Dict(
+        i => PkgData(TinyRange(n), rand_deps()[i], rand_comp()[i]) for i = 1:m
+    )
+    for deps_bits in BinomialBits(d, d÷2)
+        deps = deposit_bits(deps_mask, deps_bits) |> Deps
+        all(deps[i].bits ≥ deps[i+1].bits for i=1:m-1) || continue
+        for comp_bits in BinomialBits(c, c÷2)
+            comp = deposit_bits(comp_mask, comp_bits) |> Comp
+            for reqs_bits = 1:m^2-1
+                reqs = TinyVec(reqs_bits)
+                for i = 1:m
+                    data[i] = PkgData(TinyRange(n), deps[i], comp[i])
+                end
+                pkgs, vers = resolve(data, [1])
+                (i += 1) % 10^4 == 0 && println(i)
+            end
         end
     end
+    println(i)
 end
 =#
 

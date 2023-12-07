@@ -1,7 +1,7 @@
 using Test
 using Random
 using Resolver
-using Resolver: resolve_core, SetOrVector, DepsProvider, PkgData
+using Resolver: resolve_core, NetOrVector, DepsProvider, PkgData
 
 function check_resolved(
 # problem:
@@ -12,24 +12,24 @@ function check_resolved(
     vers :: AbstractMatrix{Union{V,Nothing}},
 ) where {P,V}
     # number of packages & solutions
-    P, S = size(vers)
+    M, N = size(vers)
 
     # check basic structure
     @test reqs ⊆ pkgs
     @test allunique(pkgs)
-    @test P == length(pkgs)
+    @test M == length(pkgs)
     @test all(haskey(data, p) for p in pkgs)
     @test all(
         isnothing(vers[i, s]) ||
         vers[i, s] ∈ data[p].versions
         for (i, p) in enumerate(pkgs)
-        for s = 1:S
+        for s = 1:N
     )
 
     # check validity of each solution
-    for s = 1:S
+    for s = 1:N
         # check satisfiaction of dependencies
-        for i = 1:P
+        for i = 1:M
             v = vers[i, s]
             v === nothing && continue
             data_p = data[pkgs[i]]
@@ -41,7 +41,7 @@ function check_resolved(
             end
         end
         # check compatibility of versions
-        for i = 1:P, j = 1:P
+        for i = 1:M, j = 1:M
             v = vers[i, s]
             isnothing(v) && continue
             w = vers[j, s]
@@ -57,44 +57,81 @@ function check_resolved(
         end
     end
 
-    # matrices for computing solution ordering
-    V = zeros(Int, P, S) # matrix of version "goodness" ranks
-    D = fill(Int[], P, S) # matrix of dependency vectors
-    for (i, p) in enumerate(pkgs)
-        versions = data[p].versions
-        depends = data[p].depends
-        for s = 1:S
-            v = vers[i, s]
-            isnothing(v) && continue
-            k = findfirst(==(v), versions)
-            V[i, s] = length(versions) - k + 1
-            haskey(depends, v) || continue
-            D[i, s] = indexin(depends[v], pkgs)
+    # verion dependencies (may replace & expand pkgs)
+    deps = Dict{Tuple{V,Int},Vector{Int}}()
+    i = 0
+    while (i += 1) ≤ length(pkgs)
+        p = pkgs[i]
+        for v in data[p].versions
+            deps[v,i] = Int[]
+            haskey(data[p].depends, v) || continue
+            for q in data[p].depends[v]
+                j = findfirst(==(q), pkgs)
+                if isnothing(j)
+                    if length(pkgs) == M
+                        pkgs = copy(pkgs)
+                    end
+                    push!(pkgs, q)
+                    j = length(pkgs)
+                end
+                push!(deps[v,i], j)
+            end
         end
     end
+    # pkgs now contains all packages that could be needed by
+    # any version of any package in the original pkgs and deps
+    # has dependencies for all packages and versions of them
+
+    # ranking versions (higher = better)
+    ranks = Dict{Tuple{V,Int},Int}()
+    for (i, p) in enumerate(pkgs),
+        (r, v) in enumerate(data[p].versions)
+        ranks[v,i] = -r
+    end
+    # i: package index
+    # d: default version
+    rank(v::V, i::Int, d::V) = ranks[v,i]
+    rank(v::Nothing, i::Int, d::V) = d # default
+    rank(s::AbstractVector{Union{V,Nothing}}, i::Int, d::V) =
+        rank(get(s, i, nothing), i, d)
 
     # partial order on solutions
-    opts = Set{Int}() # optimization set
-    # ==ₛ(s::Int, t::Int) = all(V[i,s] == V[i,t] for i=1:P)
-    function ≥ₛ(s::Int, t::Int)
-        # reset opts = reqs
-        union!(empty!(opts), indexin(reqs, pkgs))
+    function ≤ₛ(
+        s::AbstractVector{Union{V,Nothing}},
+        t::AbstractVector{Union{V,Nothing}},
+    )
+        # set of necessary package indices
+        need = Set{Int}(indexin(reqs, pkgs))
+        # check necessary packages
         while true
             strict = false
-            for i in opts
-                V[i,s] < V[i,t] && return false
-                V[i,s] > V[i,t] && (strict = true)
+            for i in need
+                # no version = worst = typemin(V)
+                sᵢ = rank(s, i, typemin(V))
+                tᵢ = rank(t, i, typemin(V))
+                sᵢ > tᵢ && return false
+                sᵢ < tᵢ && (strict = true)
             end
             strict && return true
-            @assert all(V[i,s] == V[i,t] for i in opts)
-            n = length(opts)
-            for i in opts
-                union!(opts, D[i,s])
+            n = length(need)
+            for i in need
+                v = get(s, i, nothing)
+                @assert v == get(t, i, nothing)
+                union!(need, deps[v,i])
             end
-            n == length(opts) && return true
+            n == length(need) && break
         end
+        # check unnecessary packages
+        for i = 1:M
+            i in need && continue
+            # no version = best = typemax(V)
+            sᵢ = rank(s, i, typemax(V))
+            tᵢ = rank(t, i, typemax(V))
+            sᵢ > tᵢ && return false
+        end
+        return true
     end
-    ≤ₛ(s::Int, t::Int) = ≥ₛ(t, s)
+    ≥ₛ(s::Int, t::Int) = ≤ₛ(t, s)
 
 end
 

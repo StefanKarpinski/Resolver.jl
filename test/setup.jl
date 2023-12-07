@@ -3,138 +3,120 @@ using Random
 using Resolver
 using Resolver: resolve_core, SetOrVector, DepsProvider, PkgData
 
-function resolve(
-    data :: AbstractDict{P, <:PkgData{P}},
-    reqs :: SetOrVec{P} = keys(data),
-) where {P}
-    pkgs = sort!(collect(keys(data)))
-    sols = Vector{Int}[]
-    sol  = [0 for _ = 1:length(pkgs)]
+function check_resolved(
+# problem:
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    reqs :: AbstractVector{P},
+# solutions:
+    pkgs :: AbstractVector{P},
+    vers :: AbstractMatrix{Union{V,Nothing}},
+) where {P,V}
+    # number of packages & solutions
+    P, S = size(vers)
 
-    function find_solutions!(i::Int = 1)
-        i > length(pkgs) && return
-        p = pkgs[i]
-        data_p = data[p]
-        for (j, v) in enumerate(data_p.versions)
-            for k = 1:i-1
-                q = pkgs[k]
-                if haskey(data_p.compat, v)
-                    
-                end
-                w = data[q].versions[sol[k]]
+    # check basic structure
+    @test reqs ⊆ pkgs
+    @test allunique(pkgs)
+    @test P == length(pkgs)
+    @test all(haskey(data, p) for p in pkgs)
+    @test all(
+        isnothing(vers[i, s]) ||
+        vers[i, s] ∈ data[p].versions
+        for (i, p) in enumerate(pkgs)
+        for s = 1:S
+    )
+
+    # check validity of each solution
+    for s = 1:S
+        # check satisfiaction of dependencies
+        for i = 1:P
+            v = vers[i, s]
+            v === nothing && continue
+            data_p = data[pkgs[i]]
+            haskey(data_p.depends, v) || continue
+            for q in data_p.depends[v]
+                @test q ∈ pkgs
+                j = findfirst(==(q), pkgs)
+                @test !isnothing(vers[j, s])
+            end
+        end
+        # check compatibility of versions
+        for i = 1:P, j = 1:P
+            v = vers[i, s]
+            isnothing(v) && continue
+            w = vers[j, s]
+            isnothing(w) && continue
+            p = pkgs[i]
+            q = pkgs[j]
+            haskey(data[p].compat, v) &&
+            haskey(data[p].compat[v], q) &&
+            @test w in data[p].compat[v][q]
+            haskey(data[q].compat, w) &&
+            haskey(data[q].compat[w], p) &&
+            @test v in data[q].compat[w][p]
+        end
+    end
+
+    # matrices for computing solution ordering
+    V = zeros(Int, P, S) # matrix of version "goodness" ranks
+    D = fill(Int[], P, S) # matrix of dependency vectors
+    for (i, p) in enumerate(pkgs)
+        versions = data[p].versions
+        depends = data[p].depends
+        for s = 1:S
+            v = vers[i, s]
+            isnothing(v) && continue
+            k = findfirst(==(v), versions)
+            V[i, s] = length(versions) - k + 1
+            haskey(depends, v) || continue
+            D[i, s] = indexin(depends[v], pkgs)
+        end
+    end
+
+    # partial order on solutions
+    opts = Set{Int}() # optimization set
+    # ==ₛ(s::Int, t::Int) = all(V[i,s] == V[i,t] for i=1:P)
+    function ≥ₛ(s::Int, t::Int)
+        # reset opts = reqs
+        union!(empty!(opts), indexin(reqs, pkgs))
+        while true
+            strict = false
+            for i in opts
+                V[i,s] < V[i,t] && return false
+                V[i,s] > V[i,t] && (strict = true)
+            end
+            strict && return true
+            @assert all(V[i,s] == V[i,t] for i in opts)
+            n = length(opts)
+            for i in opts
+                union!(opts, D[i,s])
+            end
+            n == length(opts) && return true
+        end
+    end
+    ≤ₛ(s::Int, t::Int) = ≥ₛ(t, s)
+
+end
+
+function find_undominated(opts, done, deps)
+    if isempty(deps)
+        deps = find new deps
+        if isempty(deps)
+            return isempty(opts)
+        end
+    end
+    for p in deps
+        m = maximum(s[p] for s in opts)
+        for i = 1:m-1
+            conf[p][i] > 0 && continue
+            # update conf for p@i
+            opts′ = filter(s->s[p] ≤ i, opts)
+            done′ = push!(copy(done), p)
+            deps′ = delete!(copy(deps), p)
+            if find_undominated(opts′, done′, deps′)
+                return true
             end
         end
     end
-
-end
-
-function resolve_brute_force(
-    versions  :: AbstractVector,
-    conflicts :: SetOrVector{<:NTuple{2,Integer}};
-    optimal   :: Bool = true,
-    relax     :: Integer = 0,
-)
-    # package indices
-    P = zeros(Int, length(versions))
-    let indices = Dict{eltype(versions), Int}()
-        for (v, p) in enumerate(versions)
-            P[v] = get!(indices, p, length(indices) + 1)
-        end
-    end
-    perm = sortperm(P)
-
-    # package counts
-    M = maximum(P)
-    C = zeros(Int, M)
-    for p in P
-        C[p] += 1
-    end
-
-    # number of possible solutions
-    ∏ = prod(C)
-    log2(∏) ≈ sum(log2, C) ||
-        throw(ArgumentError("brute force only works for small problems"))
-
-    # generate all conflict-free solutions
-    solution = zeros(Int, M)
-    solutions = Vector{Int}[]
-    for S = 0:∏-1
-        b = 1
-        for i = 1:M
-            S, r = divrem(S, C[i])
-            solution[i] = perm[b + r]
-            b += C[i]
-        end
-        x = sum(v₁ ∈ solution && v₂ ∈ solution for (v₁, v₂) in conflicts; init = 0)
-        x ≤ relax && push!(solutions, copy(solution))
-    end
-
-    # filter out sub-optimal solutions
-    optimal && filter!(solutions) do s₁
-        all(solutions) do s₂
-            equal = true
-            for (v₁, v₂) in zip(s₁, s₂)
-                v₁ < v₂ && return true
-                equal &= (v₁ == v₂)
-            end
-            return equal
-        end
-    end
-
-    # return sorted vector of sorted solutions
-    foreach(sort!, solutions)
-    return sort!(solutions)
-end
-
-function gen_conflicts(M::I, V::I, C::Integer) where {I<:Integer}
-    conflicts = Tuple{I,I}[]
-    for p₁ = 0:M-2, p₂ = p₁+1:M-1
-        p = M*(M-1)÷2 - (M-p₁)*(M-p₁-1)÷2 + (p₂-p₁) - 1
-        @assert 0 ≤ p < M*(M-1)÷2
-        X = C >> (p*V^2)
-        v = trailing_zeros(X)
-        while v < V^2
-            v₁, v₂ = divrem(v, V)
-            push!(conflicts, (p₁*V + v₁ + 1, p₂*V + v₂ + 1))
-            v += 1; v += trailing_zeros(X >> v)
-        end
-    end
-    return sort!(conflicts)
-end
-
-function randu128(k::Integer)
-    u = typemax(UInt128)
-    while k > 0
-        u &= rand(UInt128)
-        k -= 1
-    end
-    return u
-end
-
-function make_deps(
-    versions  :: Dict{P, <:AbstractVector{V}};
-    deps      :: Dict{Pair{P, V}, Vector{P}} =
-                 Dict{Pair{P, V}, Vector{P}}(),
-    conflicts :: Dict{Tuple{P, P}, Vector{Tuple{V, V}}} =
-                 Dict{Tuple{P, P}, Vector{Tuple{V, V}}}(),
-) where {P, V}
-    A = Dict(p′ => Set(versions[p′]) for p′ in keys(versions))
-    DepsProvider{P, V, Set{V}}() do p::P
-        vers = versions[p]
-        D = Dict(v => d for ((p′, v), d) in deps if p′ == p)
-        C = Dict(v => delete!(deepcopy(A), p) for v in vers)
-        for ((p₁, p₂), X) in conflicts, (v₁, v₂) in X
-            p₁ == p && delete!(C[v₁][p₂], v₂)
-            p₂ == p && delete!(C[v₂][p₁], v₁)
-        end
-        for (v, c) in C
-            filter!(c) do (p′, s′)
-                any(v′ ∉ s′ for v′ in versions[p′])
-            end
-        end
-        filter!(C) do (v, c)
-            !isempty(c)
-        end
-        PkgData{P, V, Set{V}}(collect(vers), D, C)
-    end
+    return false
 end

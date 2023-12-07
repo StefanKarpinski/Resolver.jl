@@ -1,9 +1,15 @@
 using Test
-using Random
 using Resolver
-using Resolver: resolve_core, NetOrVector, DepsProvider, PkgData
 
-function check_resolved(
+function test_resolve(
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    reqs :: AbstractVector{P},
+) where {P,V}
+    pkgs, vers = resolve(data, reqs)
+    test_resolve(data, reqs, pkgs, vers)
+end
+
+function test_resolve(
 # problem:
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: AbstractVector{P},
@@ -133,6 +139,13 @@ function check_resolved(
     end
     ≥ₛ(s::Int, t::Int) = ≤ₛ(t, s)
 
+    # check that no solution is dominated by any other
+    for i = 1:N, j = 1:N
+        i ≠ j || continue
+        s = @view vers[:, i]
+        t = @view vers[:, j]
+        @test !(s ≤ₛ t)
+    end
 end
 
 function find_undominated(opts, done, deps)

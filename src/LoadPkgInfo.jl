@@ -42,7 +42,7 @@ function load_pkg_info(
 end
 
 function make_pkg_info(
-    data :: AbstractDict{P, <:PkgData{P,V}},
+    data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,
 ) where {P,V}

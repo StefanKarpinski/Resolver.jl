@@ -8,8 +8,8 @@ const SetOrVec{T} = Union{AbstractSet{T}, AbstractVector{T}}
 struct PkgData{
         P, V, S,
         Vers <: AbstractVector{V},
-        Deps <: AbstractDict{V, <:SetOrVec{P}},
-        Comp <: AbstractDict{V, <:AbstractDict{P,S}},
+        Deps <: AbstractDict{V,<:SetOrVec{P}},
+        Comp <: AbstractDict{V,<:AbstractDict{P,S}},
     }
     versions :: Vers
     depends  :: Deps
@@ -27,8 +27,8 @@ end
 
 function PkgData(
     versions :: AbstractVector{V},
-    depends  :: AbstractDict{V, <:SetOrVec{P}},
-    compat   :: AbstractDict{V, <:AbstractDict{P,S}},
+    depends  :: AbstractDict{V,<:SetOrVec{P}},
+    compat   :: AbstractDict{V,<:AbstractDict{P,S}},
 ) where {P,V,S}
     Vers = typeof(versions)
     Deps = typeof(depends)

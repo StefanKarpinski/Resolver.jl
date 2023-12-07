@@ -1,7 +1,7 @@
 using Serialization
 
 function save_pkg_info_file(
-    info :: Dict{P, PkgInfo{P,V}},
+    info :: Dict{P,PkgInfo{P,V}},
     path :: AbstractString = tempname(),
 ) where {P,V}
     open(path, write=true) do io
@@ -37,7 +37,7 @@ function load_pkg_info_file(
             """
         ))
         pv = read_vals(io, P)
-        info = Dict{P, PkgInfo{P,V}}()
+        info = Dict{P,PkgInfo{P,V}}()
         for p in pv
             versions  = read_vals(io, V)
             depends   = read_vals(io, pv)
@@ -54,7 +54,7 @@ function load_pkg_info_file(
                 b += length(info[q].versions)
             end
         end
-        return info :: Dict{P, PkgInfo{P,V}} where {P<:P⁺, V<:V⁺}
+        return info :: Dict{P,PkgInfo{P,V}} where {P<:P⁺,V<:V⁺}
     end
 end
 

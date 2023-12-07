@@ -8,7 +8,7 @@ function resolve(
 end
 
 function resolve(
-    data :: AbstractDict{P, <:PkgData{P}},
+    data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,
 ) where {P}
@@ -17,7 +17,7 @@ function resolve(
 end
 
 function resolve(
-    info :: Dict{P, PkgInfo{P,V}},
+    info :: Dict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
     # sort stuff for determinism

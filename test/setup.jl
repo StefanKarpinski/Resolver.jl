@@ -1,7 +1,15 @@
 using Test
 using Resolver
 
-function test_resolve(
+function test_resolver(
+    deps :: DepsProvider{P},
+    reqs :: AbstractVector{P},
+) where {P}
+    data = Resolver.load_pkg_data(deps, reqs)
+    test_resolver(data, reqs)
+end
+
+function test_resolver(
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: AbstractVector{P},
 ) where {P,V}
@@ -10,6 +18,7 @@ function test_resolve(
 
     # number of packages & solutions
     M, N = size(vers)
+    @info "$M packages, $N solutions"
 
     # check basic structure
     @test reqs ⊆ pkgs
@@ -48,15 +57,27 @@ function test_resolve(
 
     # check that no solution is dominated by any other
     for s in eachcol(vers), t in eachcol(vers)
-        @test s === t || !(s ≤ₛ t)
+        s !== t && @test !(s ≤ₛ t)
     end
 
     # estimate how many potential solutions there would be
     Π = prod(float(length(data[p].versions)+1) for p in pkgs)
-    Π ≤ 1024 || return
+    Π⁺ = 1e6
+    if Π ≤ Π⁺
+        @info "optimality testing full data"
+        info = data # type unstable but 🤷
+    else
+        info = Resolver.make_pkg_info(data, reqs)
+        Π = prod(float(length(ip.versions)+1) for ip in values(info))
+        if Π > Π⁺
+            @info "no optimality testing"
+            return
+        end
+        @info "optimality testing filtered info"
+    end
 
     # generate all Π potential solutions
-    each_potential_solution(data, pkgs) do s
+    each_potential_solution(info, pkgs) do s
         # each potential solution is either invalid
         # or dominated by some returned solution
         @test !is_valid_sol(s) || any(s ≤ₛ t for t in eachcol(vers))
@@ -147,7 +168,7 @@ function make_solution_partial_order!(
         t::AbstractVector{Union{V,Nothing}},
     )
         # set of necessary package indices
-        need = Set{Int}(indexin(reqs, pkgs))
+        need = indexin(reqs, pkgs)
         # check necessary packages
         while true
             strict = false
@@ -160,15 +181,18 @@ function make_solution_partial_order!(
             end
             strict && return true
             n = length(need)
-            for i in need
+            for k = 1:n
+                i = need[k]
                 v = get(s, i, nothing)
                 @assert v == get(t, i, nothing)
-                union!(need, deps[i,v])
+                for j in deps[i,v]
+                    j ∉ need && push!(need, j)
+                end
             end
-            n == length(need) && break
+            n < length(need) || break
         end
         # check unnecessary packages
-        for i = 1:M
+        for i = 1:length(pkgs)
             i in need && continue
             # no version = best = typemax
             sᵢ = rank(s, i, typemax(Int))
@@ -185,9 +209,8 @@ function each_trivial_improvement(
     pkgs :: AbstractVector{P},
     vers :: AbstractVector{Union{V,Nothing}},
 ) where {P,V}
-    s = Vector{Union{V,Nothing}}(vers)
-    for i = 1:M
-        v = vers[i]
+    s = Vector{Union{V,Nothing}}(vers) # copy
+    for (i, v) in enumerate(vers)
         vers_p = data[pkgs[i]].versions
         r = something(findfirst(==(v), vers_p), 0)
         for (r′, v′) in enumerate(vers_p)
@@ -199,17 +222,21 @@ function each_trivial_improvement(
     end
 end
 
+PkgVers{P,V} = Union{PkgData{P,V},PkgInfo{P,V}}
+
 function each_potential_solution(
     body :: Function, # callback
-    data :: AbstractDict{P,<:PkgData{P,V}},
+    data :: AbstractDict{P,<:PkgVers{P,V}},
     pkgs :: AbstractVector{P},
 ) where {P,V}
-    s = Vector{Union{V,Nothing}}(undef, length(pkgs))
+    L = length(pkgs)
+    s = Vector{Union{V,Nothing}}(nothing, L)
     function gen_solutions!(i::Int = 1)
         # call body if solution is complete:
-        i ≤ M || (body(s); return)
+        i ≤ L || (body(s); return)
         # otherwise iterate versions of next package:
-        vers_p = data[pkgs[i]].versions
+        p = pkgs[i]
+        vers_p = haskey(data, p) ? data[pkgs[i]].versions : V[]
         for r = 0:length(vers_p)
             v = get(vers_p, r, nothing)
             s[i] = v

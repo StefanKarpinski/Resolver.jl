@@ -23,7 +23,7 @@ function test_resolve(
         for k = 1:N
     )
 
-    # closure for checking solution validity
+    # helper that captures data, pkgs & vers
     is_valid_sol(vers) = is_valid_solution(data, pkgs, vers)
 
     # check validity of returned solutions
@@ -32,18 +32,9 @@ function test_resolve(
     end
 
     # check that solutions can't be trivially improved
-    for k = 1:N
-        s = vers[:, k]
-        for i = 1:M
-            v = vers[i, k]
-            vers_p = data[pkgs[i]].versions
-            r = something(findfirst(==(v), vers_p), 0)
-            for (r′, v′) in enumerate(vers_p)
-                r′ < r || break
-                s[i] = v′
-                @test !is_valid_sol(s)
-            end
-            s[i] = v # return to original value
+    for s in eachcol(vers)
+        each_trivial_improvement(data, pkgs, s) do t
+            @test !is_valid_sol(t)
         end
     end
 
@@ -185,6 +176,26 @@ function make_solution_partial_order!(
             sᵢ > tᵢ && return false
         end
         return true
+    end
+end
+
+function each_trivial_improvement(
+    body :: Function, # callback
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    pkgs :: AbstractVector{P},
+    vers :: AbstractVector{Union{V,Nothing}},
+) where {P,V}
+    s = Vector{Union{V,Nothing}}(vers)
+    for i = 1:M
+        v = vers[i]
+        vers_p = data[pkgs[i]].versions
+        r = something(findfirst(==(v), vers_p), 0)
+        for (r′, v′) in enumerate(vers_p)
+            r′ < r || break
+            s[i] = v′
+            body(s)
+        end
+        s[i] = v # return to original value
     end
 end
 

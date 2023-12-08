@@ -32,35 +32,39 @@ function test_resolve(
         for s = 1:N
     )
 
-    # check validity of each solution
-    for s = 1:N
+    # checking validity of a solution
+    function is_valid_solution(s::AbstractVector{Union{V,Nothing}})
         # check satisfiaction of dependencies
-        for i = 1:M
-            v = vers[i, s]
+        for (i, v) in enumerate(s)
             v === nothing && continue
             data_p = data[pkgs[i]]
             haskey(data_p.depends, v) || continue
             for q in data_p.depends[v]
-                @test q ∈ pkgs
+                q ∈ pkgs || return false
                 j = findfirst(==(q), pkgs)
-                @test !isnothing(vers[j, s])
+                isnothing(s[j]) && return false
             end
         end
         # check compatibility of versions
         for i = 1:M, j = 1:M
-            v = vers[i, s]
-            isnothing(v) && continue
-            w = vers[j, s]
-            isnothing(w) && continue
+            v = s[i]; isnothing(v) && continue
+            w = s[j]; isnothing(w) && continue
             p = pkgs[i]
             q = pkgs[j]
             haskey(data[p].compat, v) &&
             haskey(data[p].compat[v], q) &&
-            @test w in data[p].compat[v][q]
+            w ∉ data[p].compat[v][q] && return false
             haskey(data[q].compat, w) &&
             haskey(data[q].compat[w], p) &&
-            @test v in data[q].compat[w][p]
+            v ∉ data[q].compat[w][p] && return false
         end
+        return true
+    end
+
+    # check each returned solution
+    for k = 1:N
+        s = @view vers[:, k]
+        @test is_valid_solution(s)
     end
 
     # verion dependencies (may replace & expand pkgs)
@@ -140,33 +144,10 @@ function test_resolve(
     ≥ₛ(s::Int, t::Int) = ≤ₛ(t, s)
 
     # check that no solution is dominated by any other
-    for i = 1:N, j = 1:N
-        i ≠ j || continue
-        s = @view vers[:, i]
-        t = @view vers[:, j]
+    for k = 1:N, l = 1:N
+        k ≠ l || continue
+        s = @view vers[:, k]
+        t = @view vers[:, l]
         @test !(s ≤ₛ t)
     end
-end
-
-function find_undominated(opts, done, deps)
-    if isempty(deps)
-        deps = find new deps
-        if isempty(deps)
-            return isempty(opts)
-        end
-    end
-    for p in deps
-        m = maximum(s[p] for s in opts)
-        for i = 1:m-1
-            conf[p][i] > 0 && continue
-            # update conf for p@i
-            opts′ = filter(s->s[p] ≤ i, opts)
-            done′ = push!(copy(done), p)
-            deps′ = delete!(copy(deps), p)
-            if find_undominated(opts′, done′, deps′)
-                return true
-            end
-        end
-    end
-    return false
 end

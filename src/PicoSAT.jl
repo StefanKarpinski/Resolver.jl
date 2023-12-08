@@ -14,6 +14,8 @@ adjust(p::Ptr{Cvoid}, N::Integer) =
     ccall((:picosat_adjust, libpicosat), Cvoid, (Ptr{Cvoid}, Cint), p, N)
 add(p::Ptr{Cvoid}, lit::Integer) =
     ccall((:picosat_add, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, lit)
+assume(p::Ptr{Cvoid}, lit::Integer) =
+    ccall((:picosat_assume, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, lit)
 sat(p::Ptr{Cvoid}, limit::Integer = -1) =
     ccall((:picosat_sat, libpicosat), Cint, (Ptr{Cvoid}, Cint), p, limit)
 deref(p::Ptr{Cvoid}, lit::Integer) =

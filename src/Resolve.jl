@@ -103,13 +103,6 @@ function resolve(
             end
         end
 
-        # add requirements clauses
-        #   ∀ p in reqs: p
-        for p in reqs
-            PicoSAT.add(ps, var[p])
-            PicoSAT.add(ps, 0)
-        end
-
         # helper for finding optimal solutions
         function extract_solution!(sol::Dict{P,Int})
             empty!(sol)
@@ -134,6 +127,16 @@ function resolve(
             rest :: Set{P}, # other unoptimized packages
         )
             while true
+                # TODO: instead just assume that we satify some requirement
+                # instead of all of them; then optimize the satisfiaction set
+                # and then optimize the actual solution from there
+
+                # assume requirements
+                #   ∀ p in reqs: p
+                for p in reqs
+                    PicoSAT.assume(ps, var[p])
+                end
+
                 # find some solution
                 sat = PicoSAT.sat(ps)
                 sat == PicoSAT.SATISFIABLE || break
@@ -236,7 +239,7 @@ function resolve(
         pkgs = sort!(collect(mapreduce(keys, union, sols)))
         sort!(pkgs, by = !in(reqs)) # required ones first
     else
-        pkgs = Vector{P}()
+        pkgs = reqs
     end
 
     # sort solutions

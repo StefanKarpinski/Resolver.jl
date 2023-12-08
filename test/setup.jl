@@ -5,18 +5,9 @@ function test_resolve(
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: AbstractVector{P},
 ) where {P,V}
+    # call resolve
     pkgs, vers = resolve(data, reqs)
-    test_resolve(data, reqs, pkgs, vers)
-end
 
-function test_resolve(
-# problem:
-    data :: AbstractDict{P,<:PkgData{P,V}},
-    reqs :: AbstractVector{P},
-# solutions:
-    pkgs :: AbstractVector{P},
-    vers :: AbstractMatrix{Union{V,Nothing}},
-) where {P,V}
     # number of packages & solutions
     M, N = size(vers)
 
@@ -32,9 +23,12 @@ function test_resolve(
         for k = 1:N
     )
 
+    # closure for checking solution validity
+    is_valid_sol(vers) = is_valid_solution(data, pkgs, vers)
+
     # check validity of returned solutions
-    for k = 1:N
-        @test is_valid_solution(data, pkgs, @view vers[:, k])
+    for s in eachcol(vers)
+        @test is_valid_sol(s)
     end
 
     # check that solutions can't be trivially improved
@@ -47,26 +41,34 @@ function test_resolve(
             for (r′, v′) in enumerate(vers_p)
                 r′ < r || break
                 s[i] = v′
-                @test !is_valid_solution(data, pkgs, s)
+                @test !is_valid_sol(s)
             end
             s[i] = v # return to original value
         end
     end
 
-    # solution partial order
+    # generate partial order predicate for solutions
     ≤ₛ = make_solution_partial_order!(data, reqs, pkgs)
-    # After this:
+    # This modifies pkgs so that:
     # - pkgs contains all packages that could be needed by any
     #   version of any package in the original pkgs
-    # - this allows any possible solution to be expressed, not just
+    # - allows any possible solution to be expressed, not just
     #   the solutions originally presented
 
     # check that no solution is dominated by any other
-    for k = 1:N, l = 1:N
-        k ≠ l || continue
-        s = @view vers[:, k]
-        t = @view vers[:, l]
-        @test !(s ≤ₛ t)
+    for s in eachcol(vers), t in eachcol(vers)
+        @test s === t || !(s ≤ₛ t)
+    end
+
+    # estimate how many potential solutions there would be
+    Π = prod(float(length(data[p].versions)+1) for p in pkgs)
+    Π ≤ 1024 || return
+
+    # generate all Π potential solutions
+    each_potential_solution(data, pkgs) do s
+        # each potential solution is either invalid
+        # or dominated by some returned solution
+        @test !is_valid_sol(s) || any(s ≤ₛ t for t in eachcol(vers))
     end
 end
 
@@ -74,7 +76,7 @@ end
 function is_valid_solution(
     data :: AbstractDict{P,<:PkgData{P,V}},
     pkgs :: AbstractVector{P},
-    vers :: AbstractVector{Union{V,Nothing}};
+    vers :: AbstractVector{Union{V,Nothing}},
 ) where {P,V}
     # check satisfiaction of dependencies
     for (i, v) in enumerate(vers)
@@ -104,7 +106,7 @@ function is_valid_solution(
     return true
 end
 
-# generate ≤ₛ partial order function on solutions
+# generate ≤ₛ partial order predicate on solutions
 function make_solution_partial_order!(
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: AbstractVector{P},
@@ -131,8 +133,8 @@ function make_solution_partial_order!(
     # After this:
     # - pkgs contains all packages that could be needed by any
     #   version of any package in the original pkgs
-    # - deps has dependencies for all packages and versions of them
-    # - this allows any possible solution to be expressed, not just
+    # - deps has dependencies for all packages and versions
+    # - allows any possible solution to be expressed, not just
     #   the solutions originally presented
 
     # ranking versions (higher = better)
@@ -142,10 +144,10 @@ function make_solution_partial_order!(
         ranks[v,i] = -r
     end
     # i: package index
-    # d: default version
-    rank(v::V, i::Int, d::V) = ranks[v,i]
-    rank(v::Nothing, i::Int, d::V) = d # default
-    rank(s::AbstractVector{Union{V,Nothing}}, i::Int, d::V) =
+    # d: default rank
+    rank(v::V, i::Int, d::Int) = ranks[v,i]
+    rank(v::Nothing, i::Int, d::Int) = d # default
+    rank(s::AbstractVector{Union{V,Nothing}}, i::Int, d::Int) =
         rank(get(s, i, nothing), i, d)
 
     # partial order on solutions
@@ -159,9 +161,9 @@ function make_solution_partial_order!(
         while true
             strict = false
             for i in need
-                # no version = worst = typemin(V)
-                sᵢ = rank(s, i, typemin(V))
-                tᵢ = rank(t, i, typemin(V))
+                # no version = worst = typemin
+                sᵢ = rank(s, i, typemin(Int))
+                tᵢ = rank(t, i, typemin(Int))
                 sᵢ > tᵢ && return false
                 sᵢ < tᵢ && (strict = true)
             end
@@ -177,11 +179,31 @@ function make_solution_partial_order!(
         # check unnecessary packages
         for i = 1:M
             i in need && continue
-            # no version = best = typemax(V)
-            sᵢ = rank(s, i, typemax(V))
-            tᵢ = rank(t, i, typemax(V))
+            # no version = best = typemax
+            sᵢ = rank(s, i, typemax(Int))
+            tᵢ = rank(t, i, typemax(Int))
             sᵢ > tᵢ && return false
         end
         return true
     end
+end
+
+function each_potential_solution(
+    body :: Function, # callback
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    pkgs :: AbstractVector{P},
+) where {P,V}
+    s = Vector{Union{V,Nothing}}(undef, length(pkgs))
+    function gen_solutions!(i::Int = 1)
+        # call body if solution is complete:
+        i ≤ M || (body(s); return)
+        # otherwise iterate versions of next package:
+        vers_p = data[pkgs[i]].versions
+        for r = 0:length(vers_p)
+            v = get(vers_p, r, nothing)
+            s[i] = v
+            gen_solutions!(i+1)
+        end
+    end
+    gen_solutions!()
 end

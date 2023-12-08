@@ -171,11 +171,22 @@ function make_solution_partial_order!(
         need = indexin(reqs, pkgs)
         # check necessary packages
         while true
+            # first compare satisfaction of needs
+            strict = false
+            for i in need
+                sᵢ = !isnothing(get(s, i, nothing))
+                tᵢ = !isnothing(get(t, i, nothing))
+                sᵢ > tᵢ && return false
+                sᵢ < tᵢ && (strict = true)
+            end
+            strict && return true
+            # then compare version quality
             strict = false
             for i in need
                 # no version = worst = typemin
                 sᵢ = rank(s, i, typemin(Int))
                 tᵢ = rank(t, i, typemin(Int))
+                @assert (sᵢ == typemin(Int)) == (tᵢ == typemin(Int))
                 sᵢ > tᵢ && return false
                 sᵢ < tᵢ && (strict = true)
             end
@@ -185,6 +196,7 @@ function make_solution_partial_order!(
                 i = need[k]
                 v = get(s, i, nothing)
                 @assert v == get(t, i, nothing)
+                isnothing(v) && continue
                 for j in deps[i,v]
                     j ∉ need && push!(need, j)
                 end

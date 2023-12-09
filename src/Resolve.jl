@@ -103,15 +103,31 @@ function resolve(
             end
         end
 
-        # add requirements clauses
-        #   ∀ p in reqs: p
+        # check if problem is satisfiable or not
         for p in reqs
-            PicoSAT.add(ps, var[p])
+            PicoSAT.assume(ps, var[p])
+        end
+        if PicoSAT.sat(ps) == PicoSAT.SATISFIABLE
+            # all reqs must be satisfied
+            for p in reqs
+                PicoSAT.add(ps, var[p])
+                PicoSAT.add(ps, 0)
+            end
+        else
+            # some reqs must be satisfied
+            for p in reqs
+                PicoSAT.add(ps, var[p])
+            end
             PicoSAT.add(ps, 0)
         end
 
-        # helper for finding optimal solutions
-        function extract_solution!(sol::Dict{P,Int})
+        # solution search data strutures
+        sols = Vector{Dict{P,Int}}() # all solutions
+        sol = Dict{P,Int}() # current solution
+        sats = Set{P}() # satisfied package set
+
+        # helper for extracting a solution
+        function extract_solution(opts::Set{P})
             empty!(sol)
             for (p, v_p) in var
                 PicoSAT.deref(ps, v_p) < 0 && continue
@@ -122,65 +138,76 @@ function resolve(
                     end
                 end
             end
+            intersect!(copy!(sats, opts), keys(sol))
             return sol
         end
 
-        # find all optimal solutions
-        sols = Vector{Dict{P,Int}}()
-        sol = Dict{P,Int}()
+        # helper for optimizing a solution
+        function optimize_solution(improve::Function, opts::Set{P})
+            done = false
+            while !done
+                PicoSAT.push(ps)
+                improve() # callback adds SAT clauses
+                done = PicoSAT.sat(ps) ≠ PicoSAT.SATISFIABLE
+                done || extract_solution(opts) # -> sol, sats
+                PicoSAT.pop(ps)
+            end
+        end
 
-        function find_solutions(
+        function find_optimal_solutions(
             opts :: Set{P}, # packages to optimize next
             rest :: Set{P}, # other unoptimized packages
         )
-            while true
-                # TODO: instead just assume that we satify some requirement
-                # instead of all of them; then optimize the satisfiaction set
-                # and then optimize the actual solution from there
+            while PicoSAT.sat(ps) == PicoSAT.SATISFIABLE
+                extract_solution(opts) # -> sol, sats
+                @info "unoptimized solution of size $(length(sol))"
 
-                # find some solution
-                sat = PicoSAT.sat(ps)
-                sat == PicoSAT.SATISFIABLE || break
-                extract_solution!(sol)
-
-                # optimize solution wrt opts
-                while true
-                    PicoSAT.push(ps)
-
+                # optimize wrt coverage
+                @info "optimizing coverage..."
+                length(sats) < length(opts) &&
+                optimize_solution(opts) do
                     # clauses: disallow non-improvements
-                    for p in opts
-                        v_p, i = var[p], sol[p]
-                        # allow as-good-or-better versions
-                        for j = 1:i
-                            PicoSAT.add(ps, v_p + j)
-                        end
+                    for p in sats
+                        PicoSAT.add(ps, var[p])
                         PicoSAT.add(ps, 0)
                     end
 
                     # clause: require some improvement
                     for p in opts
-                        v_p, i = var[p], sol[p]
+                        p ∉ sats && PicoSAT.add(ps, var[p])
+                    end
+                    PicoSAT.add(ps, 0)
+                end
+
+                # optimize wrt quality
+                @info "optimizing quality..."
+                optimize_solution(opts) do
+                    # clauses: disallow non-improvements
+                    for p in sats
+                        v_p = var[p]
+                        # allow as-good-or-better versions
+                        for i = 1:sol[p]
+                            PicoSAT.add(ps, v_p + i)
+                        end
+                        PicoSAT.add(ps, 0)
+                    end
+
+                    # clause: require some improvement
+                    for p in sats
+                        v_p = var[p]
                         # any strictly better versions
-                        for j = 1:i-1
-                            PicoSAT.add(ps, v_p + j)
+                        for i = 1:sol[p]-1
+                            PicoSAT.add(ps, v_p + i)
                         end
                     end
                     PicoSAT.add(ps, 0)
-
-                    # check satisfiability
-                    sat′ = PicoSAT.sat(ps)
-                    sat′ == PicoSAT.SATISFIABLE && extract_solution!(sol)
-
-                    # pop temporary clauses
-                    PicoSAT.pop(ps)
-
-                    sat′ == PicoSAT.SATISFIABLE || break
                 end
 
                 # find next optimization set
                 opts′ = empty(opts)
-                for p in opts
-                    info_p, i = info[p], sol[p]
+                for p in sats
+                    i = sol[p]
+                    info_p = info[p]
                     for (j, q) in enumerate(info_p.depends)
                         info_p.conflicts[i, j] || continue
                         q ∈ rest && push!(opts′, q)
@@ -194,40 +221,61 @@ function resolve(
                     end
 
                     # save optimal solution
+                    @info "optimized solution of size $(length(sol))"
                     push!(sols, copy(sol))
 
                 else # recursion required
                     PicoSAT.push(ps)
 
-                    # clauses: fix optimized versions
-                    for p in opts
+                    # clauses: fix already optimized versions
+                    for p in sats
                         PicoSAT.add(ps, var[p] + sol[p])
                         PicoSAT.add(ps, 0)
                     end
 
                     # recursive search call
-                    find_solutions(opts′, setdiff(rest, opts′))
+                    rest′ = setdiff(rest, opts′)
+                    find_optimal_solutions(opts′, rest′)
+
+                    # restore satisfied dependencies
+                    intersect!(copy!(sats, opts), keys(sol))
 
                     # pop version fixing clauses
                     PicoSAT.pop(ps)
                 end
 
                 # clause: require some improvement
-                for p in opts
-                    v_p, i = var[p], sol[p]
-                    # any strictly better versions
-                    for j = 1:i-1
-                        PicoSAT.add(ps, v_p + j)
+                #   unlike the optimization process above, this allows other
+                #   aspects to get worse; it only forces non-domination
+                if length(sats) < length(opts)
+                    # incomplete solution--improve coverage
+                    for p in opts
+                        p ∉ sats && PicoSAT.add(ps, var[p])
                     end
+                    PicoSAT.add(ps, 0)
+                else # complete solution--
+                    # preserve coverage
+                    for p in opts
+                        PicoSAT.add(ps, var[p])
+                        PicoSAT.add(ps, 0)
+                    end
+                    # improve quality
+                    for p in opts
+                        v_p = var[p]
+                        # any strictly better versions
+                        for i = 1:sol[p]-1
+                            PicoSAT.add(ps, v_p + i)
+                        end
+                    end
+                    PicoSAT.add(ps, 0)
                 end
-                PicoSAT.add(ps, 0)
             end
         end
 
         # start recursion
         opts = Set{P}(reqs)
         rest = setdiff!(Set{P}(names), opts)
-        find_solutions(opts, rest)
+        find_optimal_solutions(opts, rest)
 
         sols # value of the try block
     finally
@@ -237,35 +285,38 @@ function resolve(
 
     # sort packages
     if !isempty(sols)
-        pkgs = sort!(collect(mapreduce(keys, union, sols)))
+        pkgs = sort!(collect(mapreduce(keys, union, sols, init=reqs)))
         sort!(pkgs, by = !in(reqs)) # required ones first
     else
         pkgs = reqs
     end
 
     # sort solutions
-    for p in reverse(pkgs)
-        sort!(sols, by = sol -> get(sol, p, 0))
-    end
+    # for p in reverse(pkgs)
+    #     sort!(sols, by = sol -> get(sol, p, 0))
+    # end
 
-    # versions as a matrix
-    vers = Union{V, Nothing}[
+    # versions matrix
+    vers = Union{V,Nothing}[
         haskey(sol, p) ? info[p].versions[sol[p]] : nothing
         for p in pkgs, sol in sols
     ]
 
-    # return solution
-    return pkgs, vers
+    # return solutions
+    return pkgs::Vector{P}, vers::Matrix{Union{V,Nothing}}
 end
 
 #=
+using PrettyTables, Revise, Resolver
+deps = registry_provider();
 (str -> begin
     reqs = String.(split(str, ','))
     pkgs, vers = resolve(deps, reqs)
-    mv = vec(mapslices(r->maximum(v->something(v, v"0-"), r), vers, dims=2))
+    mv = vec(mapslices(r->maximum(v->something(v, v"0+1-"), r), vers, dims=2))
     pretty_table([pkgs vers],
         highlighters = Highlighter(
-            (data, i, j) -> j > 1 && something(data[i, j], mv[i]) < mv[i],
+            (data, i, j) -> j > 1 &&
+                something(data[i, j], i ≤ length(reqs) ? v"0+0-" : mv[i]) < mv[i],
             foreground = :red,
         )
     )

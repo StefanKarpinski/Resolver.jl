@@ -173,3 +173,31 @@ function optimize_solution!(
         end
     end
 end
+
+# analyzing UNSAT instances
+
+function sat_mus(sat::SAT, reqs::SetOrVec{P}) where {P}
+    for p in reqs
+        sat_assume(sat, p)
+    end
+    mus = empty(reqs)
+    is_satisfiable(sat) && return mus
+    vars⁻¹ = Dict{Int,P}(v => p for (p, v) in sat.vars)
+    PicoSAT.mus(sat.pico) do v
+        push!(mus, vars⁻¹[v])
+    end
+    return mus
+end
+
+function sat_humus(sat::SAT, reqs::SetOrVec{P}) where {P}
+    for p in reqs
+        sat_assume(sat, p)
+    end
+    humus = empty(reqs)
+    is_satisfiable(sat) && return humus
+    vars⁻¹ = Dict{Int,P}(v => p for (p, v) in sat.vars)
+    PicoSAT.humus(sat.pico) do l
+        push!(humus, vars⁻¹[i])
+    end
+    return humus
+end

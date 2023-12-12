@@ -1,9 +1,9 @@
 module Resolver
 
 export registry_provider, resolve
-export DepsProvider, PkgData, PkgInfo, SAT
+export DepsProvider, PkgData, PkgInfo, SAT, PicoSAT
 export
-    pkg_info, finalize, sat_add, is_satisfiable, is_unsatisfiable,
+    pkg_info, finalize, sat_add, sat_assume, is_satisfiable, is_unsatisfiable,
     extract_solution!, optimize_solution!, with_temp_clauses
 
 include("DepsProvider.jl")

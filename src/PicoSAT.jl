@@ -32,4 +32,22 @@ function print(p::Ptr{Cvoid}, path::AbstractString)
     @assert ccall(:fclose, Cint, (Ptr{Cvoid},), f) == 0
 end
 
+function mus(f::Function, p::Ptr{Cvoid})
+    h = ccall((:picosat_mus_assumptions, libpicosat), Ptr{Cint},
+        (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint), p, C_NULL, C_NULL, 0)
+    i = 1
+    while (lit = unsafe_load(h, i)) != 0
+        f(lit)
+    end
+end
+
+function humus(f::Function, p::Ptr{Cvoid})
+    h = ccall((:picosat_humus, libpicosat), Ptr{Cint},
+        (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), p, C_NULL, C_NULL)
+    i = 1
+    while (lit = unsafe_load(h, i)) != 0
+        f(lit)
+    end
+end
+
 end

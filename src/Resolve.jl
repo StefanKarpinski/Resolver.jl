@@ -25,15 +25,15 @@ function resolve(
                 # clauses: disallow non-improvements
                 for p in opts
                     p in keys(sol) || continue
-                    sat_add(sat, sat.vars[p])
-                    sat_add(sat, 0)
+                    sat_add(sat, p)
+                    sat_add(sat)
                 end
                 # clause: require some improvement
                 for p in opts
                     p in keys(sol) && continue
-                    sat_add(sat, sat.vars[p])
+                    sat_add(sat, p)
                 end
-                sat_add(sat, 0)
+                sat_add(sat)
             end
 
             # optimize wrt quality
@@ -41,23 +41,21 @@ function resolve(
                 # clauses: disallow non-improvements
                 for p in opts
                     p in keys(sol) || continue
-                    v_p = sat.vars[p]
                     # allow as-good-or-better versions
                     for i = 1:sol[p]
-                        sat_add(sat, v_p + i)
+                        sat_add(sat, p, i)
                     end
-                    sat_add(sat, 0)
+                    sat_add(sat)
                 end
                 # clause: require some improvement
                 for p in opts
                     p in keys(sol) || continue
-                    v_p = sat.vars[p]
                     # any strictly better versions
                     for i = 1:sol[p]-1
-                        sat_add(sat, v_p + i)
+                        sat_add(sat, p, i)
                     end
                 end
-                sat_add(sat, 0)
+                sat_add(sat)
             end
 
             # find next optimization set
@@ -78,8 +76,8 @@ function resolve(
                     # clauses: fix already optimized versions
                     for p in opts
                         p in keys(sol) || continue
-                        sat_add(sat, sat.vars[p] + sol[p])
-                        sat_add(sat, 0)
+                        sat_add(sat, p, sol[p])
+                        sat_add(sat)
                     end
                     # recursive search call
                     rest′ = setdiff(rest, opts′)
@@ -101,31 +99,44 @@ function resolve(
             if opts ⊆ keys(sol) # complete solution
                 # preserve coverage
                 for p in opts
-                    sat_add(sat, sat.vars[p])
-                    sat_add(sat, 0)
+                    sat_add(sat, p)
+                    sat_add(sat)
                 end
                 # improve quality
                 for p in opts
-                    v_p = sat.vars[p]
                     # any strictly better versions
                     for i = 1:sol[p]-1
-                        sat_add(sat, v_p + i)
+                        sat_add(sat, p, i)
                     end
                 end
-                sat_add(sat, 0)
+                sat_add(sat)
             else # incomplete solution
                 # improve coverage
                 for p in opts
                     p in keys(sol) && continue
-                    sat_add(sat, sat.vars[p])
+                    sat_add(sat, p)
                 end
-                sat_add(sat, 0)
+                sat_add(sat)
             end
         end
     end
 
-    # start recursion
     with_temp_clauses(sat) do
+        if is_satisfiable(sat, reqs)
+            # force all requirements
+            for p in reqs
+                sat_add(sat, p)
+            end
+            sat_add(sat)
+        else
+            # force some requirement
+            for p in reqs
+                sat_add(sat, p)
+                sat_add(sat)
+            end
+        end
+
+        # start recursion
         opts = Set{P}(reqs)
         rest = setdiff(keys(sat.info), opts)
         find_optimal_solutions(opts, rest)

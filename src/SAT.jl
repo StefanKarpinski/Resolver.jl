@@ -101,12 +101,22 @@ function finalize(sat::SAT)
     PicoSAT.reset(pico)
 end
 
-sat_add(sat::SAT, lit::Integer) = PicoSAT.add(sat.pico, lit)
-sat_assume(sat::SAT, lit::Integer) = PicoSAT.assume(sat.pico, lit)
+sat_add(sat::SAT) = PicoSAT.add(sat.pico, 0)
+sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
+    PicoSAT.add(sat.pico, sat.vars[p] + i)
+sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
+    PicoSAT.assume(sat.pico, sat.vars[p] + i)
 
 is_satisfiable(sat::SAT) = PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
 
 const is_unsatisfiable = !is_satisfiable
+
+function is_satisfiable(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+    for p in reqs
+        sat_assume(sat, p)
+    end
+    is_satisfiable(sat)
+end
 
 function each_solution_ind(f::Function, sat::SAT)
     is_satisfiable(sat) || return

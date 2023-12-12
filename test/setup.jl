@@ -5,7 +5,7 @@ function test_resolver(
     deps :: DepsProvider{P},
     reqs :: AbstractVector{P},
 ) where {P}
-    data = Resolver.load_pkg_data(deps, reqs)
+    data = Resolver.pkg_data(deps, reqs)
     test_resolver(data, reqs)
 end
 
@@ -67,7 +67,7 @@ function test_resolver(
         @info "optimality testing full data"
         info = data # type unstable but 🤷
     else
-        info = Resolver.make_pkg_info(data, reqs)
+        info = Resolver.pkg_info(data, reqs)
         Π = prod(float(length(ip.versions)+1) for ip in values(info))
         if Π > Π⁺
             @info "no optimality testing"

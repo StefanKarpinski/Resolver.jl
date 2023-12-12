@@ -118,7 +118,7 @@ function is_satisfiable(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
     is_satisfiable(sat)
 end
 
-function each_solution_ind(f::Function, sat::SAT)
+function each_solution_index(f::Function, sat::SAT)
     is_satisfiable(sat) || return
     for (p, v_p) in sat.vars
         PicoSAT.deref(sat.pico, v_p) < 0 && continue
@@ -135,17 +135,17 @@ function each_solution_ind(f::Function, sat::SAT)
     end
 end
 
-function get_solution_inds!(sat::SAT{P}, sol::Dict{P,Int}) where {P}
+function extract_solution!(sat::SAT{P}, sol::Dict{P,Int}) where {P}
     empty!(sol)
-    each_solution_ind(sat) do p, i
+    each_solution_index(sat) do p, i
         sol[p] = i
     end
     return sol
 end
 
-function get_solution(sat::SAT{P,V}) where {P,V}
+function solution(sat::SAT{P,V}) where {P,V}
     sol = Dict{P,V}()
-    each_solution_ind(sat) do p, i
+    each_solution_index(sat) do p, i
         sol[p] = sat.info[p].versions[i]
     end
     return sol
@@ -159,17 +159,17 @@ function with_temp_clauses(body::Function, sat::SAT)
     end
 end
 
-function optimize_solution(
+function optimize_solution!(
     improve :: Function,
-    sat     :: SAT,
-    extract :: Function,
-)
+    sat     :: SAT{P},
+    sol     :: Dict{P,Int},
+) where {P}
     done::Bool = false
     while !done
         with_temp_clauses(sat) do
             improve() # callback adds SAT clauses
             done = is_unsatisfiable(sat)
-            done || extract()
+            done || extract_solution!(sat, sol)
         end
     end
 end

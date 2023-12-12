@@ -6,22 +6,19 @@ function resolve(
     reqs = sort!(collect(reqs))
 
     # solution search data strutures
-    sols = Vector{Dict{P,Int}}() # all solutions
     sol = Dict{P,Int}() # current solution
-
-    # simple helper for solution extraction
-    extract_sol!() = get_solution_inds!(sat, sol)
+    sols = typeof(sol)[] # all solutions
 
     function find_optimal_solutions(
         opts :: Set{P}, # packages to optimize next
         rest :: Set{P}, # other unoptimized packages
     )
         while is_satisfiable(sat)
-            extract_sol!()
+            extract_solution!(sat, sol)
 
             # optimize wrt coverage
             opts ⊆ keys(sol) ||
-            optimize_solution(sat, extract_sol!) do
+            optimize_solution!(sat, sol) do
                 # clauses: disallow non-improvements
                 for p in opts
                     p in keys(sol) || continue
@@ -37,7 +34,7 @@ function resolve(
             end
 
             # optimize wrt quality
-            optimize_solution(sat, extract_sol!) do
+            optimize_solution!(sat, sol) do
                 # clauses: disallow non-improvements
                 for p in opts
                     p in keys(sol) || continue

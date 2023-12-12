@@ -2,10 +2,9 @@ module Resolver
 
 export registry_provider, resolve
 export DepsProvider, PkgData, PkgInfo, SAT
-export pkg_info, filter_pkg_info!
 export
-    finalize, sat_add, is_satisfiable,
-    get_solution_inds!, with_temp_clauses, optimize_solution
+    pkg_info, finalize, sat_add, is_satisfiable, is_unsatisfiable,
+    extract_solution!, optimize_solution!, with_temp_clauses
 
 include("DepsProvider.jl")
 include("RegistryProvider.jl")

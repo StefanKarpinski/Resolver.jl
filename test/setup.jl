@@ -167,13 +167,15 @@ function make_solution_partial_order!(
         s::AbstractVector{Union{V,Nothing}},
         t::AbstractVector{Union{V,Nothing}},
     )
-        # set of necessary package indices
+        # necessary package indices
+        done = 0 # already compared
         need = indexin(reqs, pkgs)
         # check necessary packages
-        while true
+        while done < length(need)
             # first compare satisfaction of needs
             strict = false
-            for i in need
+            for k = done+1:length(need)
+                i = need[k]
                 sᵢ = !isnothing(get(s, i, nothing))
                 tᵢ = !isnothing(get(t, i, nothing))
                 sᵢ > tᵢ && return false
@@ -181,8 +183,8 @@ function make_solution_partial_order!(
             end
             strict && return true
             # then compare version quality
-            strict = false
-            for i in need
+            for k = done+1:length(need)
+                i = need[k]
                 # no version = worst = typemin
                 sᵢ = rank(s, i, typemin(Int))
                 tᵢ = rank(t, i, typemin(Int))
@@ -191,8 +193,8 @@ function make_solution_partial_order!(
                 sᵢ < tᵢ && (strict = true)
             end
             strict && return true
-            n = length(need)
-            for k = 1:n
+            # find newly necessary packages
+            for k = done+1:length(need)
                 i = need[k]
                 v = get(s, i, nothing)
                 @assert v == get(t, i, nothing)
@@ -200,8 +202,8 @@ function make_solution_partial_order!(
                 for j in deps[i,v]
                     j ∉ need && push!(need, j)
                 end
+                done = k
             end
-            n < length(need) || break
         end
         # check unnecessary packages
         for i = 1:length(pkgs)

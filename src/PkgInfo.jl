@@ -14,7 +14,7 @@ end
 
 using TimerOutputs
 
-function load_pkg_data(
+function pkg_data(
     deps :: DepsProvider{P,D},
     reqs :: SetOrVec{P} = deps.packages;
 ) where {P,D}
@@ -31,17 +31,17 @@ function load_pkg_data(
     return data
 end
 
-function load_pkg_info(
+function pkg_info(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
     filter :: Bool = true,
 ) where {P}
-    data = load_pkg_data(deps, reqs)
-    info = make_pkg_info(data, reqs; filter)
+    data = pkg_data(deps, reqs)
+    info = pkg_info(data, reqs; filter)
     return info
 end
 
-function make_pkg_info(
+function pkg_info(
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,

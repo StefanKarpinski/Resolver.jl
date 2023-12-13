@@ -1,6 +1,9 @@
+RESOLVE_MAX_SOLUTIONS::Int = 8
+
 function resolve(
     sat  :: SAT{P,V},
-    reqs :: SetOrVec{P} = keys(sat.info),
+    reqs :: SetOrVec{P} = keys(sat.info);
+    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
 ) where {P,V}
     # sort reqs for determinism
     reqs = sort!(collect(reqs))
@@ -13,7 +16,8 @@ function resolve(
         opts :: Set{P}, # packages to optimize next
         rest :: Set{P}, # other unoptimized packages
     )
-        while is_satisfiable(sat)
+        while true
+            is_satisfiable(sat) || break
             extract_solution!(sat, sol)
 
             # optimize wrt coverage
@@ -88,6 +92,8 @@ function resolve(
                 # save optimal solution
                 push!(sols, copy(sol))
             end
+            # stop if we've hit max number of solutions
+            0 < stop ≤ length(sols) && break
 
             # clause: require some improvement
             #   unlike the optimization process, this allows other
@@ -167,6 +173,7 @@ end
 function resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
+    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(deps, reqs; filter)
@@ -176,6 +183,7 @@ end
 function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
+    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(data, reqs; filter)
@@ -184,7 +192,8 @@ end
 
 function resolve(
     info :: Dict{P,PkgInfo{P,V}},
-    reqs :: SetOrVec{P} = keys(info),
+    reqs :: SetOrVec{P} = keys(info);
+    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
 ) where {P,V}
     sat = SAT(info)
     pkgs, vers = resolve(sat, reqs)

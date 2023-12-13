@@ -215,3 +215,19 @@ function sat_mice(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
     end
     return mice
 end
+
+function sat_humus(
+    sat :: SAT{P},
+    reqs :: SetOrVec{P} = keys(sat.info),
+) where {P}
+    reqs = Set{P}(reqs)
+    humus = Set{P}()
+    while true
+        mus = sat_mus(sat, reqs)
+        isempty(mus) && break
+        println(mus)
+        union!(humus, mus)
+        setdiff!(reqs, mus)
+    end
+    return sort!(collect(humus))
+end

@@ -104,19 +104,21 @@ end
 sat_add(sat::SAT) = PicoSAT.add(sat.pico, 0)
 sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
     PicoSAT.add(sat.pico, sat.vars[p] + i)
-sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    PicoSAT.assume(sat.pico, sat.vars[p] + i)
 
-is_satisfiable(sat::SAT) = PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
+sat_assume(sat::SAT{P}, p::P) where {P} =
+    PicoSAT.assume(sat.pico, sat.vars[p])
+sat_assume(sat::SAT{P}, px::SetOrVec{P}) where {P} =
+    foreach(p -> sat_assume(sat, p), px)
 
-const is_unsatisfiable = !is_satisfiable
+is_satisfiable(sat::SAT) =
+    PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
 
 function is_satisfiable(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
-    for p in reqs
-        sat_assume(sat, p)
-    end
+    sat_assume(sat, reqs)
     is_satisfiable(sat)
 end
+
+const is_unsatisfiable = !is_satisfiable
 
 function each_solution_index(f::Function, sat::SAT)
     is_satisfiable(sat) || return
@@ -176,10 +178,8 @@ end
 
 # analyzing UNSAT instances
 
-function sat_mus(sat::SAT, reqs::SetOrVec{P}) where {P}
-    for p in reqs
-        sat_assume(sat, p)
-    end
+function sat_mus(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+    sat_assume(sat, reqs)
     mus = empty(reqs)
     is_satisfiable(sat) && return mus
     vars⁻¹ = Dict{Int,P}(v => p for (p, v) in sat.vars)
@@ -189,10 +189,8 @@ function sat_mus(sat::SAT, reqs::SetOrVec{P}) where {P}
     return mus
 end
 
-function sat_humus(sat::SAT, reqs::SetOrVec{P}) where {P}
-    for p in reqs
-        sat_assume(sat, p)
-    end
+function sat_humus(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+    sat_assume(sat, reqs)
     humus = empty(reqs)
     is_satisfiable(sat) && return humus
     vars⁻¹ = Dict{Int,P}(v => p for (p, v) in sat.vars)
@@ -200,4 +198,15 @@ function sat_humus(sat::SAT, reqs::SetOrVec{P}) where {P}
         push!(humus, vars⁻¹[i])
     end
     return humus
+end
+
+function failed_assumptions(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+    sat_assume(sat, reqs)
+    bad = empty(reqs)
+    is_unsatisfiable(sat) &&
+    for p in reqs
+        PicoSAT.failed_assumption(sat.pico, sat.vars[p]) == 0 && continue
+        push!(bad, p)
+    end
+    return bad
 end

@@ -4,6 +4,13 @@ mutable struct SAT{P,V}
     vars :: Dict{P,Int}
 end
 
+function Base.show(io::IO, sat::SAT)
+    show(io, typeof(sat))
+    v = length(sat.vars)
+    c = PicoSAT.clause_count(sat.pico)
+    print(io, "(packages: ", v, ", clauses: ", c, ")")
+end
+
 function SAT(
     info :: Dict{P,PkgInfo{P,V}},
 ) where {P,V}
@@ -176,37 +183,35 @@ function optimize_solution!(
     end
 end
 
-# analyzing UNSAT instances
-
 function sat_mus(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
     sat_assume(sat, reqs)
-    mus = empty(reqs)
-    is_satisfiable(sat) && return mus
-    vars⁻¹ = Dict{Int,P}(v => p for (p, v) in sat.vars)
-    PicoSAT.mus(sat.pico) do v
-        push!(mus, vars⁻¹[v])
+    is_satisfiable(sat) && return empty(reqs)
+    # find initial unsatisfiable set
+    mus = Set{P}()
+    for p in reqs
+        PicoSAT.failed(sat.pico, sat.vars[p]) ≠ 0 && push!(mus, p)
     end
+    @assert is_unsatisfiable(sat, mus)
+    # try shrinking it
+    @label again
+    for p in mus
+        delete!(mus, p)
+        is_unsatisfiable(sat, mus) && @goto again
+        push!(mus, p)
+    end
+    # can't be shrunk
     return mus
 end
 
-function sat_humus(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
-    sat_assume(sat, reqs)
-    humus = empty(reqs)
-    is_satisfiable(sat) && return humus
-    vars⁻¹ = Dict{Int,P}(v => p for (p, v) in sat.vars)
-    PicoSAT.humus(sat.pico) do l
-        push!(humus, vars⁻¹[i])
+function sat_mice(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+    reqs = Set{P}(reqs)
+    mice = Set{P}[]
+    while true
+        mus = sat_mus(sat, reqs)
+        isempty(mus) && break
+        println(mus)
+        push!(mice, mus)
+        setdiff!(reqs, mus)
     end
-    return humus
-end
-
-function failed_assumptions(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
-    sat_assume(sat, reqs)
-    bad = empty(reqs)
-    is_unsatisfiable(sat) &&
-    for p in reqs
-        PicoSAT.failed_assumption(sat.pico, sat.vars[p]) == 0 && continue
-        push!(bad, p)
-    end
-    return bad
+    return mice
 end

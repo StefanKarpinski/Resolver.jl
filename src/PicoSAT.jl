@@ -28,6 +28,8 @@ push(p::Ptr{Cvoid}) =
     ccall((:picosat_push, lib), Cint, (Ptr{Cvoid},), p)
 pop(p::Ptr{Cvoid}) =
     ccall((:picosat_pop, lib), Cint, (Ptr{Cvoid},), p)
+var_count(p::Ptr{Cvoid}) =
+    ccall((:picosat_variables, lib), Cint, (Ptr{Cvoid},), p)
 clause_count(p::Ptr{Cvoid}) =
     ccall((:picosat_added_original_clauses, lib), Cint, (Ptr{Cvoid},), p)
 

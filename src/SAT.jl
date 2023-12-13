@@ -6,9 +6,13 @@ end
 
 function Base.show(io::IO, sat::SAT)
     show(io, typeof(sat))
-    v = length(sat.vars)
+    p = length(sat.vars)
+    v = PicoSAT.var_count(sat.pico)
     c = PicoSAT.clause_count(sat.pico)
-    print(io, "(packages: ", v, ", clauses: ", c, ")")
+    print(io,
+        "(packages: ", p,
+        ", versions: ", v-p,
+        ", clauses: ", c, ")")
 end
 
 function SAT(
@@ -183,7 +187,10 @@ function optimize_solution!(
     end
 end
 
-function sat_mus(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+function sat_mus(
+    sat  :: SAT{P},
+    reqs :: SetOrVec{P} = keys(sat.info),
+) where {P}
     sat_assume(sat, reqs)
     is_satisfiable(sat) && return empty(reqs)
     # find initial unsatisfiable set
@@ -203,7 +210,10 @@ function sat_mus(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
     return mus
 end
 
-function sat_mice(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+function sat_mice(
+    sat  :: SAT{P},
+    reqs :: SetOrVec{P} = keys(sat.info),
+) where {P}
     reqs = Set{P}(reqs)
     mice = Set{P}[]
     while true
@@ -217,7 +227,7 @@ function sat_mice(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
 end
 
 function sat_humus(
-    sat :: SAT{P},
+    sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info),
 ) where {P}
     reqs = Set{P}(reqs)

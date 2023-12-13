@@ -1,6 +1,6 @@
 function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
-    reqs :: SetOrVec{P},
+    reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
     @timeit "mark reachable" mark_reachable!(info, reqs)
     @timeit "mark necessary" mark_necessary!(info)
@@ -25,7 +25,7 @@ cannot appear in an optimal solution, it will not appear in this dictionary.
 """
 function find_reachable(
     info :: Dict{P, PkgInfo{P,V}},
-    reqs :: SetOrVec{P},
+    reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
     # meaning (both map packages to version indices):
     #   - reach tracks fully processed reachable versions
@@ -114,7 +114,7 @@ end
 
 function mark_reachable!(
     info :: Dict{P, PkgInfo{P,V}},
-    reqs :: SetOrVec{P},
+    reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
     reach = find_reachable(info, reqs)
     for (p, info_p) in info
@@ -189,23 +189,30 @@ function drop_unmarked!(
     info′ :: Dict{P, <: PkgInfo{P}},
     info  :: Dict{P, <: PkgInfo{P}} = info′,
 ) where {P}
-    # info[p].conflicts[:, end] bits are definitive
-    # first, set info[p].conflicts[end, :] bits to match
+    # info[p].conflicts[:, end] bits definitive (row flags)
+    # info[p].conflicts[end, :] bits made to match (column flags)
     for (p, info_p) in info
         X = info_p.conflicts
         X[end, :] .= false
-        # fill in active flags for dependencies
-        for (k, q) in enumerate(info_p.depends)
-            X[end, k] = any(X[i, k] for i = 1:size(X,1)-1)
+        # dependency column is active if:
+        # - some active version has that dependency
+        for i = 1:size(X,1)-1
+            X[i, end] || continue # skip inactive versions
+            for (k, q) in enumerate(info_p.depends)
+                X[end, k] |= X[i, k]
+            end
         end
-        # fill in active flags for interactions
+        # conflict column is active if:
+        # - the conflicting version is active
         for (q, b) in info_p.interacts
-            K = findall(info[q].conflicts[1:end-1, end])
-            X[end, b .+ K] .= true
+            Y = info[q].conflicts
+            for j = 1:size(Y,1)-1
+                X[end, b + j] = Y[j, end]
+            end
         end
     end
     # save original version counts (needed if info′ === info)
-    N = Dict{P, Int}(
+    N = Dict{P,Int}(
         p => length(info_p.versions)
         for (p, info_p) in info
     )
@@ -238,7 +245,7 @@ function drop_unmarked!(
         # compute shrunken components
         V′ = V[I]
         D′ = D[K[1:length(D)]]
-        T′ = Dict{P, Int}()
+        T′ = Dict{P,Int}()
         b′ = length(D′)
         for (q, b) in sort!(collect(T), by=last)
             n′ = count(K[b .+ (1:N[q])])
@@ -254,4 +261,62 @@ function drop_unmarked!(
         info′[p] = PkgInfo(V′, D′, T′, X′)
     end
     return info′
+end
+
+function drop_excluded!(
+    info :: Dict{P, PkgInfo{P,V}},
+    drop :: SetOrVec{P},
+) where {P,V}
+    drop isa AbstractSet || (drop = Set{P}(drop))
+    dirty = false
+    for (p, info_p) in info
+        # deactivate all versions of dropped packages
+        if p ∈ drop
+            info_p.conflicts[:, end] .= false
+            dirty = true
+            continue
+        end
+    end
+    while dirty
+        # deactivate versions that depend on dropped packages
+        dirty = false
+        for (p, info_p) in info
+            X = info_p.conflicts
+            for (k, q) in enumerate(info_p.depends)
+                Y = info[q].conflicts
+                any(Y[i, end] for i=1:size(Y,1)-1) && continue
+                # no active versions of q, delete p@i that depend on it
+                for i = 1:length(info_p.versions)
+                    info_p.conflicts[i, end] || continue
+                    info_p.conflicts[i, k] || continue
+                    # p@i depends on q, so drop p@i too
+                    info_p.conflicts[i, end] = false
+                    dirty = true
+                end
+            end
+        end
+    end
+    drop_unmarked!(info)
+end
+
+function check_info_structure(
+    info :: Dict{P, PkgInfo{P,V}},
+) where {P,V}
+    for (p, info_p) in info
+        for q in info_p.depends
+            q in keys(info) ||
+                return :depends, p, q
+        end
+        interacts = sort!(collect(info_p.interacts), by=last)
+        for (i, (q, b)) in enumerate(interacts)
+            if i == 1
+                b == length(info_p.depends) ||
+                    return :conflicts, p, q
+            end
+            if i < length(interacts)
+                b + length(info[q].versions) == interacts[i+1][2] ||
+                    return :conflicts, p, q
+            end
+        end
+    end
 end

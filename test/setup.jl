@@ -84,9 +84,9 @@ function test_resolver(
         vers = typeof(vers)(fill(nothing, M, 1))
     end
     each_potential_solution(info, pkgs) do s
-        # each potential solution is either invalid
-        # or dominated by some returned solution
-        @test !is_valid_sol(s) || any(s ≤ₛ t for t in eachcol(vers))
+        is_valid_sol(s) || return
+        # each valid solution is dominated by some returned solution:
+        @test any(s ≤ₛ t for t in eachcol(vers))
     end
 end
 

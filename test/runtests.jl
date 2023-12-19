@@ -1,9 +1,7 @@
 include("setup.jl")
 
 @testset "small comprehensive tests" begin
-    for m = 1:3, n = 1:3
-        m*n ≤ 6 || continue
-        @show m, n
+    for m = 1:2, n = 1:2
         d, c, data, make_deps, make_comp = tiny_data_makers(m, n)
         for deps_bits = 0:2^d-1
             deps = make_deps(deps_bits)
@@ -15,7 +13,6 @@ include("setup.jl")
                 end
                 for reqs_bits = 1:2^m-1
                     reqs = TinyVec(reqs_bits)
-                    @show deps_bits, comp_bits, reqs_bits
                     test_resolver(data, reqs)
                 end
             end

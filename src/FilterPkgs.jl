@@ -50,13 +50,13 @@ function find_reachable(
         return true
     end
 
-    rdeps = Dict{P, Dict{P,Int}}() # reverse dependency map
-    # p => q => k means k is latest version of q that depends on p
-
-    # add new reverse dependency
+    rdeps = Dict{P,Dict{P,Int}}() # reverse dependency map
+    # p => q => k means
+    #   "k is latest reachable version of q that depends on p"
+    # add new reverse dependency:
     function rdep(p::P, q::P, k::Int)
-        rdeps_q = get!(() -> valtype(rdeps)(), rdeps, q)
-        rdeps_q[p] = max(get(rdeps_q, p, 0), k)
+        rdeps_p = get!(() -> valtype(rdeps)(), rdeps, p)
+        rdeps_p[q] = max(get(rdeps_p, q, 0), k)
     end
 
     # notation:

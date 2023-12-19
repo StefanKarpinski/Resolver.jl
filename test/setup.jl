@@ -1,5 +1,6 @@
-using Test
 using Resolver
+using Random
+using Test
 
 include("tiny_data.jl")
 

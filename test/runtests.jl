@@ -8,9 +8,7 @@ include("setup.jl")
             all(deps[i].bits ≥ deps[i+1].bits for i=1:m-1) || continue
             for comp_bits = 0:2^c-1
                 comp = make_comp(comp_bits)
-                for i = 1:m
-                    data[i] = PkgData(TinyRange(n), deps[i], comp[i])
-                end
+                fill_data!(m, n, data, deps, comp)
                 for reqs_bits = 1:2^m-1
                     reqs = TinyVec(reqs_bits)
                     test_resolver(data, reqs)
@@ -30,9 +28,7 @@ end
             deps = make_deps(randbits(d))
             comp = make_comp(randbits(c))
             reqs = TinyVec(rand(1:2^m-1))
-            for i = 1:m
-                data[i] = PkgData(TinyRange(n), deps[i], comp[i])
-            end
+            fill_data!(m, n, data, deps, comp)
             test_resolver(data, reqs)
         end
     end

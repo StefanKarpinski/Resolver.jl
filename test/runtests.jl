@@ -18,6 +18,33 @@ include("setup.jl")
     end
 end
 
+@testset "small tests, semi-full" begin
+    for m = 2:3, n = 2:3
+        m == n && continue # fully tested or too large
+        d, c, data, make_deps, make_comp = tiny_data_makers(m, n)
+        # scan all deps patterns, random comp pattern
+        for deps_bits = 0:2^d-1
+            deps = make_deps(deps_bits)
+            comp = make_comp(randbits(c))
+            fill_data!(m, n, data, deps, comp)
+            for reqs_bits = 1:2^m-1
+                reqs = TinyVec(reqs_bits)
+                test_resolver(data, reqs)
+            end
+        end
+        # scan all comp patterns, random deps pattern
+        for comp_bits = 0:2^c-1
+            deps = make_deps(randbits(d))
+            comp = make_comp(comp_bits)
+            fill_data!(m, n, data, deps, comp)
+            for reqs_bits = 1:2^m-1
+                reqs = TinyVec(reqs_bits)
+                test_resolver(data, reqs)
+            end
+        end
+    end
+end
+
 @testset "small tests, random" begin
     # chosen to hit some previously failing cases:
     Random.seed!(0x8cb0074336f2d04f)

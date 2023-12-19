@@ -64,7 +64,7 @@ function test_resolver(
     end
 
     # estimate how many potential solutions there would be
-    Π = prod(float(length(data[p].versions)+1) for p in pkgs)
+    Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)
     Π⁺ = 1e6
     if Π ≤ Π⁺
         # @info "optimality testing full data"
@@ -256,7 +256,7 @@ function each_potential_solution(
         i ≤ L || (body(s); return)
         # otherwise iterate versions of next package:
         p = pkgs[i]
-        vers_p = haskey(data, p) ? data[pkgs[i]].versions : V[]
+        vers_p = haskey(data, p) ? data[p].versions : V[]
         for r = 0:length(vers_p)
             v = get(vers_p, r, nothing)
             s[i] = v

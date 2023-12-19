@@ -12,15 +12,13 @@ function Base.:(==)(a::PkgInfo, b::PkgInfo)
     a.conflicts == b.conflicts
 end
 
-using TimerOutputs
-
 function pkg_data(
     deps :: DepsProvider{P,D},
     reqs :: SetOrVec{P} = deps.packages;
 ) where {P,D}
     data = Dict{P,D}()
     work = Set(reqs)
-    @timeit "load pkg data" while !isempty(work)
+    while !isempty(work)
         p = pop!(work)
         data_p = data[p] = pkg_data(deps, p)
         for (v, deps_pv) in data_p.depends, q in deps_pv
@@ -48,7 +46,7 @@ function pkg_info(
 ) where {P,V}
     # compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
-    @timeit "compute interacts" for (p, data_p) in data
+    for (p, data_p) in data
         interacts_p = interacts[p]
         for (v, comp_pv) in data_p.compat
             # don't combine loops--it changes what continue does
@@ -68,7 +66,7 @@ function pkg_info(
 
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()
-    @timeit "construct pkg info" for (p, data_p) in data
+    for (p, data_p) in data
         D = sort!(reduce(union!, values(data_p.depends), init=P[]))
         T = Dict{P,Int}(p => 0 for p in interacts[p])
         n = length(D)
@@ -87,7 +85,7 @@ function pkg_info(
     end
 
     # initialize conflicts matrices
-    @timeit "initialize conflicts" for (p, info_p) in info
+    for (p, info_p) in info
         X = info_p.conflicts
         V⁻¹ = Dict{V,Int}(v => i for (i, v) in enumerate(info_p.versions))
         D⁻¹ = Dict{P,Int}(q => j for (j, q) in enumerate(info_p.depends))
@@ -119,9 +117,7 @@ function pkg_info(
     end
 
     # only keep reachable, necessary packages & versions
-    if filter
-        @timeit "filter pkg info" filter_pkg_info!(info, reqs)
-    end
+    filter && filter_pkg_info!(info, reqs)
 
     return info
 end

@@ -177,7 +177,7 @@ function resolve(
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(deps, reqs; filter)
-    @timeit "resolve" resolve(info, reqs)
+    resolve(info, reqs)
 end
 
 function resolve(
@@ -187,7 +187,7 @@ function resolve(
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(data, reqs; filter)
-    @timeit "resolve" resolve(info, reqs)
+    resolve(info, reqs)
 end
 
 function resolve(

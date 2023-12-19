@@ -2,9 +2,9 @@ function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
-    @timeit "mark reachable" mark_reachable!(info, reqs)
-    @timeit "mark necessary" mark_necessary!(info)
-    @timeit "drop unmarked" drop_unmarked!(info)
+    mark_reachable!(info, reqs)
+    mark_necessary!(info)
+    drop_unmarked!(info)
 end
 
 """

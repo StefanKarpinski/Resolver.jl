@@ -1,6 +1,8 @@
 using Test
 using Resolver
 
+include("tiny_data.jl")
+
 function test_resolver(
     deps :: DepsProvider{P},
     reqs :: AbstractVector{P},
@@ -77,6 +79,10 @@ function test_resolver(
     end
 
     # generate all Π potential solutions
+    if isempty(vers)
+        # technically, when no solutions, this is dominant
+        vers = typeof(vers)(fill(nothing, M, 1))
+    end
     each_potential_solution(info, pkgs) do s
         # each potential solution is either invalid
         # or dominated by some returned solution

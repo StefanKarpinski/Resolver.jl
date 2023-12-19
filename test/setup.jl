@@ -88,7 +88,7 @@ end
 function is_valid_solution(
     data :: AbstractDict{P,<:PkgData{P,V}},
     pkgs :: AbstractVector{P},
-    vers :: AbstractVector{Union{V,Nothing}},
+    vers :: AbstractVector{<:Union{V,Nothing}},
 ) where {P,V}
     # check satisfiaction of dependencies
     for (i, v) in enumerate(vers)
@@ -198,8 +198,7 @@ function make_solution_partial_order!(
                 i = need[k]
                 v = get(s, i, nothing)
                 @assert v == get(t, i, nothing)
-                isnothing(v) && continue
-                for j in deps[i,v]
+                isnothing(v) || for j in deps[i,v]
                     j ∉ need && push!(need, j)
                 end
                 done = k

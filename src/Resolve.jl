@@ -129,14 +129,14 @@ function resolve(
             # force all requirements
             for p in reqs
                 sat_add(sat, p)
+                sat_add(sat)
             end
-            sat_add(sat)
         else
             # force some requirement
             for p in reqs
                 sat_add(sat, p)
-                sat_add(sat)
             end
+            sat_add(sat)
         end
 
         # start recursion

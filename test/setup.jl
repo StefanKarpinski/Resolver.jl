@@ -18,7 +18,7 @@ function test_resolver(
 
     # number of packages & solutions
     M, N = size(vers)
-    @info "$M packages, $N solutions"
+    # @info "$M packages, $N solutions"
 
     # check basic structure
     @test reqs ⊆ pkgs
@@ -64,16 +64,16 @@ function test_resolver(
     Π = prod(float(length(data[p].versions)+1) for p in pkgs)
     Π⁺ = 1e6
     if Π ≤ Π⁺
-        @info "optimality testing full data"
+        # @info "optimality testing full data"
         info = data # type unstable but 🤷
     else
         info = Resolver.pkg_info(data, reqs)
         Π = prod(float(length(ip.versions)+1) for ip in values(info))
         if Π > Π⁺
-            @info "no optimality testing"
+            # @info "no optimality testing"
             return
         end
-        @info "optimality testing filtered info"
+        # @info "optimality testing filtered info"
     end
 
     # generate all Π potential solutions

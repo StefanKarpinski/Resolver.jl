@@ -2,7 +2,7 @@ using Resolver
 using Random
 using Test
 
-include("tiny_data.jl")
+includet("tiny_data.jl")
 
 function test_resolver(
     deps :: DepsProvider{P},
@@ -89,6 +89,8 @@ function test_resolver(
         # each valid solution is dominated by some returned solution:
         @test any(s ≤ₛ t for t in eachcol(vers))
     end
+
+    return pkgs, vers
 end
 
 # checking validity of a solution

@@ -73,7 +73,7 @@ function Base.iterate(v::TinyVec, x::Int = 0)
     x ≤ N ? (x, x) : nothing
 end
 
-Base.in(x::Int, v::TinyVec) = (v.bits >> x) ≠ 0
+Base.in(x::Int, v::TinyVec) = isodd(v.bits >> (x - 1))
 
 # TinyRange
 

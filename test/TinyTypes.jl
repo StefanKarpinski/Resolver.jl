@@ -5,7 +5,7 @@ export TinyDict, TinyVec, TinyRange, BinomialBits, randbits, deposit_bits
 const UIntN = UInt128
 const N = 8*sizeof(UIntN)
 
-struct TinyDict{b,T} <: AbstractDict{Int,T}
+struct TinyDict{b,T,x} <: AbstractDict{Int,T}
     bits :: UIntN
 end
 
@@ -22,16 +22,19 @@ end
 getbits(d::TinyDict{b}, k::Int) where {b} =
     (d.bits >> (b*(k-1))) & ((1 << b) - 1)
 
+val(d::TinyDict{b,T,x}, v::UIntN) where {b,T,x} =
+    T(x ? ((1 << b) - 1) ⊻ v : v)
+
 Base.haskey(d::TinyDict{b,T}, k::Int) where {b,T} =
     getbits(d, k) ≠ 0
 
 Base.getindex(d::TinyDict{b,T}, k::Int) where {b,T} =
-    T(getbits(d, k))
+    val(d, getbits(d, k))
 
 function Base.iterate(d::TinyDict{b,T}, k::Int = 1) where {b,T}
     while b*k ≤ N
         v = getbits(d, k)
-        v ≠ 0 && return k => T(v), k+1
+        v ≠ 0 && return k => val(d, v), k+1
         k += 1
     end
 end
@@ -46,7 +49,9 @@ function Base.show(io::IO, d::TinyDict)
         first || print(io, ", ")
         show(io, k)
         print(io, ": ")
-        show(io, v)
+        let io = IOContext(io, :typeinfo => typeof(v))
+            show(io, v)
+        end
         first = false
     end
     print(io, '}')

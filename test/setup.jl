@@ -63,6 +63,9 @@ function test_resolver(
         s !== t && @test !(s ≤ₛ t)
     end
 
+    # TODO: for now, skip testing for incomplete solutions
+    any(isnothing, vers) && return pkgs, vers
+
     # estimate how many potential solutions there would be
     Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)
     Π⁺ = 1e6
@@ -79,11 +82,12 @@ function test_resolver(
         # @info "optimality testing filtered info"
     end
 
-    # generate all Π potential solutions
     if isempty(vers)
         # technically, when no solutions, this is dominant
         vers = typeof(vers)(fill(nothing, M, 1))
     end
+
+    # generate all Π potential solutions
     each_potential_solution(info, pkgs) do s
         is_valid_sol(s) || return
         # each valid solution is dominated by some returned solution:

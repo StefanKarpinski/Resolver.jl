@@ -5,8 +5,11 @@ make_reqs(b) = TinyVec(b)
 function tiny_data_makers(m::Int, n::Int)
     (m*n)^2 ≤ 128 || throw(ArgumentError("m=$m and n=$n are too big"))
 
-    Deps = TinyDict{n*m, TinyDict{m, TinyVec}}
-    Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec}}}
+    f = false
+    t = true
+
+    Deps = TinyDict{n*m, TinyDict{m, TinyVec, f}, f}
+    Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec, t}, f}, f}
 
     𝟘 = TinyTypes.UIntN(0)
     𝟙 = TinyTypes.UIntN(1)

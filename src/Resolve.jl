@@ -128,6 +128,8 @@ function resolve(
                 # recursive search call
                 find_sat_solutions(opts′, rest)
             end
+            # stop if we've hit max number of solutions
+            0 < stop ≤ length(sols) && break
 
             # next solution must be undominated by this one
             # require: some package covered that isn't now
@@ -192,7 +194,7 @@ function resolve(
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(deps, reqs; filter)
-    resolve(info, reqs)
+    resolve(info, reqs; stop)
 end
 
 function resolve(
@@ -202,7 +204,7 @@ function resolve(
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(data, reqs; filter)
-    resolve(info, reqs)
+    resolve(info, reqs; stop)
 end
 
 function resolve(
@@ -211,24 +213,8 @@ function resolve(
     stop :: Integer = RESOLVE_MAX_SOLUTIONS,
 ) where {P,V}
     sat = SAT(info)
-    pkgs, vers = resolve(sat, reqs)
-    finalize(sat)
-    return pkgs, vers
+    try resolve(sat, reqs; stop)
+    finally
+        finalize(sat)
+    end
 end
-
-#=
-using PrettyTables, Revise, Resolver
-deps = registry_provider();
-(str -> begin
-reqs = String.(split(str, ','))
-pkgs, vers = resolve(deps, reqs)
-mv = vec(mapslices(r->maximum(v->something(v, v"0+1-"), r), vers, dims=2))
-pretty_table([pkgs vers],
-    highlighters = Highlighter(
-        (data, i, j) -> j > 1 &&
-            something(data[i, j], i ≤ length(reqs) ? v"0+0-" : mv[i]) < mv[i],
-        foreground = :red,
-    )
-)
-end)("CEnum,CUDAdrv,HELICS,DocStringExtensions,FunctionalTables")
-=#

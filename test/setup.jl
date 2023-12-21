@@ -274,8 +274,3 @@ end
 
 # helpers
 
-function fill_data!(m, n, data, deps, comp)
-    for i = 1:m
-        data[i] = PkgData(TinyRange(n), deps[i], comp[i])
-    end
-end

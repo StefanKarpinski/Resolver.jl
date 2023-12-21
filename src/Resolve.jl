@@ -12,30 +12,13 @@ function resolve(
     sol = Dict{P,Int}() # current solution
     sols = typeof(sol)[] # all solutions
 
-    function find_optimal_solutions(
+    function find_sat_solutions(
         opts :: Set{P}, # packages to optimize next
         rest :: Set{P}, # other unoptimized packages
     )
-        while true
-            is_satisfiable(sat) || break
+        while is_satisfiable(sat)
             extract_solution!(sat, sol)
-
-            # optimize wrt coverage
-            opts ⊆ keys(sol) ||
-            optimize_solution!(sat, sol) do
-                # clauses: disallow non-improvements
-                for p in opts
-                    p in keys(sol) || continue
-                    sat_add(sat, p)
-                    sat_add(sat)
-                end
-                # clause: require some improvement
-                for p in opts
-                    p in keys(sol) && continue
-                    sat_add(sat, p)
-                end
-                sat_add(sat)
-            end
+            @assert opts ⊆ keys(sol)
 
             # optimize wrt quality
             optimize_solution!(sat, sol) do
@@ -59,7 +42,7 @@ function resolve(
                 sat_add(sat)
             end
 
-            # find next optimization set
+            # next optimization set: new dependencies
             opts′ = empty(opts)
             for p in opts
                 p in keys(sol) || continue
@@ -82,7 +65,7 @@ function resolve(
                     end
                     # recursive search call
                     rest′ = setdiff(rest, opts′)
-                    find_optimal_solutions(opts′, rest′)
+                    find_sat_solutions(opts′, rest′)
                 end
             else # nothing left to optimize
                 for p in rest
@@ -95,54 +78,86 @@ function resolve(
             # stop if we've hit max number of solutions
             0 < stop ≤ length(sols) && break
 
-            # clause: require some improvement
-            #   unlike the optimization process, this allows other
-            #   aspects to get worse; it only forces non-domination
+            # next solution must be undominated by this one
+            # require: some package with better version than now
+            for p in opts
+                # any strictly better versions
+                for i = 1:sol[p]-1
+                    sat_add(sat, p, i)
+                end
+            end
+            sat_add(sat)
+        end
+    end
 
-            if opts ⊆ keys(sol) # complete solution
-                # preserve coverage
+    function find_unsat_solutions(
+        opts :: Set{P}, # packages to optimize next
+        rest :: Set{P}, # other unoptimized packages
+    )
+        while is_satisfiable(sat)
+            extract_solution!(sat, sol)
+            @assert opts ⊈ keys(sol)
+
+            # optimize wrt coverage
+            optimize_solution!(sat, sol) do
+                # clauses: disallow non-improvements
                 for p in opts
+                    p in keys(sol) || continue
                     sat_add(sat, p)
                     sat_add(sat)
                 end
-                # improve quality
-                for p in opts
-                    # any strictly better versions
-                    for i = 1:sol[p]-1
-                        sat_add(sat, p, i)
-                    end
-                end
-                sat_add(sat)
-            else # incomplete solution
-                # improve coverage
+                # clause: require some improvement
                 for p in opts
                     p in keys(sol) && continue
                     sat_add(sat, p)
                 end
                 sat_add(sat)
             end
+
+            # next optimization set: subset of satisfied opts
+            opts′ = filter(in(keys(sol)), opts)
+            @assert !isempty(opts′)
+
+            with_temp_clauses(sat) do
+                # clauses: don't regress opts coverage
+                for p in opts
+                    p in keys(sol) || continue
+                    sat_add(sat, p)
+                    sat_add(sat)
+                end
+                # recursive search call
+                find_sat_solutions(opts′, rest)
+            end
+
+            # next solution must be undominated by this one
+            # require: some package covered that isn't now
+            for p in opts
+                p in keys(sol) && continue
+                sat_add(sat, p)
+            end
+            sat_add(sat)
         end
     end
 
+    # start the recursive search...
     with_temp_clauses(sat) do
+        opts = Set{P}(reqs)
+        rest = setdiff(keys(sat.info), opts)
         if is_satisfiable(sat, reqs)
             # force all requirements
             for p in reqs
                 sat_add(sat, p)
                 sat_add(sat)
             end
+            find_sat_solutions(opts, rest)
         else
             # force some requirement
             for p in reqs
                 sat_add(sat, p)
             end
             sat_add(sat)
+            find_unsat_solutions(opts, rest)
         end
-
-        # start recursion
-        opts = Set{P}(reqs)
-        rest = setdiff(keys(sat.info), opts)
-        find_optimal_solutions(opts, rest)
     end
 
     # sort packages

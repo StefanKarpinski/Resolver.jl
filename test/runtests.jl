@@ -21,21 +21,6 @@ include("setup.jl")
     end
 end
 
-# We have another issue: when a problem isn't satisfiable, we iterate through
-# all the pareto-optimal nothing patterns, but for a given nothing pattern there
-# can also be multiple different pareto-optimal solutions. Example:
-#
-# (m, n, deps_bits, reqs_bits) = (3, 2, 15, 7)
-# d, c, data, make_deps, make_comp = tiny_data_makers(m, n)
-# Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec, true}, false}, false}
-# deps = make_deps(deps_bits)
-# comp = Comp(0x00000000000000000000000004081c30)
-# reqs = make_reqs(reqs_bits)
-# fill_data!(m, n, data, deps, comp)
-# test_resolver(data, reqs)
-#
-# Example only returns [-, 2, 1] but [-, 1, 2] is also a dominant solution.
-
 @testset "small tests, semi-full" begin
     for m = 2:3, n = 2:3
         m == n && continue # fully tested or too large
@@ -47,7 +32,7 @@ end
             fill_data!(m, n, data, deps, comp)
             for reqs_bits = 1:2^m-1
                 # @show m, n, deps_bits, reqs_bits
-                # @show comp.bits
+                # println("comp = Comp(", comp.bits, ")")
                 reqs = make_reqs(reqs_bits)
                 test_resolver(data, reqs)
             end
@@ -59,7 +44,7 @@ end
             fill_data!(m, n, data, deps, comp)
             for reqs_bits = 1:2^m-1
                 # @show m, n, comp_bits, reqs_bits
-                # @show deps.bits
+                # println("deps = Deps(", deps.bits, ")")
                 reqs = make_reqs(reqs_bits)
                 test_resolver(data, reqs)
             end

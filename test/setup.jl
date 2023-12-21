@@ -63,9 +63,6 @@ function test_resolver(
         s !== t && @test !(s ≤ₛ t)
     end
 
-    # TODO: for now, skip testing for incomplete solutions
-    any(isnothing, vers) && return pkgs, vers
-
     # estimate how many potential solutions there would be
     Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)
     Π⁺ = 1e6

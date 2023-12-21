@@ -102,14 +102,14 @@ end
 
 using ..Resolver: PkgData
 
+const f = false
+const t = true
+
+Deps(m, n) = TinyDict{n*m, TinyDict{m, TinyVec, f}, f}
+Comp(m, n) = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec, t}, f}, f}
+
 function tiny_data_makers(m::Int, n::Int)
     (m*n)^2 ≤ 128 || throw(ArgumentError("m=$m and n=$n are too big"))
-
-    f = false
-    t = true
-
-    Deps = TinyDict{n*m, TinyDict{m, TinyVec, f}, f}
-    Comp = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec, t}, f}, f}
 
     𝟘 = UIntN(0)
     𝟙 = UIntN(1)
@@ -125,10 +125,10 @@ function tiny_data_makers(m::Int, n::Int)
     d = count_ones(d_mask)
     c = count_ones(c_mask)
 
-    make_deps(b) = deposit_bits(d_mask, b) |> Deps
-    make_comp(b) = deposit_bits(c_mask, b) |> Comp
+    make_deps(b) = deposit_bits(d_mask, b) |> Deps(m, n)
+    make_comp(b) = deposit_bits(c_mask, b) |> Comp(m, n)
 
-    PkgD = typeof(PkgData(TinyRange(n), Deps(0)[1], Comp(0)[1]))
+    PkgD = typeof(PkgData(TinyRange(n), Deps(m,n)(0)[1], Comp(m,n)(0)[1]))
     data = Dict{Int,PkgD}()
 
     return d, c, data, make_deps, make_comp, bit

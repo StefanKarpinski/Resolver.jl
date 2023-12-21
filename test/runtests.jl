@@ -73,15 +73,22 @@ end
     for m = 2:5, n = 1:5
         (m*n)^2 ≤ 128 || continue
         d, c, data, make_deps, make_comp, bit = tiny_data_makers(m, n)
-        for _ = 1:10
+        for _ = 1:100
             deps = make_deps(0) # start with no dependencies
             comp = make_comp(0) # start with no conflicts
             reqs = make_reqs(rand(1:2^m-1)) # random requirements set
             # iteratively pick a solution and break it until unsolvable
+            # @show reqs
             while true
                 fill_data!(m, n, data, deps, comp)
                 pkgs, vers = test_resolver(data, reqs)
-                @show size(vers)
+                # for i = 1:size(vers, 1)
+                #     print(pkgs[i], ":")
+                #     for k = 1:size(vers, 2)
+                #         print(" ", something(vers[i,k], '-'))
+                #     end
+                #     println()
+                # end
                 all(isnothing, vers) && break
                 # pick a random solution
                 k = rand(1:size(vers,2))
@@ -98,19 +105,21 @@ end
                 q = rand(1:m-1)
                 q += q ≥ p
                 j = something(findfirst(==(q), pkgs), 0)
-                w = get(vers, (j, k), 0)
+                w = get(vers, (j, k), nothing)
                 # make resolved versions of p & q incompatible
-                if w == 0
+                if isnothing(w)
                     # add a dependency p@v => q
-                    x = bit(p, v, q)
-                    @assert iszero(deps.bits & x)
-                    deps = typeof(deps)(deps.bits | x)
+                    b = bit(p, v, q)
+                    @assert iszero(deps.bits & b)
+                    # println("$p@$v => $q")
+                    deps = typeof(deps)(deps.bits | b)
                 else
                     # add incompatibility p@v ⊼ p@w
                     w = vers[j, k]
-                    x = bit(p, v, q, w)
-                    @assert iszero(deps.bits & x)
-                    comp = typeof(comp)(comp.bits | x)
+                    b = bit(p, v, q, w)
+                    @assert iszero(comp.bits & b)
+                    # println("$p@$v ⊼ $q@$w")
+                    comp = typeof(comp)(comp.bits | b)
                 end
             end
         end

@@ -2,7 +2,7 @@ using Resolver
 using Random
 using Test
 
-includet("tiny_data.jl")
+include("tiny_data.jl")
 
 function test_resolver(
     deps :: DepsProvider{P},

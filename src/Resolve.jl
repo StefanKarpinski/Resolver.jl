@@ -3,7 +3,7 @@ RESOLVE_MAX_SOLUTIONS::Int = 8
 function resolve(
     sat  :: SAT{P,V},
     reqs :: SetOrVec{P} = keys(sat.info);
-    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
 ) where {P,V}
     # sort reqs for determinism
     reqs = sort!(collect(reqs))
@@ -75,8 +75,8 @@ function resolve(
                 # save optimal solution
                 push!(sols, copy(sol))
             end
-            # stop if we've hit max number of solutions
-            0 < stop ≤ length(sols) && break
+            # max if we've hit max number of solutions
+            0 < max ≤ length(sols) && break
 
             # next solution must be undominated by this one
             # require: some package with better version than now
@@ -128,8 +128,8 @@ function resolve(
                 # recursive search call
                 find_sat_solutions(opts′, rest)
             end
-            # stop if we've hit max number of solutions
-            0 < stop ≤ length(sols) && break
+            # max if we've hit max number of solutions
+            0 < max ≤ length(sols) && break
 
             # next solution must be undominated by this one
             # require: some package covered that isn't now
@@ -190,30 +190,30 @@ end
 function resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
-    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(deps, reqs; filter)
-    resolve(info, reqs; stop)
+    resolve(info, reqs; max)
 end
 
 function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
-    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(data, reqs; filter)
-    resolve(info, reqs; stop)
+    resolve(info, reqs; max)
 end
 
 function resolve(
     info :: Dict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
-    stop :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
 ) where {P,V}
     sat = SAT(info)
-    try resolve(sat, reqs; stop)
+    try resolve(sat, reqs; max)
     finally
         finalize(sat)
     end

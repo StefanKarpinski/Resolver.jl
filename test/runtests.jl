@@ -136,3 +136,24 @@ end
         @test nsol == size(vers,2)
     end
 end
+
+@testset "registry resolve" begin
+    rp = registry.provider()
+    test_resolver(rp, ["JSON"])
+    test_resolver(rp, ["DataFrames"])
+    test_resolver(rp, ["DataFrames", "JSON"])
+    test_resolver(rp, ["DifferentialEquations"])
+    test_resolver(rp, ["DifferentialEquations", "JSON"])
+    test_resolver(rp, ["DifferentialEquations", "JSON", "DataFrames"])
+    # test some details
+    pkgs, vers = resolve(rp, ["JSON"])
+    @test pkgs isa Vector{String}
+    @test vers isa Matrix{Union{Nothing,VersionNumber}}
+    @test all(!isnothing, vers)
+    # test corner case (empty)
+    pkgs, vers = resolve(rp, String[])
+    @test pkgs isa Vector{String}
+    @test vers isa Matrix{Union{Nothing,VersionNumber}}
+    @test isempty(pkgs)
+    @test isempty(vers)
+end

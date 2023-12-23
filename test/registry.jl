@@ -1,28 +1,28 @@
-# Pkg's module structure is bonkers, wrap in a single module
-module Pkg
-    import Pkg: depots1
-    import Pkg.Registry: RegistryInstance, init_package_info!
-    import Pkg.Types: stdlibs
-    import Pkg.Versions: VersionSpec
-end
-import .Pkg
+module registry
 
-const REG_PATH = joinpath(Pkg.depots1(), "registries", "General.toml")
-const EXCLUDES = push!(Set(first.(values(Pkg.stdlibs()))), "julia")
+import Resolver: DepsProvider, PkgData
 
-function registry_provider(
+import Pkg: depots1
+import Pkg.Registry: RegistryInstance, init_package_info!
+import Pkg.Types: stdlibs
+import Pkg.Versions: VersionSpec
+
+const REG_PATH = joinpath(depots1(), "registries", "General.toml")
+const EXCLUDES = push!(Set(first.(values(stdlibs()))), "julia")
+
+function provider(
     reg_path :: AbstractString = REG_PATH;
-    excludes :: SetOrVec{<:AbstractString} = EXCLUDES,
+    excludes :: AbstractSet{<:AbstractString} = EXCLUDES,
 )
-    reg_inst = Pkg.RegistryInstance(reg_path)
+    reg_inst = RegistryInstance(reg_path)
     reg_dict = Dict(p.name => p
         for p in values(reg_inst.pkgs) if p.name ∉ excludes)
 
     DepsProvider(keys(reg_dict)) do pkg :: AbstractString
-        info = Pkg.init_package_info!(reg_dict[pkg])
+        info = init_package_info!(reg_dict[pkg])
         vers = sort!(collect(keys(info.version_info)), rev=true)
         deps = Dict(v => String[] for v in vers)
-        comp = Dict(v => Dict{String,Pkg.VersionSpec}() for v in vers)
+        comp = Dict(v => Dict{String,VersionSpec}() for v in vers)
         # scan versions and populate deps & compat data
         for v in vers
             for (r, d) in info.deps
@@ -50,3 +50,5 @@ function registry_provider(
         PkgData(vers, deps, comp)
     end
 end
+
+end # module

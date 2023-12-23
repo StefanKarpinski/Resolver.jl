@@ -3,6 +3,7 @@ using Random
 using Test
 
 @isdefined(includet) ? includet("tiny_data.jl") : include("tiny_data.jl")
+@isdefined(includet) ? includet("registry.jl")  : include("registry.jl")
 
 function test_resolver(
     deps :: DepsProvider{P},
@@ -74,7 +75,7 @@ function test_resolver(
         Π = prod(float(length(ip.versions)+1) for ip in values(info))
         if Π > Π⁺
             # @info "no optimality testing"
-            return
+            return pkgs, vers
         end
         # @info "optimality testing filtered info"
     end

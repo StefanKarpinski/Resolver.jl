@@ -7,7 +7,6 @@ export
     extract_solution!, optimize_solution!, with_temp_clauses
 
 include("DepsProvider.jl")
-include("RegistryProvider.jl")
 include("PkgInfo.jl")
 include("PkgInfoFiles.jl")
 include("FilterPkgs.jl")

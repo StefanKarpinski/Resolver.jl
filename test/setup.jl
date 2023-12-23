@@ -15,10 +15,11 @@ end
 
 function test_resolver(
     data :: AbstractDict{P,<:PkgData{P,V}},
-    reqs :: AbstractVector{P},
+    reqs :: AbstractVector{P};
+    max  :: Integer = 0
 ) where {P,V}
     # call resolve
-    pkgs, vers = resolve(data, reqs)
+    pkgs, vers = resolve(data, reqs; max)
 
     # number of packages & solutions
     M, N = size(vers)
@@ -63,6 +64,10 @@ function test_resolver(
     for s in eachcol(vers), t in eachcol(vers)
         s !== t && @test !(s ≤ₛ t)
     end
+
+    # if max solutions returned, might not be all possible
+    # so we can't check for domination of all solutions
+    max ≤ 0 || size(vers,2) < max || return pkgs, vers
 
     # estimate how many potential solutions there would be
     Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)

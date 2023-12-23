@@ -116,3 +116,23 @@ end
         end
     end
 end
+
+@testset "resolve: max keyword" begin
+    for ex in tiny_data.examples
+        data, reqs = ex.data, ex.reqs
+        pkgs, vers = test_resolver(data, reqs)
+        nsol = size(vers,2)
+        for max = 1:nsol
+            pkgs, vers = resolve(data, reqs; max)
+            @test max == size(vers,2)
+        end
+        pkgs, vers = resolve(data, reqs; max=-1)
+        @test nsol == size(vers,2)
+        pkgs, vers = resolve(data, reqs; max=0)
+        @test nsol == size(vers,2)
+        pkgs, vers = resolve(data, reqs; max=nsol+1)
+        @test nsol == size(vers,2)
+        pkgs, vers = resolve(data, reqs; max=typemax(Int))
+        @test nsol == size(vers,2)
+    end
+end

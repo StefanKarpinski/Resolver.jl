@@ -2,7 +2,7 @@ using Resolver
 using Random
 using Test
 
-include("tiny_data.jl")
+@isdefined(includet) ? includet("tiny_data.jl") : include("tiny_data.jl")
 
 function test_resolver(
     deps :: DepsProvider{P},

@@ -1,7 +1,19 @@
 module tiny_data
 
-export tiny_data_makers, make_reqs, fill_data!
-export randbits, BinomialBits
+export
+    tiny_data_makers,
+    make_reqs,
+    make_data,
+    fill_data!,
+    Deps,
+    Comp,
+    Data,
+    deps_mask,
+    comp_mask,
+    randbits,
+    BinomialBits,
+    deposit_bits,
+    extract_bits
 
 const UIntN = UInt128
 const N = 8*sizeof(UIntN)
@@ -88,6 +100,8 @@ TinyRange(n::Integer) = TinyRange{n}()
 Base.first(r::TinyRange) = 1
 Base.last(r::TinyRange{n}) where {n} = n::Int
 
+# bit operations: deposit & extract
+
 function deposit_bits(mask::Integer, bits::Integer)
     s = 0
     r = zero(mask)
@@ -100,6 +114,39 @@ function deposit_bits(mask::Integer, bits::Integer)
     return r
 end
 
+function extract_bits(mask::Integer, bits::Integer)
+    a = s = 0
+    r = zero(mask)
+    while !iszero(mask)
+        s += t = trailing_zeros(mask) + 1
+        r |= ((bits >>> (s - 1)) & one(r)) << a
+        mask >>>= t
+        a += 1
+    end
+    return r
+end
+
+# make sure deposit & extract work correctly
+for mask = 0x0:0xff
+    bits₀ = UInt8(2^count_ones(mask)-1)
+    @assert deposit_bits(mask, 0xff) == mask
+    @assert extract_bits(mask, 0xff) == bits₀
+    @assert extract_bits(mask, mask) == bits₀
+    for bits₁ = 0x0:bits₀
+        bits₂ = deposit_bits(mask, bits₁)
+        @assert count_ones(bits₁) == count_ones(bits₂)
+        @assert mask & bits₂ == bits₂
+        @assert ~mask & bits₂ == 0
+        bits₃ = extract_bits(mask, bits₂)
+        @assert bits₃ == bits₁
+        bits₄ = bits₂ | (rand(typeof(bits₂)) & ~mask)
+        bits₅ = extract_bits(mask, bits₄)
+        @assert bits₅ == bits₁
+    end
+end
+
+# functions for generiting test data
+
 using ..Resolver: PkgData
 
 const f = false
@@ -107,40 +154,53 @@ const t = true
 
 Deps(m, n) = TinyDict{n*m, TinyDict{m, TinyVec, f}, f}
 Comp(m, n) = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec, t}, f}, f}
+Data(m, n) =
+    Dict{Int,typeof(PkgData(TinyRange(n), Deps(m,n)(0)[1], Comp(m,n)(0)[1]))}
+
+const 𝟘 = UIntN(0)
+const 𝟙 = UIntN(1)
+
+deps_bit(m, n, p, v, q) = p == q ? 𝟘 :
+    𝟙 << ((p-1)*n*m + (v-1)*m + (q-1))
+comp_bit(m, n, p, v, q, w) = p == q ? 𝟘 : isodd(p + q) ⊻ (p < q) ?
+    𝟙 << ((p-1)*n*m*n + (v-1)*m*n + (q-1)*n + (w-1)) :
+    𝟙 << ((q-1)*n*m*n + (w-1)*m*n + (p-1)*n + (v-1))
+
+deps_mask(m, n) = reduce(|, init=𝟘,
+    deps_bit(m, n, p, v, q) for p=1:m, v=1:n, q=1:m)
+comp_mask(m, n) = reduce(|, init=𝟘,
+    comp_bit(m, n, p, v, q, w) for p=1:m, v=1:n, q=1:m, w=1:n)
 
 function tiny_data_makers(m::Int, n::Int)
     (m*n)^2 ≤ 128 || throw(ArgumentError("m=$m and n=$n are too big"))
 
-    𝟘 = UIntN(0)
-    𝟙 = UIntN(1)
-
-    bit(p, v, q) = p == q ? 𝟘 : 𝟙 << ((p-1)*n*m + (v-1)*m + (q-1))
-    bit(p, v, q, w) = p == q ? 𝟘 : isodd(p + q) ⊻ (p < q) ?
-        𝟙 << ((p-1)*n*m*n + (v-1)*m*n + (q-1)*n + (w-1)) :
-        𝟙 << ((q-1)*n*m*n + (w-1)*m*n + (p-1)*n + (v-1))
-
-    d_mask = reduce(|, init=𝟘, bit(p, v, q) for p=1:m, v=1:n, q=1:m)
-    c_mask = reduce(|, init=𝟘, bit(p, v, q, w) for p=1:m, v=1:n, q=1:m, w=1:n)
+    d_mask = deps_mask(m, n)
+    c_mask = comp_mask(m, n)
 
     d = count_ones(d_mask)
     c = count_ones(c_mask)
 
+    data = Data(m, n)()
+
+    bit(p, v, q)    = deps_bit(m, n, p, v, q)
+    bit(p, v, q, w) = comp_bit(m, n, p, v, q, w)
+
     make_deps(b) = deposit_bits(d_mask, b) |> Deps(m, n)
     make_comp(b) = deposit_bits(c_mask, b) |> Comp(m, n)
 
-    PkgD = typeof(PkgData(TinyRange(n), Deps(m,n)(0)[1], Comp(m,n)(0)[1]))
-    data = Dict{Int,PkgD}()
-
-    return d, c, data, make_deps, make_comp, bit
+    return make_deps, make_comp, data, d, c, bit
 end
 
 make_reqs(b) = TinyVec(b)
 
-function fill_data!(m, n, data, deps, comp)
+function fill_data!(m, n, deps, comp, data)
     for i = 1:m
         data[i] = PkgData(TinyRange(n), deps[i], comp[i])
     end
+    return data
 end
+
+make_data(m, n, deps, comp) = fill_data!(m, n, deps, comp, Data(m, n)())
 
 # methods for generating bit patterns
 
@@ -177,6 +237,44 @@ function Base.iterate(
     d = b.k - count_ones(s)
     s += one(T) << d - one(T)
     return s, s
+end
+
+# some interesting example cases
+
+const examples = []
+let
+    m, n = 3, 3
+    make_deps, make_comp, data = tiny_data_makers(m, n)
+    push!(examples, (
+        data = make_data(m, n, make_deps(64), make_comp(8165305)),
+        reqs = [1, 2, 3],
+    ))
+    m, n = 5, 2
+    make_deps, make_comp, data = tiny_data_makers(m, n)
+    push!(examples, (
+        data = make_data(m, n, make_deps(524288), make_comp(85916123396)),
+        reqs = [1, 2, 3, 4],
+    ))
+    push!(examples, (
+        data = make_data(m, n, make_deps(9), make_comp(4362076160)),
+        reqs = [1, 3, 4],
+    ))
+    push!(examples, (
+        data = make_data(m, n, make_deps(17179869696), make_comp(17179869440)),
+        reqs = [1, 2, 4, 5],
+    ))
+    push!(examples, (
+        data = make_data(m, n, make_deps(8589934593), make_comp(842351773701)),
+        reqs = [1, 3, 4, 5],
+    ))
+    push!(examples, (
+        data = make_data(m, n, make_deps(2148009984), make_comp(5393925603)),
+        reqs = [1, 2, 3, 4],
+    ))
+    push!(examples, (
+        data = make_data(m, n, make_deps(2148009984), make_comp(5393991139)),
+        reqs = [1, 2, 3, 4],
+    ))
 end
 
 end # module

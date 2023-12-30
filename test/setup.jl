@@ -5,11 +5,18 @@ using Test
 @isdefined(includet) ? includet("tiny_data.jl") : include("tiny_data.jl")
 @isdefined(includet) ? includet("registry.jl")  : include("registry.jl")
 
+module TestResolver
+
+using Resolver: resolve, DepsProvider, PkgData, PkgInfo, pkg_data, pkg_info
+using Test
+
+export test_resolver
+
 function test_resolver(
     deps :: DepsProvider{P},
     reqs :: AbstractVector{P},
 ) where {P}
-    data = Resolver.pkg_data(deps, reqs)
+    data = pkg_data(deps, reqs)
     test_resolver(data, reqs)
 end
 
@@ -76,7 +83,7 @@ function test_resolver(
         # @info "optimality testing full data"
         info = data # type unstable but 🤷
     else
-        info = Resolver.pkg_info(data, reqs)
+        info = pkg_info(data, reqs)
         Π = prod(float(length(ip.versions)+1) for ip in values(info))
         if Π > Π⁺
             # @info "no optimality testing"
@@ -275,5 +282,6 @@ function each_potential_solution(
     gen_solutions!()
 end
 
-# helpers
+end # module
 
+using .TestResolver

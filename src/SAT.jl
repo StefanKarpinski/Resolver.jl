@@ -25,7 +25,7 @@ function SAT(
     #   p    vars[p]    package p chosen
     #   p@i  vars[p]+i  version i of p chosen
     N = 1
-    vars = Dict{P, Int}()
+    vars = Dict{P,Int}()
     for p in names
         vars[p] = N
         n_p = length(info[p].versions)

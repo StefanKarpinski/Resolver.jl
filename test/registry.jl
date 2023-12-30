@@ -7,8 +7,11 @@ import Pkg.Registry: RegistryInstance, init_package_info!
 import Pkg.Types: stdlibs
 import Pkg.Versions: VersionSpec
 
-const REG_PATH = joinpath(depots1(), "registries", "General.toml")
 const EXCLUDES = push!(Set(first.(values(stdlibs()))), "julia")
+const REG_PATH =
+    let p = joinpath(depots1(), "registries", "General.toml")
+        isfile(p) ? p : splitext(p)[1]
+    end
 
 function provider(
     reg_path :: AbstractString = REG_PATH;

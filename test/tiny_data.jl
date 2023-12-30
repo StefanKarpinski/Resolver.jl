@@ -18,6 +18,9 @@ export
 const UIntN = UInt128
 const N = 8*sizeof(UIntN)
 
+const 𝟘 = UIntN(0)
+const 𝟙 = UIntN(1)
+
 struct TinyDict{b,T,x} <: AbstractDict{Int,T}
     bits :: UIntN
 end
@@ -33,10 +36,10 @@ end
 # TinyDict
 
 getbits(d::TinyDict{b}, k::Int) where {b} =
-    (d.bits >> (b*(k-1))) & ((1 << b) - 1)
+    (d.bits >> (b*(k-1))) & ((𝟙 << b) - 1)
 
 val(d::TinyDict{b,T,x}, v::UIntN) where {b,T,x} =
-    T(x ? ((1 << b) - 1) ⊻ v : v)
+    T(x ? ((𝟙 << b) - 1) ⊻ v : v)
 
 Base.haskey(d::TinyDict{b,T}, k::Int) where {b,T} =
     getbits(d, k) ≠ 0
@@ -126,7 +129,7 @@ function extract_bits(mask::Integer, bits::Integer)
     return r
 end
 
-# make sure deposit & extract work correctly
+# tests: make sure deposit & extract work correctly
 for mask = 0x0:0xff
     bits₀ = UInt8(2^count_ones(mask)-1)
     @assert deposit_bits(mask, 0xff) == mask
@@ -156,9 +159,6 @@ Deps(m, n) = TinyDict{n*m, TinyDict{m, TinyVec, f}, f}
 Comp(m, n) = TinyDict{n*m*n, TinyDict{m*n, TinyDict{n, TinyVec, t}, f}, f}
 Data(m, n) =
     Dict{Int,typeof(PkgData(TinyRange(n), Deps(m,n)(0)[1], Comp(m,n)(0)[1]))}
-
-const 𝟘 = UIntN(0)
-const 𝟙 = UIntN(1)
 
 deps_bit(m, n, p, v, q) = p == q ? 𝟘 :
     𝟙 << ((p-1)*n*m + (v-1)*m + (q-1))
@@ -204,7 +204,7 @@ make_data(m, n, deps, comp) = fill_data!(m, n, deps, comp, Data(m, n)())
 
 # methods for generating bit patterns
 
-randbits(b::Int) = rand(UIntN) & ((1 << b) - 1)
+randbits(b::Int) = rand(UIntN) & ((𝟙 << b) - 1)
 
 struct BinomialBits{T<:Base.BitInteger}
     n :: T

@@ -1,6 +1,6 @@
 module PicoSAT
 
-using PicoSAT_jll
+using libpicosat_jll
 
 const lib = libpicosat
 
@@ -40,4 +40,4 @@ function print(p::Ptr{Cvoid}, path::AbstractString)
     @assert ccall(:fclose, Cint, (Ptr{Cvoid},), f) == 0
 end
 
-end
+end # module

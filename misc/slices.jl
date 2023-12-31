@@ -36,25 +36,40 @@ sort!(packages, by = p -> get(addrs, p, 0), rev = true)
 
 # solve SAT problems
 
-using Printf
+(P, V) = (String, VersionNumber)
+
+using Resolver:
+    sat_assume,
+    sat_add,
+    is_satisfiable,
+    extract_solution!,
+    optimize_solution!
 
 sat = Resolver.SAT(info)
 @assert Resolver.is_satisfiable(sat)
 @assert !Resolver.is_satisfiable(sat, keys(info))
 
-reqs = Set{String}()
-for (i, p) in enumerate(packages)
-    p in reqs && continue
-    @printf("%i %0.4f %s\n", length(reqs), i/length(packages), p)
-    push!(reqs, p)
-    pkgs, vers = resolve(sat, reqs; max=1)
-    if isempty(vers)
-        delete!(reqs, p)
-        continue
+sol = Dict{P,Int}()
+for (k, p) in enumerate(packages)
+    sat_assume(sat, p)
+    is_satisfiable(sat) || continue
+
+    println("$k $(length(sol)) $p")
+
+    sat_add(sat, p)
+    sat_add(sat)
+    extract_solution!(sat, sol)
+
+    # optimize p's version
+    optimize_solution!(sat, sol) do
+        # check if some strictly better version exists
+        for i = 1:sol[p]-1
+            sat_add(sat, p, i)
+        end
+        sat_add(sat)
     end
-    vers = vers[:,1]
-    Resolver.fix_versions(sat, pkgs, vers)
-    for (p, v) in zip(pkgs, vers)
-        v !== nothing && push!(reqs, p)
-    end
+
+    # fix p's version
+    sat_add(sat, p, sol[p])
+    sat_add(sat)
 end

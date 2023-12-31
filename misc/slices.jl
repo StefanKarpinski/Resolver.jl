@@ -62,7 +62,7 @@ end
 # order packages by download address count
 
 packages = sort!(collect(keys(best)))
-sort!(packages, by = p -> get(addrs, p, 0), rev = true)
+sort!(packages, by = p -> -get(addrs, p, 0))
 
 # compute package slices
 
@@ -107,5 +107,6 @@ while true
     isempty(todo) && break
 
     # next time prioritize not-yet-optimized packages
+    sort!(packages, by = p -> -get(addrs, p, 0))
     sort!(packages, by = !in(todo))
 end

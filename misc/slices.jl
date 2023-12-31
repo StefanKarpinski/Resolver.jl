@@ -29,47 +29,83 @@ include("test/registry.jl")
 rp = registry.provider()
 info = Resolver.pkg_info(rp)
 
-# order packages by download address count
-
-packages = sort!(collect(keys(info)))
-sort!(packages, by = p -> get(addrs, p, 0), rev = true)
-
-# solve SAT problems
-
-(P, V) = (String, VersionNumber)
+# construct SAT problem
 
 using Resolver:
     sat_assume,
     sat_add,
     is_satisfiable,
     extract_solution!,
-    optimize_solution!
+    optimize_solution!,
+    with_temp_clauses
 
 sat = Resolver.SAT(info)
-@assert Resolver.is_satisfiable(sat)
-@assert !Resolver.is_satisfiable(sat, keys(info))
+@assert is_satisfiable(sat)
+@assert !is_satisfiable(sat, keys(info))
 
-sol = Dict{P,Int}()
-for (k, p) in enumerate(packages)
-    sat_assume(sat, p)
-    is_satisfiable(sat) || continue
+# type parameters
+(P, V) = (String, VersionNumber)
 
-    println("$k $(length(sol)) $p")
-
-    sat_add(sat, p)
-    sat_add(sat)
-    extract_solution!(sat, sol)
-
-    # optimize p's version
-    optimize_solution!(sat, sol) do
-        # check if some strictly better version exists
-        for i = 1:sol[p]-1
-            sat_add(sat, p, i)
+# find best installable version of each package
+best = Dict{P,Int}()
+for p in keys(sat.info)
+    @show p
+    for i = 1:length(sat.info[p].versions)
+        sat_assume(sat, p, i)
+        if is_satisfiable(sat)
+            best[p] = i
+            break
         end
-        sat_add(sat)
     end
+end
 
-    # fix p's version
-    sat_add(sat, p, sol[p])
-    sat_add(sat)
+# order packages by download address count
+
+packages = sort!(collect(keys(best)))
+sort!(packages, by = p -> get(addrs, p, 0), rev = true)
+
+# compute package slices
+
+todo = Set(packages[1:end÷4])
+sols = Dict{P,Int}[]
+sol = Dict{P,Int}()
+while true
+    @show length(todo)
+
+    # compute an optimized solution
+    with_temp_clauses(sat) do
+        for (k, p) in enumerate(packages)
+            sat_assume(sat, p)
+            is_satisfiable(sat) || continue
+            println("$k $(length(sol)) $p")
+
+            # require some version of p
+            sat_add(sat, p)
+            sat_add(sat)
+            extract_solution!(sat, sol)
+
+            # optimize p's version
+            optimize_solution!(sat, sol) do
+                # check if some strictly better version exists
+                for i = 1:sol[p]-1
+                    sat_add(sat, p, i)
+                end
+                sat_add(sat)
+            end
+
+            # fix p's version
+            sat_add(sat, p, sol[p])
+            sat_add(sat)
+        end
+    end
+    push!(sols, copy(sol))
+
+    # delete fully optimized packages from todo set
+    for (p, i) in sol
+        i ≤ best[p] && delete!(todo, p)
+    end
+    isempty(todo) && break
+
+    # next time prioritize not-yet-optimized packages
+    sort!(packages, by = !in(todo))
 end

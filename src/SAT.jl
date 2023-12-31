@@ -116,15 +116,15 @@ sat_add(sat::SAT) = PicoSAT.add(sat.pico, 0)
 sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
     PicoSAT.add(sat.pico, sat.vars[p] + i)
 
-sat_assume(sat::SAT{P}, p::P) where {P} =
-    PicoSAT.assume(sat.pico, sat.vars[p])
+sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
+    PicoSAT.assume(sat.pico, sat.vars[p] + i)
 sat_assume(sat::SAT{P}, px::SetOrVec{P}) where {P} =
     foreach(p -> sat_assume(sat, p), px)
 
 is_satisfiable(sat::SAT) =
     PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
 
-function is_satisfiable(sat::SAT{P}, reqs::SetOrVec{P}) where {P}
+function is_satisfiable(sat::SAT{P}, reqs::Union{P,SetOrVec{P}}) where {P}
     sat_assume(sat, reqs)
     is_satisfiable(sat)
 end

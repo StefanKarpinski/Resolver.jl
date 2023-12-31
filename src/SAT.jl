@@ -187,6 +187,24 @@ function optimize_solution!(
     end
 end
 
+# fix a given set of versions
+
+function fix_versions(
+    sat  :: SAT{P,V},
+    pkgs :: AbstractVector{P},
+    vers :: AbstractVector{Union{Nothing,V}},
+) where {P,V}
+    for (p, v) in zip(pkgs, vers)
+        v === nothing && continue
+        i = findfirst(==(v), sat.info[p].versions)
+        i === nothing && throw(ArgumentError("package $p: unknown version $v"))
+        sat_add(sat, p, i)
+        sat_add(sat)
+    end
+end
+
+# extra SAT exploration functions
+
 function sat_mus(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info),

@@ -67,14 +67,12 @@ end
 # compute package slices
 
 packages = sort!(collect(keys(best)))
+sort!(packages, by = p -> -get(addrs, p, 0))
+
 todo = Set(packages[1:1024])
 sols = Dict{P,Int}[]
 sol = Dict{P,Int}()
-while !isempty(todo)
-    # prioritize not-yet-optimized packages
-    sort!(packages, by = p -> -get(addrs, p, 0))
-    sort!(packages, by = !in(todo))
-
+while true
     # compute an optimized solution
     with_temp_clauses(sat) do
         prog = Progress(length(packages),
@@ -114,4 +112,8 @@ while !isempty(todo)
     for (p, i) in sol
         i ≤ best[p] && delete!(todo, p)
     end
+    isempty(todo) && break
+
+    # prioritize not-yet-optimized packages
+    sort!(packages, by = !in(todo))
 end

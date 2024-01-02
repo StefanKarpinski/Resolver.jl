@@ -1,6 +1,7 @@
 using CSV
 using DataFrames
 using Downloads
+using ProgressMeter
 using Resolver
 
 # load package uuid => name map from registry
@@ -25,7 +26,7 @@ addrs = Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
 
 # load resolution problem
 
-include("test/registry.jl")
+include("../test/registry.jl")
 rp = registry.provider()
 info = Resolver.pkg_info(rp)
 
@@ -48,36 +49,39 @@ sat = Resolver.SAT(info)
 
 # find best installable version of each package
 best = Dict{P,Int}()
-for p in keys(sat.info)
-    @show p
-    for i = 1:length(sat.info[p].versions)
-        sat_assume(sat, p, i)
-        if is_satisfiable(sat)
-            best[p] = i
-            break
+let prog = Progress(length(sat.info), desc="Best")
+    for p in keys(sat.info)
+        for i = 1:length(sat.info[p].versions)
+            sat_assume(sat, p, i)
+            if is_satisfiable(sat)
+                best[p] = i
+                break
+            end
         end
+        next!(prog; showvalues = [
+            ("package", p),
+        ])
     end
 end
 
-# order packages by download address count
-
-packages = sort!(collect(keys(best)))
-sort!(packages, by = p -> -get(addrs, p, 0))
-
 # compute package slices
 
-todo = Set(packages[1:end÷4])
+packages = sort!(collect(keys(best)))
+todo = Set(packages[1:1024])
 sols = Dict{P,Int}[]
 sol = Dict{P,Int}()
-while true
-    @show length(todo)
+while !isempty(todo)
+    # prioritize not-yet-optimized packages
+    sort!(packages, by = p -> -get(addrs, p, 0))
+    sort!(packages, by = !in(todo))
 
     # compute an optimized solution
     with_temp_clauses(sat) do
+        prog = Progress(length(packages),
+            desc = "Slice $(length(sols)+1) ($(length(todo)) todos)")
         for (k, p) in enumerate(packages)
             sat_assume(sat, p)
             is_satisfiable(sat) || continue
-            println("$k $(length(sol)) $p")
 
             # require some version of p
             sat_add(sat, p)
@@ -96,6 +100,12 @@ while true
             # fix p's version
             sat_add(sat, p, sol[p])
             sat_add(sat)
+
+            # update progress
+            update!(prog, k; showvalues = [
+                ("package", p),
+                ("solution", length(sol)),
+            ])
         end
     end
     push!(sols, copy(sol))
@@ -104,9 +114,4 @@ while true
     for (p, i) in sol
         i ≤ best[p] && delete!(todo, p)
     end
-    isempty(todo) && break
-
-    # next time prioritize not-yet-optimized packages
-    sort!(packages, by = p -> -get(addrs, p, 0))
-    sort!(packages, by = !in(todo))
 end

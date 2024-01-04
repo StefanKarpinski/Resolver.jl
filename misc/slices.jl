@@ -115,5 +115,6 @@ while true
     isempty(todo) && break
 
     # prioritize not-yet-optimized packages
+    sort!(packages, by = p -> -get(addrs, p, 0))
     sort!(packages, by = !in(todo))
 end

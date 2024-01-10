@@ -77,7 +77,7 @@ while true
     slice = length(sols) + 1
     # compute an optimized solution
     with_temp_clauses(sat) do
-        prog = Progress(desc="Slice $slice", length(packages))
+        prog = Progress(desc="Slice $slice: coverage", length(packages))
         for (k, p) in enumerate(packages)
             sat_assume(sat, p)
             is_satisfiable(sat) || continue
@@ -85,7 +85,17 @@ while true
             # require some version of p
             sat_add(sat, p)
             sat_add(sat)
+
+            # update progress
             extract_solution!(sat, sol)
+            update!(prog, k; showvalues = [
+                ("package", p),
+                ("solution", length(sol)),
+            ])
+        end
+        prog = Progress(desc="Slice $slice: optimize", length(packages))
+        for (k, p) in enumerate(packages)
+            p in keys(sol) || continue
 
             # optimize p's version
             optimize_solution!(sat, sol) do

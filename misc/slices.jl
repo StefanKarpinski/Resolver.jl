@@ -118,3 +118,40 @@ while true
     sort!(packages, by = p -> -get(addrs, p, 0))
     sort!(packages, by = !in(todo))
 end
+
+nodes = Dict{Pair{String,Int},Int}()
+let j = 0
+    for sol in sols, (p, i) in sol
+        haskey(nodes, p => i) && continue
+        nodes[p => i] = j += 1
+    end
+end
+
+using Graphs
+G = SimpleGraph(length(nodes))
+for sol in sols, (p, i) in sol, (q, j) in sol
+    p < q || continue
+    add_edge!(G, nodes[p => i], nodes[q => j])
+end
+
+function is_cograph(G::Graph)
+    if length(vertices(G)) <= 1
+        return true
+    end
+    if !is_connected(G)
+        for V in connected_components(G)
+            is_cograph(complement(G[V])) || return false
+        end
+        return true
+    end
+    Ḡ = complement(G)
+    if !is_connected(Ḡ)
+        for V in connected_components(Ḡ)
+            is_cograph(G[V]) || return false
+        end
+        return true
+    end
+    return false
+end
+
+is_cograph(G)

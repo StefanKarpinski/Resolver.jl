@@ -79,6 +79,7 @@ while true
     with_temp_clauses(sat) do
         prog = Progress(desc="Slice $slice", length(packages))
         for (k, p) in enumerate(packages)
+            # check if p is feasible
             sat_assume(sat, p)
             is_satisfiable(sat) || continue
 
@@ -100,19 +101,19 @@ while true
             sat_add(sat, p, sol[p])
             sat_add(sat)
 
+            sol[p] ≤ best[p] && delete!(todo, p)
+
             # update progress
             update!(prog, k; showvalues = [
                 ("package", p),
                 ("solution", length(sol)),
+                ("todos", length(todo)),
             ])
         end
     end
     push!(sols, copy(sol))
 
-    # delete fully optimized packages from todo set
-    for (p, i) in sol
-        i ≤ best[p] && delete!(todo, p)
-    end
+    # check if we're done
     isempty(todo) && break
 
     # prioritize not-yet-optimized packages
@@ -120,6 +121,7 @@ while true
     sort!(packages, by = !in(todo))
 end
 
+#=
 nodes = Dict{Pair{String,Int},Int}()
 let j = 0
     for sol in sols, (p, i) in sol
@@ -156,3 +158,4 @@ function is_cograph(G::Graph)
 end
 
 is_cograph(G)
+=#

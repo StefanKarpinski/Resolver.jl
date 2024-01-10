@@ -17,8 +17,9 @@ names = Dict(string(p.uuid) => p.name for p in values(reg_inst.pkgs))
 
 # download package download stats
 
+file = "tmp/package_requests.csv.gz"
 url = "https://julialang-logs.s3.amazonaws.com/public_outputs/current/package_requests.csv.gz"
-file = Downloads.download(url)
+isfile(file) || Downloads.download(url, file)
 df = CSV.read(`gzcat $file`, DataFrame)
 filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
 @assert allunique(df.package_uuid)
@@ -49,7 +50,7 @@ sat = Resolver.SAT(info)
 
 # find best installable version of each package
 best = Dict{P,Int}()
-let prog = Progress(length(sat.info), desc="Best")
+let prog = Progress(length(sat.info), desc="Best versions")
     for p in keys(sat.info)
         for i = 1:length(sat.info[p].versions)
             sat_assume(sat, p, i)
@@ -73,10 +74,10 @@ todo = Set(packages[1:1024])
 sols = Dict{P,Int}[]
 sol = Dict{P,Int}()
 while true
+    slice = length(sols) + 1
     # compute an optimized solution
     with_temp_clauses(sat) do
-        prog = Progress(length(packages),
-            desc = "Slice $(length(sols)+1) ($(length(todo)) todos)")
+        prog = Progress(desc="Slice $slice", length(packages))
         for (k, p) in enumerate(packages)
             sat_assume(sat, p)
             is_satisfiable(sat) || continue

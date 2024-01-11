@@ -122,6 +122,22 @@ while true
 end
 
 #=
+# only use versions from sols after this
+for p in packages
+    vers = Int[]
+    for sol in sols
+        i = get(sol, p, nothing)
+        i isa Int || continue
+        i in vers && continue
+        push!(vers, i)
+    end
+    sort!(vers)
+    for i in vers
+        sat_add(sat, p, i)
+    end
+    sat_add(sat)
+end
+
 if !@isdefined(common)
     common = Dict(reduce(∩, sols))
 end
@@ -136,6 +152,46 @@ for sol in sols, (p, i) in sol
 end
 rnodes = Dict(map(reverse, enumerate(nodes)))
 
+n = length(nodes)
+G = BitMatrix(undef, n, n)
+fill!(G, false)
+for sol in sols, (p, i) in sol, (q, j) in sol
+    G[rnodes[p => i], rnodes[q => j]] = true
+end
+
+using GraphModularDecomposition
+T = StrongModuleTree(G)
+
+# fill in all possible edges
+let prog = Progress(desc="Pairs", size(G,1)),
+    sol = Dict{String,Int}()
+    for k = 1:size(G,1)
+        p, i = nodes[k]
+        with_temp_clauses(sat) do
+            sat_add(sat, p, i)
+            sat_add(sat)
+            for l = k+1:size(G,2)
+                G[k, l] && continue
+                q, j = nodes[l]
+                sat_assume(sat, q, j)
+                is_satisfiable(sat) || continue
+                extract_solution!(sat, sol)
+                for (p′, i′) in sol
+                    k′ = rnodes[p′ => i′]
+                    for (q′, i′) in sol
+                        p′ < q′ || continue
+                        l′ = rnodes[q′ => j′]
+                        G[k′, l′] = G[l′, k′] = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+=#
+
+#=
 using Graphs
 G = SimpleGraph(length(nodes))
 for sol in sols, (p, i) in sol, (q, j) in sol
@@ -164,17 +220,4 @@ function is_cograph(G::Graph)
 end
 
 is_cograph(G)
-
-# matrix instead of graph
-
-n = length(nodes)
-G = BitMatrix(undef, n, n)
-fill!(G, false)
-for sol in sols, (p, i) in sol, (q, j) in sol
-    G[rnodes[p => i], rnodes[q => j]] = true
-end
-
-using GraphModularDecomposition
-T = StrongModuleTree(G)
-
 =#

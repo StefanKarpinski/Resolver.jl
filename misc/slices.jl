@@ -122,19 +122,25 @@ while true
 end
 
 #=
-nodes = Dict{Pair{String,Int},Int}()
-let j = 0
-    for sol in sols, (p, i) in sol
-        haskey(nodes, p => i) && continue
-        nodes[p => i] = j += 1
-    end
+if !@isdefined(common)
+    common = Dict(reduce(∩, sols))
 end
+for sol in sols, p in keys(common)
+    delete!(sol, p)
+end
+
+nodes = Pair{String,Int}[]
+for sol in sols, (p, i) in sol
+    (p => i) in nodes && continue
+    push!(nodes, p => i)
+end
+rnodes = Dict(map(reverse, enumerate(nodes)))
 
 using Graphs
 G = SimpleGraph(length(nodes))
 for sol in sols, (p, i) in sol, (q, j) in sol
     p < q || continue
-    add_edge!(G, nodes[p => i], nodes[q => j])
+    add_edge!(G, rnodes[p => i], rnodes[q => j])
 end
 
 function is_cograph(G::Graph)
@@ -158,4 +164,17 @@ function is_cograph(G::Graph)
 end
 
 is_cograph(G)
+
+# matrix instead of graph
+
+n = length(nodes)
+G = BitMatrix(undef, n, n)
+fill!(G, false)
+for sol in sols, (p, i) in sol, (q, j) in sol
+    G[rnodes[p => i], rnodes[q => j]] = true
+end
+
+using GraphModularDecomposition
+T = StrongModuleTree(G)
+
 =#

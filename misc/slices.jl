@@ -23,7 +23,8 @@ isfile(file) || Downloads.download(url, file)
 df = CSV.read(`gzcat $file`, DataFrame)
 filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
 @assert allunique(df.package_uuid)
-addrs = Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
+const addrs = Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
+popularity(p) = -get(addrs, p, 0)
 
 # load resolution problem
 
@@ -67,18 +68,45 @@ end
 
 # compute package slices
 
-packages = sort!(collect(keys(best)))
-sort!(packages, by = p -> -get(addrs, p, 0))
+const packages = sort!(collect(keys(best)), by = popularity)
+const todo = Set(packages[1:1024])
+const sols = Dict{P,Int}[]
+const sol = Dict{P,Int}()
 
-todo = Set(packages[1:1024])
-sols = Dict{P,Int}[]
-sol = Dict{P,Int}()
-while true
+while !isempty(todo)
+    # generate the next slice
     slice = length(sols) + 1
-    # compute an optimized solution
+    prog = Progress(desc="Slice $slice", 2*length(packages))
     with_temp_clauses(sat) do
-        prog = Progress(desc="Slice $slice", length(packages))
-        for (k, p) in enumerate(packages)
+        # satisfy as many todos as possible
+        for p in sort!(packages, by = !in(todo))
+            # update progress
+            next!(prog; showvalues = [
+                ("package", p),
+                ("todos", length(todo)),
+            ])
+
+            # check if p@i is feasible
+            i = best[p]
+            sat_assume(sat, p, i)
+            is_satisfiable(sat) || continue
+
+            # require p@i
+            sat_add(sat, p, i)
+            sat_add(sat)
+
+            # delete from todos
+            delete!(todo, p)
+        end
+        # optimize remaining versions
+        for p in sort!(packages, by = popularity)
+            # update progress
+            next!(prog; showvalues = [
+                ("package", p),
+                ("todos", length(todo)),
+                ("solution", length(sol)),
+            ])
+
             # check if p is feasible
             sat_assume(sat, p)
             is_satisfiable(sat) || continue
@@ -89,6 +117,7 @@ while true
             extract_solution!(sat, sol)
 
             # optimize p's version
+            best[p] < sol[p] &&
             optimize_solution!(sat, sol) do
                 # check if some strictly better version exists
                 for i = 1:sol[p]-1
@@ -100,43 +129,27 @@ while true
             # fix p's version
             sat_add(sat, p, sol[p])
             sat_add(sat)
-
-            sol[p] ≤ best[p] && delete!(todo, p)
-
-            # update progress
-            update!(prog, k; showvalues = [
-                ("package", p),
-                ("solution", length(sol)),
-                ("todos", length(todo)),
-            ])
         end
     end
     push!(sols, copy(sol))
-
-    # check if we're done
-    isempty(todo) && break
-
-    # prioritize not-yet-optimized packages
-    sort!(packages, by = p -> -get(addrs, p, 0))
-    sort!(packages, by = !in(todo))
 end
 
 #=
-# only use versions from sols after this
-for p in packages
-    vers = Int[]
-    for sol in sols
-        i = get(sol, p, nothing)
-        i isa Int || continue
-        i in vers && continue
-        push!(vers, i)
-    end
-    sort!(vers)
-    for i in vers
-        sat_add(sat, p, i)
-    end
-    sat_add(sat)
-end
+# # only use versions from sols after this
+# for p in packages
+#     vers = Int[]
+#     for sol in sols
+#         i = get(sol, p, nothing)
+#         i isa Int || continue
+#         i in vers && continue
+#         push!(vers, i)
+#     end
+#     sort!(vers)
+#     for i in vers
+#         sat_add(sat, p, i)
+#     end
+#     sat_add(sat)
+# end
 
 if !@isdefined(common)
     common = Dict(reduce(∩, sols))
@@ -160,7 +173,7 @@ for sol in sols, (p, i) in sol, (q, j) in sol
 end
 
 using GraphModularDecomposition
-T = StrongModuleTree(G)
+T = sort!(StrongModuleTree(G))
 
 # fill in all possible edges
 let prog = Progress(desc="Pairs", size(G,1)),

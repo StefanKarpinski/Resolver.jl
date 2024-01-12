@@ -69,7 +69,7 @@ end
 # compute package slices
 
 const packages = sort!(collect(keys(best)), by = popularity)
-const todo = Set(packages[1:1024])
+const todo = Set(packages)
 const sols = Dict{P,Int}[]
 const sol = Dict{P,Int}()
 

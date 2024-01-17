@@ -50,9 +50,12 @@ sat = Resolver.SAT(info)
 (P, V) = (String, VersionNumber)
 
 # find best installable version of each package
-best = Dict{P,Int}()
-let prog = Progress(length(sat.info), desc="Best versions")
+const best = Dict{P,Int}()
+let prog = Progress(desc="Best versions", length(sat.info))
     for p in keys(sat.info)
+        next!(prog; showvalues = [
+            ("package", p),
+        ])
         for i = 1:length(sat.info[p].versions)
             sat_assume(sat, p, i)
             if is_satisfiable(sat)
@@ -60,78 +63,85 @@ let prog = Progress(length(sat.info), desc="Best versions")
                 break
             end
         end
-        next!(prog; showvalues = [
-            ("package", p),
-        ])
+    end
+end
+
+# installable packages, sorted by popularity
+
+const packages = sort!(collect(keys(best)))
+sort!(packages, by = popularity)
+
+# pairwise compatibility of best versions
+
+const N = length(best)
+const X = falses(N, N)
+
+for (k, p) in enumerate(packages)
+    i = best[p]
+    info_p = sat.info[p]
+    for (q, b) in info_p.interacts
+        j = get(best, q, 0)
+        j == 0 && continue
+        info_p.conflicts[i, b+j] || continue
+        l = findfirst(==(q), packages)
+        X[k, l] = true
     end
 end
 
 # compute package slices
 
-const packages = sort!(collect(keys(best)), by = popularity)
-const todo = Set(packages)
-const sols = Dict{P,Int}[]
-const sol = Dict{P,Int}()
+const sats = typeof(sat)[]
+const slices = Dict{P,Int}[]
+const conflicts = Vector{Int}[]
 
-while !isempty(todo)
-    # generate the next slice
-    slice = length(sols) + 1
-    prog = Progress(desc="Slice $slice", 2*length(packages))
-    with_temp_clauses(sat) do
-        # satisfy as many todos as possible
-        for p in sort!(packages, by = !in(todo))
-            # update progress
-            next!(prog; showvalues = [
-                ("package", p),
-                ("todos", length(todo)),
-            ])
-
-            # check if p@i is feasible
-            i = best[p]
-            sat_assume(sat, p, i)
-            is_satisfiable(sat) || continue
-
-            # require p@i
-            sat_add(sat, p, i)
-            sat_add(sat)
-
-            # delete from todos
-            delete!(todo, p)
-        end
-        # optimize remaining versions
-        for p in sort!(packages, by = popularity)
-            # update progress
-            next!(prog; showvalues = [
-                ("package", p),
-                ("todos", length(todo)),
-                ("solution", length(sol)),
-            ])
-
-            # check if p is feasible
-            sat_assume(sat, p)
-            is_satisfiable(sat) || continue
-
-            # require some version of p
-            sat_add(sat, p)
-            sat_add(sat)
-            extract_solution!(sat, sol)
-
-            # optimize p's version
-            best[p] < sol[p] &&
-            optimize_solution!(sat, sol) do
-                # check if some strictly better version exists
-                for i = 1:sol[p]-1
-                    sat_add(sat, p, i)
-                end
-                sat_add(sat)
-            end
-
-            # fix p's version
-            sat_add(sat, p, sol[p])
-            sat_add(sat)
-        end
+prog = Progress(desc="Slices", N)
+for i = 1:N # (1, 5093, 2, 3)
+    p = packages[i]
+    # update progress
+    showvalues = [("package", p), ("index", i)]
+    for s = 1:length(slices)
+        push!(showvalues, ("slice $s", length(slices[s])))
     end
-    push!(sols, copy(sol))
+    next!(prog; showvalues)
+    # actual slice computation
+    best_p = best[p]
+    candidates = Int[]
+    for (s, sat) in enumerate(sats)
+        sat_assume(sat, p, best_p)
+        is_satisfiable(sat) && push!(candidates, s)
+    end
+    if isempty(candidates) # add to new slice
+        push!(sats, Resolver.SAT(info))
+        push!(slices, Dict{P,Int}())
+        push!(conflicts, fill(0, N))
+        push!(candidates, length(sats))
+    end
+    @assert length(candidates) > 0
+    if length(candidates) == 1
+        s = only(candidates)
+    else # multiple candidate slices
+        # pick the slice that leaves as many optimal versions of the
+        # remaining packages compatible with some existing slice
+        best_s = best_c = -1
+        best_z = maximum(length, slices) + 1
+        for s in candidates
+            conflicts[s] .+= X[:, i]
+            c = sum(any(C[j] == 0 for C in conflicts) for j=i+1:N)
+            conflicts[s] .-= X[:, i]
+            z = length(slices[s])
+            if c > best_c || c == best_c && z < best_z
+                best_s = s
+                best_c = c
+                best_z = z
+            end
+        end
+        s = best_s
+    end
+    # add to chosen slice
+    sat_add(sats[s], p, best_p)
+    sat_add(sats[s])
+    slices[s][p] = best_p
+    conflicts[s] .+= X[:, i]
 end
 
 #=
@@ -158,7 +168,7 @@ for sol in sols, p in keys(common)
     delete!(sol, p)
 end
 
-nodes = Pair{String,Int}[]
+nodes = Pair{P,Int}[]
 for sol in sols, (p, i) in sol
     (p => i) in nodes && continue
     push!(nodes, p => i)
@@ -177,7 +187,7 @@ T = sort!(StrongModuleTree(G))
 
 # fill in all possible edges
 let prog = Progress(desc="Pairs", size(G,1)),
-    sol = Dict{String,Int}()
+    sol = Dict{P,Int}()
     for k = 1:size(G,1)
         p, i = nodes[k]
         with_temp_clauses(sat) do

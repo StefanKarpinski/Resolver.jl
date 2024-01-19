@@ -7,10 +7,18 @@ using Resolver
 using Serialization
 using SparseArrays
 
-## load package uuid => name map from registry
+using Resolver:
+    sat_assume,
+    sat_add,
+    is_satisfiable,
+    extract_solution!,
+    optimize_solution!,
+    with_temp_clauses
 
 import Pkg: depots1
 import Pkg.Registry: RegistryInstance, init_package_info!
+
+## load package uuid => name map from registry
 
 reg_path = let p = joinpath(depots1(), "registries", "General.toml")
     isfile(p) ? p : splitext(p)[1]
@@ -36,14 +44,6 @@ rp = registry.provider()
 info = Resolver.pkg_info(rp)
 
 ## construct SAT problem
-
-using Resolver:
-    sat_assume,
-    sat_add,
-    is_satisfiable,
-    extract_solution!,
-    optimize_solution!,
-    with_temp_clauses
 
 sat = Resolver.SAT(info)
 @assert is_satisfiable(sat)
@@ -77,16 +77,21 @@ else
     end
 end
 
-## installable packages, sorted by popularity
+## installable packages above median popularity, sorted by popularity
 
 const packages = sort!(collect(keys(best)))
 sort!(packages, by = popularity)
+N = searchsortedlast(packages, packages[end÷4], by = popularity)
+resize!(packages, N)
+
+# pare down the SAT problem as well
+
+Resolver.filter_pkg_info!(info, packages)
+sat = Resolver.SAT(info)
 
 ## pairwise conflicts between best versions
 
-const N = length(best)
 G = spzeros(Bool, N, N)
-
 for (i, p) in enumerate(packages)
     v = best[p]
     info_p = sat.info[p]
@@ -95,6 +100,7 @@ for (i, p) in enumerate(packages)
         w == 0 && continue
         info_p.conflicts[v, b+w] || continue
         j = findfirst(==(q), packages)
+        j === nothing && continue
         G[i, j] = true
     end
 end

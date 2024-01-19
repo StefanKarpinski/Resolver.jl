@@ -1,10 +1,13 @@
 using CSV
 using DataFrames
 using Downloads
+using LinearAlgebra
 using ProgressMeter
 using Resolver
+using Serialization
+using SparseArrays
 
-# load package uuid => name map from registry
+## load package uuid => name map from registry
 
 import Pkg: depots1
 import Pkg.Registry: RegistryInstance, init_package_info!
@@ -15,7 +18,7 @@ end
 reg_inst = RegistryInstance(reg_path)
 names = Dict(string(p.uuid) => p.name for p in values(reg_inst.pkgs))
 
-# download package download stats
+## download package download stats
 
 file = "tmp/package_requests.csv.gz"
 url = "https://julialang-logs.s3.amazonaws.com/public_outputs/current/package_requests.csv.gz"
@@ -26,13 +29,13 @@ filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
 const addrs = Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
 popularity(p) = -get(addrs, p, 0)
 
-# load resolution problem
+## load resolution problem
 
 include("../test/registry.jl")
 rp = registry.provider()
 info = Resolver.pkg_info(rp)
 
-# construct SAT problem
+## construct SAT problem
 
 using Resolver:
     sat_assume,
@@ -49,198 +52,236 @@ sat = Resolver.SAT(info)
 # type parameters
 (P, V) = (String, VersionNumber)
 
-# find best installable version of each package
-const best = Dict{P,Int}()
-let prog = Progress(desc="Best versions", length(sat.info))
-    for p in keys(sat.info)
-        next!(prog; showvalues = [
-            ("package", p),
-        ])
-        for i = 1:length(sat.info[p].versions)
-            sat_assume(sat, p, i)
-            if is_satisfiable(sat)
-                best[p] = i
-                break
-            end
-        end
-    end
-end
-
-# installable packages, sorted by popularity
-
-const packages = sort!(collect(keys(best)))
-sort!(packages, by = popularity)
-
-# pairwise compatibility of best versions
-
-const N = length(best)
-const X = falses(N, N)
-
-for (k, p) in enumerate(packages)
-    i = best[p]
-    info_p = sat.info[p]
-    for (q, b) in info_p.interacts
-        j = get(best, q, 0)
-        j == 0 && continue
-        info_p.conflicts[i, b+j] || continue
-        l = findfirst(==(q), packages)
-        X[k, l] = true
-    end
-end
-
-# compute package slices
-
-const sats = typeof(sat)[]
-const slices = Dict{P,Int}[]
-const conflicts = Vector{Int}[]
-
-prog = Progress(desc="Slices", N)
-for i = 1:N # (1, 5093, 2, 3)
-    p = packages[i]
-    # update progress
-    showvalues = [("package", p), ("index", i)]
-    for s = 1:length(slices)
-        push!(showvalues, ("slice $s", length(slices[s])))
-    end
-    next!(prog; showvalues)
-    # actual slice computation
-    best_p = best[p]
-    candidates = Int[]
-    for (s, sat) in enumerate(sats)
-        sat_assume(sat, p, best_p)
-        is_satisfiable(sat) && push!(candidates, s)
-    end
-    if isempty(candidates) # add to new slice
-        push!(sats, Resolver.SAT(info))
-        push!(slices, Dict{P,Int}())
-        push!(conflicts, fill(0, N))
-        push!(candidates, length(sats))
-    end
-    @assert length(candidates) > 0
-    if length(candidates) == 1
-        s = only(candidates)
-    else # multiple candidate slices
-        # pick the slice that leaves as many optimal versions of the
-        # remaining packages compatible with some existing slice
-        best_s = best_c = -1
-        best_z = maximum(length, slices) + 1
-        for s in candidates
-            conflicts[s] .+= X[:, i]
-            c = sum(any(C[j] == 0 for C in conflicts) for j=i+1:N)
-            conflicts[s] .-= X[:, i]
-            z = length(slices[s])
-            if c > best_c || c == best_c && z < best_z
-                best_s = s
-                best_c = c
-                best_z = z
-            end
-        end
-        s = best_s
-    end
-    # add to chosen slice
-    sat_add(sats[s], p, best_p)
-    sat_add(sats[s])
-    slices[s][p] = best_p
-    conflicts[s] .+= X[:, i]
-end
-
-#=
-# # only use versions from sols after this
-# for p in packages
-#     vers = Int[]
-#     for sol in sols
-#         i = get(sol, p, nothing)
-#         i isa Int || continue
-#         i in vers && continue
-#         push!(vers, i)
-#     end
-#     sort!(vers)
-#     for i in vers
-#         sat_add(sat, p, i)
-#     end
-#     sat_add(sat)
-# end
-
-if !@isdefined(common)
-    common = Dict(reduce(∩, sols))
-end
-for sol in sols, p in keys(common)
-    delete!(sol, p)
-end
-
-nodes = Pair{P,Int}[]
-for sol in sols, (p, i) in sol
-    (p => i) in nodes && continue
-    push!(nodes, p => i)
-end
-rnodes = Dict(map(reverse, enumerate(nodes)))
-
-n = length(nodes)
-G = BitMatrix(undef, n, n)
-fill!(G, false)
-for sol in sols, (p, i) in sol, (q, j) in sol
-    G[rnodes[p => i], rnodes[q => j]] = true
-end
-
-using GraphModularDecomposition
-T = sort!(StrongModuleTree(G))
-
-# fill in all possible edges
-let prog = Progress(desc="Pairs", size(G,1)),
-    sol = Dict{P,Int}()
-    for k = 1:size(G,1)
-        p, i = nodes[k]
-        with_temp_clauses(sat) do
-            sat_add(sat, p, i)
-            sat_add(sat)
-            for l = k+1:size(G,2)
-                G[k, l] && continue
-                q, j = nodes[l]
-                sat_assume(sat, q, j)
-                is_satisfiable(sat) || continue
-                extract_solution!(sat, sol)
-                for (p′, i′) in sol
-                    k′ = rnodes[p′ => i′]
-                    for (q′, i′) in sol
-                        p′ < q′ || continue
-                        l′ = rnodes[q′ => j′]
-                        G[k′, l′] = G[l′, k′] = true
-                    end
+## find best installable version of each package
+best_file = "tmp/best_vers.jls"
+if ispath(best_file)
+    const best = open(deserialize, best_file)
+else
+    const best = Dict{P,Int}()
+    let prog = Progress(desc="Best versions", length(sat.info))
+        for p in keys(sat.info)
+            next!(prog; showvalues = [
+                ("package", p),
+            ])
+            for i = 1:length(sat.info[p].versions)
+                sat_assume(sat, p, i)
+                if is_satisfiable(sat)
+                    best[p] = i
+                    break
                 end
             end
         end
     end
-end
-
-=#
-
-#=
-using Graphs
-G = SimpleGraph(length(nodes))
-for sol in sols, (p, i) in sol, (q, j) in sol
-    p < q || continue
-    add_edge!(G, rnodes[p => i], rnodes[q => j])
-end
-
-function is_cograph(G::Graph)
-    if length(vertices(G)) <= 1
-        return true
+    open(best_file, write=true) do io
+        serialize(io, best)
     end
-    if !is_connected(G)
-        for V in connected_components(G)
-            is_cograph(complement(G[V])) || return false
+end
+
+## installable packages, sorted by popularity
+
+const packages = sort!(collect(keys(best)))
+sort!(packages, by = popularity)
+
+## pairwise conflicts between best versions
+
+const N = length(best)
+G = spzeros(Bool, N, N)
+
+for (i, p) in enumerate(packages)
+    v = best[p]
+    info_p = sat.info[p]
+    for (q, b) in info_p.interacts
+        w = get(best, q, 0)
+        w == 0 && continue
+        info_p.conflicts[v, b+w] || continue
+        j = findfirst(==(q), packages)
+        G[i, j] = true
+    end
+end
+
+# There may be versions without explicit incompatibilities that cannot actually
+# be used together. The naive way of computing this is to cheack for pair that
+# isn't explicitly incompatible if the SAT problem is satisfiable. This way too
+# slow, however, as it's O(N^2) and each SAT call is non-trivial.
+#
+# One way of cutting that down is to use the explicit incompatibility graph and
+# graph coloring to partition the graph into disjoint compatible subsets. Since
+# this uses the explicit incompatibility graph for the heuristics, it may not
+# produce the optimal results, but we know each slice is compatible and any true
+# incompatibilities must be between the slices. Next, we grow those slices as
+# large as we can. If S is the original disjoint slice, write S* for the maximal
+# set "grown from" S. The pairs we must consider are the pairs that appear in
+# none of the slices. When expanding slices, we'll want to preferrentially add
+# versions that we haven't already added to other slices. A good heuristic might
+# be to add packages that belong to the fewest expanded slices already.
+#
+# Consider p ∈ S. We're looking for q that not in any slice with p. If q is in
+# some slice with p, then we know they're compatible. Let T(p) be the complement
+# of the union of expanded slices that contain p. We then want to consider pairs
+# of the form p, q ∈ T(p) when looking for potentially incompatible pairs.
+#
+# Once we've done this to compute the true pairwise compatibility graph, we can
+# run our slice coloring algorithm again and perhaps get better results since
+# our input graph for heuristics is more accurate.
+
+## index search helpers
+
+# max index search
+# - checks for ties
+# - no early return
+function max_ind(
+    p  :: Function,       # index predicate
+    v  :: AbstractVector, # values vector
+    i₀ :: Int,            # initial index
+)
+    @assert p(i₀)
+    max_i = i₀
+    max_x = v[i₀]
+    tied = false
+    for i = i₀+1:length(v)
+        p(i) || continue
+        x = v[i]
+        if x > max_x
+            max_i = i
+            max_x = x
+        elseif x == max_x
+            tied = true
         end
-        return true
     end
-    Ḡ = complement(G)
-    if !is_connected(Ḡ)
-        for V in connected_components(Ḡ)
-            is_cograph(G[V]) || return false
-        end
-        return true
-    end
-    return false
+    return max_i, max_x, tied
 end
 
-is_cograph(G)
-=#
+# min index search
+# - doesn't check for ties
+# - returns early if min_x hits zero
+function min_ind(
+    p  :: Function,       # index predicate
+    v  :: AbstractVector, # values vector
+    i₀ :: Int,            # initial index
+)
+    @assert p(i₀)
+    min_i = i₀
+    min_x = v[i₀]
+    for i = i₀+1:length(v)
+        min_x ≤ 0 && break
+        p(i) || continue
+        x = v[i]
+        if x < min_x
+            min_i = i
+            min_x = x
+        end
+    end
+    return min_i
+end
+
+# helper for iterating non-zeros of a sparse vector
+function eachnz(f::Function, S::SparseVector)
+    for (i, j) in enumerate(S.nzind)
+        v = S.nzval[i]
+        !iszero(v) && f(j, v)
+    end
+end
+
+# "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
+H = ((G*G .> 0) .- G .- I(N)) .> 0
+
+## compute package slices
+
+slices = BitVector[]
+A = trues(N) # available nodes
+
+while any(A)
+    # generate a slice
+    with_temp_clauses(sat) do
+        # slice data
+        S = falses(N)  # current slice (independent set)
+        n = 0          # slice size
+    
+        # heuristic data
+        C = copy(A)    # candidate nodes (compatible & available)
+        F = fill(0, N) # friendly counts
+        X = G*A        # conflict counts (in remaining graph)
+
+        function add_node(i::Int)
+            # @assert !S[i]
+            # add to slice
+            S[i] = true
+            n += 1
+            # add to sat instance
+            p = packages[i]
+            sat_add(sat, p, best[p])
+            sat_add(sat)
+            # update heuristic data
+            Gᵢ = G[:,i]
+            eachnz(Gᵢ) do j, _
+                C[j] = false
+            end
+            X .-= Gᵢ
+            F .+= H[:,i]
+            # @assert !any(C .& (G*S .> 0))
+            # @assert F == H*S
+            # @assert X == G*(A - S)
+        end
+
+        # first node maximizes conflicts
+        i = max_ind(i->A[i], X, findfirst(A))[1]
+        C[i] = false
+        add_node(i)
+
+        # progress
+        a = count(A)
+        prog = Progress(desc="Slice $(length(slices)+1)", a)
+
+        # progress update
+        next!(prog; showvalues = [
+            ("avail", a - n),
+            ("count", n),
+            ("index", i),
+            ("package", packages[i]),
+            ("sat", true),
+        ])
+
+        # add rest of nodes
+        while true
+            i = findfirst(C)
+            i === nothing && break
+            # maximize friendliness with slice
+            i, x, tied = max_ind(i->C[i], F, i)
+            if tied
+                # minimize external conflicts
+                i = min_ind(X, i) do i
+                    C[i] && F[i] == x
+                end
+            end
+            # check for satisfiability (not pure graph coloring)
+            p = packages[i]
+            sat_assume(sat, p, best[p])
+            s = is_satisfiable(sat)
+            s && add_node(i)
+            # progress update
+            next!(prog; showvalues = [
+                ("avail", a - n),
+                ("count", n),
+                ("index", i),
+                ("package", p),
+                ("sat", s),
+            ])
+            # don't consider again
+            C[i] = false
+        end
+
+        # progress done
+        finish!(prog; showvalues = [
+            ("avail", a - n),
+            ("count", n),
+        ])
+
+        # save slice
+        push!(slices, S)
+
+        # remove from available nodes
+        A .&= .!S
+
+        @assert all(==(1), reduce(+, slices, init=A))
+    end
+end

@@ -81,7 +81,7 @@ end
 
 const packages = sort!(collect(keys(best)))
 sort!(packages, by = popularity)
-N = searchsortedlast(packages, packages[end÷4], by = popularity)
+N = searchsortedlast(packages, packages[1024], by = popularity)
 resize!(packages, N)
 
 # pare down the SAT problem as well
@@ -188,106 +188,116 @@ function eachnz(f::Function, S::SparseVector)
     end
 end
 
-# "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
-H = ((G*G .> 0) .- G .- I(N)) .> 0
-
 ## compute package slices
 
-slices = BitVector[]
-A = trues(N) # available nodes
+function color_sat_rlf(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
+    G :: AbstractMatrix{Bool},
+)
+    N = length(packages)
 
-while any(A)
-    # generate a slice
-    with_temp_clauses(sat) do
-        # slice data
-        S = falses(N)  # current slice (independent set)
-        n = 0          # slice size
-    
-        # heuristic data
-        C = copy(A)    # candidate nodes (compatible & available)
-        F = fill(0, N) # friendly counts
-        X = G*A        # conflict counts (in remaining graph)
+    # "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
+    H = ((G*G .> 0) .- G .- I(N)) .> 0
 
-        function add_node(i::Int)
-            # @assert !S[i]
-            # add to slice
-            S[i] = true
-            n += 1
-            # add to sat instance
-            p = packages[i]
-            sat_add(sat, p, best[p])
-            sat_add(sat)
-            # update heuristic data
-            Gᵢ = G[:,i]
-            eachnz(Gᵢ) do j, _
-                C[j] = false
-            end
-            X .-= Gᵢ
-            F .+= H[:,i]
-            # @assert !any(C .& (G*S .> 0))
-            # @assert F == H*S
-            # @assert X == G*(A - S)
-        end
+    slices = BitVector[]
+    A = trues(N) # available nodes
 
-        # first node maximizes conflicts
-        i = max_ind(i->A[i], X, findfirst(A))[1]
-        C[i] = false
-        add_node(i)
+    while any(A)
+        # generate a slice
+        with_temp_clauses(sat) do
+            # slice data
+            S = falses(N)  # current slice (independent set)
+            n = 0          # slice size
 
-        # progress
-        a = count(A)
-        prog = Progress(desc="Slice $(length(slices)+1)", a)
+            # heuristic data
+            C = copy(A)    # candidate nodes (compatible & available)
+            F = fill(0, N) # friendly counts
+            X = G*A        # conflict counts (in remaining graph)
 
-        # progress update
-        next!(prog; showvalues = [
-            ("avail", a - n),
-            ("count", n),
-            ("index", i),
-            ("package", packages[i]),
-            ("sat", true),
-        ])
-
-        # add rest of nodes
-        while true
-            i = findfirst(C)
-            i === nothing && break
-            # maximize friendliness with slice
-            i, x, tied = max_ind(i->C[i], F, i)
-            if tied
-                # minimize external conflicts
-                i = min_ind(X, i) do i
-                    C[i] && F[i] == x
+            function add_node(i::Int)
+                # @assert !S[i]
+                # add to slice
+                S[i] = true
+                n += 1
+                # add to sat instance
+                p = packages[i]
+                sat_add(sat, p, best[p])
+                sat_add(sat)
+                # update heuristic data
+                Gᵢ = G[:,i]
+                eachnz(Gᵢ) do j, _
+                    C[j] = false
                 end
+                X .-= Gᵢ
+                F .+= H[:,i]
+                # @assert !any(C .& (G*S .> 0))
+                # @assert F == H*S
+                # @assert X == G*(A - S)
             end
-            # check for satisfiability (not pure graph coloring)
-            p = packages[i]
-            sat_assume(sat, p, best[p])
-            s = is_satisfiable(sat)
-            s && add_node(i)
+
+            # first node maximizes conflicts
+            i = max_ind(i->A[i], X, findfirst(A))[1]
+            C[i] = false
+            add_node(i)
+
+            # progress
+            a = count(A)
+            prog = Progress(desc="Slice $(length(slices)+1)", a)
+
             # progress update
             next!(prog; showvalues = [
                 ("avail", a - n),
                 ("count", n),
                 ("index", i),
-                ("package", p),
-                ("sat", s),
+                ("package", packages[i]),
+                ("sat", true),
             ])
-            # don't consider again
-            C[i] = false
+
+            # add rest of nodes
+            while true
+                i = findfirst(C)
+                i === nothing && break
+                # maximize friendliness with slice
+                i, x, tied = max_ind(i->C[i], F, i)
+                if tied
+                    # minimize external conflicts
+                    i = min_ind(X, i) do i
+                        C[i] && F[i] == x
+                    end
+                end
+                # check for satisfiability (not pure graph coloring)
+                p = packages[i]
+                sat_assume(sat, p, best[p])
+                s = is_satisfiable(sat)
+                s && add_node(i)
+                # progress update
+                next!(prog; showvalues = [
+                    ("avail", a - n),
+                    ("count", n),
+                    ("index", i),
+                    ("package", p),
+                    ("sat", s),
+                ])
+                # don't consider again
+                C[i] = false
+            end
+
+            # progress done
+            finish!(prog; showvalues = [
+                ("avail", a - n),
+                ("count", n),
+            ])
+
+            # save slice
+            push!(slices, S)
+
+            # remove from available nodes
+            A .&= .!S
+
+            @assert all(==(1), reduce(+, slices, init=A))
         end
-
-        # progress done
-        finish!(prog; showvalues = [
-            ("avail", a - n),
-            ("count", n),
-        ])
-
-        # save slice
-        push!(slices, S)
-
-        # remove from available nodes
-        A .&= .!S
-
-        @assert all(==(1), reduce(+, slices, init=A))
     end
+
+    return slices
 end

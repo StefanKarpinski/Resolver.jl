@@ -105,31 +105,6 @@ for (i, p) in enumerate(packages)
     end
 end
 
-# There may be versions without explicit incompatibilities that cannot actually
-# be used together. The naive way of computing this is to cheack for pair that
-# isn't explicitly incompatible if the SAT problem is satisfiable. This way too
-# slow, however, as it's O(N^2) and each SAT call is non-trivial.
-#
-# One way of cutting that down is to use the explicit incompatibility graph and
-# graph coloring to partition the graph into disjoint compatible subsets. Since
-# this uses the explicit incompatibility graph for the heuristics, it may not
-# produce the optimal results, but we know each slice is compatible and any true
-# incompatibilities must be between the slices. Next, we grow those slices as
-# large as we can. If S is the original disjoint slice, write S* for the maximal
-# set "grown from" S. The pairs we must consider are the pairs that appear in
-# none of the slices. When expanding slices, we'll want to preferrentially add
-# versions that we haven't already added to other slices. A good heuristic might
-# be to add packages that belong to the fewest expanded slices already.
-#
-# Consider p ∈ S. We're looking for q that not in any slice with p. If q is in
-# some slice with p, then we know they're compatible. Let T(p) be the complement
-# of the union of expanded slices that contain p. We then want to consider pairs
-# of the form p, q ∈ T(p) when looking for potentially incompatible pairs.
-#
-# Once we've done this to compute the true pairwise compatibility graph, we can
-# run our slice coloring algorithm again and perhaps get better results since
-# our input graph for heuristics is more accurate.
-
 ## index search helpers
 
 # max index search
@@ -191,9 +166,9 @@ end
 ## compute package slices
 
 function color_sat_rlf(
-    packages :: Vector{P},
-    sat :: Resolver.SAT{P},
     G :: AbstractMatrix{Bool},
+    packages :: Vector{P} = packages,
+    sat :: Resolver.SAT{P} = sat,
 )
     N = length(packages)
 
@@ -301,3 +276,93 @@ function color_sat_rlf(
 
     return slices
 end
+
+colors = color_sat_rlf(G)
+
+# There may be versions without explicit incompatibilities that cannot actually
+# be used together. The naive way of computing this is to cheack for pair that
+# isn't explicitly incompatible if the SAT problem is satisfiable. This way too
+# slow, however, as it's O(N^2) and each SAT call is non-trivial.
+#
+# One way of cutting that down is to use the explicit incompatibility graph and
+# graph coloring to partition the graph into disjoint compatible subsets. Since
+# this uses the explicit incompatibility graph for the heuristics, it may not
+# produce the optimal results, but we know each slice is compatible and any true
+# incompatibilities must be between the slices. Next, we grow those slices as
+# large as we can. If S is the original disjoint slice, write S* for the maximal
+# set "grown from" S. The pairs we must consider are the pairs that appear in
+# none of the slices. When expanding slices, we'll want to preferrentially add
+# versions that we haven't already added to other slices. A good heuristic might
+# be to add packages that belong to the fewest expanded slices already.
+#
+# Consider p ∈ S. We're looking for q that are not in any slice with p. If q is
+# in some slice with p, then we know they're compatible. The values of q that we
+# don't need to consider are all of those that appear in some slice with p, i.e.
+# the union of all the slices that p appears in. The complement of that union is
+# the set of q that we need to consider for incompatibility. Write Q(p) for the
+# complement of the union of expanded slices that contain p. We want to consider
+# pairs of the form p, q ∈ Q(p) when looking for potentially incompatible pairs.
+#
+# Once we've done this to compute the true pairwise compatibility graph, we can
+# run our slice coloring algorithm again and perhaps get better results since
+# our input graph for heuristics is more accurate.
+
+# maximally expand slices, deversifying coverage somewhat
+function expand_colors(
+    colors :: Vector{BitVector},
+    packages :: Vector{P} = packages,
+    sat :: Resolver.SAT{P} = sat,
+)
+    slices = map(copy, colors)
+    order = copy(packages)
+    todos = Set(packages)
+    for slice in slices
+        with_temp_clauses(sat) do
+            for (i, p) in enumerate(packages)
+                slice[i] || continue
+                sat_add(sat, p, best[p])
+                sat_add(sat)
+            end
+            for p in order
+                i = findfirst(==(p), packages)
+                slice[i] && continue
+                sat_assume(sat, p, best[p])
+                is_satisfiable(sat) || continue
+                sat_add(sat, p, best[p])
+                sat_add(sat)
+                slice[i] = true
+                delete!(todos, p)
+            end
+        end
+        sort!(order, by = !in(todos))
+    end
+    return slices
+end
+
+slices = expand_colors(colors)
+
+# summarize packages by slices they belong to
+sinc = [[s[i] for s in slices] for i=1:N]
+rinc = Dict{Vector{Bool},Vector{Int}}()
+for (i, k) in enumerate(sinc)
+    push!(get!(()->Int[], rinc, k), i)
+end
+
+# for each pattern, compute the complement of union of its slices
+Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in keys(rinc))
+
+# compute the true incompatibility graph
+G′ = copy(G)
+for (i, p) in enumerate(packages)
+    for j in Q[sinc[i]]
+        G′[i, j] && continue
+        q = packages[j]
+        sat_assume(sat, p, best[p])
+        sat_assume(sat, q, best[q])
+        is_satisfiable(sat) && continue
+        G′[i, j] = true
+    end
+end
+
+colors′ = color_sat_rlf(G′)
+slices′ = expand_colors(colors′)

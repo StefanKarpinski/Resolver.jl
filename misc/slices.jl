@@ -20,21 +20,29 @@ import Pkg.Registry: RegistryInstance, init_package_info!
 
 ## load package uuid => name map from registry
 
-reg_path = let p = joinpath(depots1(), "registries", "General.toml")
-    isfile(p) ? p : splitext(p)[1]
+function load_packaage_uuid_name_map()
+    reg_path = let p = joinpath(depots1(), "registries", "General.toml")
+        isfile(p) ? p : splitext(p)[1]
+    end
+    reg_inst = RegistryInstance(reg_path)
+    Dict(string(p.uuid) => p.name for p in values(reg_inst.pkgs))
 end
-reg_inst = RegistryInstance(reg_path)
-names = Dict(string(p.uuid) => p.name for p in values(reg_inst.pkgs))
+
+const names = load_packaage_uuid_name_map()
 
 ## download package download stats
 
-file = "tmp/package_requests.csv.gz"
-url = "https://julialang-logs.s3.amazonaws.com/public_outputs/current/package_requests.csv.gz"
-isfile(file) || Downloads.download(url, file)
-df = CSV.read(`gzcat $file`, DataFrame)
-filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
-@assert allunique(df.package_uuid)
-const addrs = Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
+function load_package_download_stats()
+    file = "tmp/package_requests.csv.gz"
+    url = "https://julialang-logs.s3.amazonaws.com/public_outputs/current/package_requests.csv.gz"
+    isfile(file) || Downloads.download(url, file)
+    df = CSV.read(`gzcat $file`, DataFrame)
+    filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
+    @assert allunique(df.package_uuid)
+    Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
+end
+
+const addrs = load_package_download_stats()
 popularity(p) = -get(addrs, p, 0)
 
 ## load resolution problem
@@ -49,40 +57,52 @@ sat = Resolver.SAT(info)
 @assert is_satisfiable(sat)
 @assert !is_satisfiable(sat, keys(info))
 
-# type parameters
-(P, V) = (String, VersionNumber)
-
 ## find best installable version of each package
-best_file = "tmp/best_vers.jls"
-if ispath(best_file)
-    const best = open(deserialize, best_file)
-else
-    const best = Dict{P,Int}()
-    let prog = Progress(desc="Best versions", length(sat.info))
-        for p in keys(sat.info)
-            next!(prog; showvalues = [
-                ("package", p),
-            ])
-            for i = 1:length(sat.info[p].versions)
-                sat_assume(sat, p, i)
-                if is_satisfiable(sat)
-                    best[p] = i
-                    break
+
+function compute_best_versions(
+    sat :: Resolver.SAT{P},
+) where {P}
+    best_file = "tmp/best_vers.jls"
+    if ispath(best_file)
+        best = open(deserialize, best_file)
+    else
+        best = Dict{P,Int}()
+        let prog = Progress(desc="Best versions", length(sat.info))
+            for p in keys(sat.info)
+                next!(prog; showvalues = [
+                    ("package", p),
+                ])
+                for i = 1:length(sat.info[p].versions)
+                    sat_assume(sat, p, i)
+                    if is_satisfiable(sat)
+                        best[p] = i
+                        break
+                    end
                 end
             end
         end
+        open(best_file, write=true) do io
+            serialize(io, best)
+        end
     end
-    open(best_file, write=true) do io
-        serialize(io, best)
-    end
+    return best
 end
+
+best = compute_best_versions(sat)
 
 ## installable packages above median popularity, sorted by popularity
 
-const packages = sort!(collect(keys(best)))
-sort!(packages, by = popularity)
-N = searchsortedlast(packages, packages[1024], by = popularity)
-resize!(packages, N)
+function select_popular_packages(
+    top  :: Integer,
+    best :: Dict{P,Int} = best,
+) where {P}
+    packages = sort!(collect(keys(best)))
+    sort!(packages, by = popularity)
+    N = searchsortedlast(packages, packages[top], by = popularity)
+    resize!(packages, N)
+end
+
+packages = select_popular_packages(1024)
 
 # pare down the SAT problem as well
 
@@ -91,19 +111,29 @@ sat = Resolver.SAT(info)
 
 ## pairwise conflicts between best versions
 
-G = spzeros(Bool, N, N)
-for (i, p) in enumerate(packages)
-    v = best[p]
-    info_p = sat.info[p]
-    for (q, b) in info_p.interacts
-        w = get(best, q, 0)
-        w == 0 && continue
-        info_p.conflicts[v, b+w] || continue
-        j = findfirst(==(q), packages)
-        j === nothing && continue
-        G[i, j] = true
+function explicit_conflicts(
+    packages :: Vector{P} = packages,
+    best :: Dict{P,Int} = best,
+    sat :: Resolver.SAT{P} = sat,
+) where {P}
+    N = length(packages)
+    G = spzeros(Bool, N, N)
+    for (i, p) in enumerate(packages)
+        v = best[p]
+        info_p = sat.info[p]
+        for (q, b) in info_p.interacts
+            w = get(best, q, 0)
+            w == 0 && continue
+            info_p.conflicts[v, b+w] || continue
+            j = findfirst(==(q), packages)
+            j === nothing && continue
+            G[i, j] = true
+        end
     end
+    return G
 end
+
+G = explicit_conflicts()
 
 ## index search helpers
 
@@ -169,7 +199,7 @@ function color_sat_rlf(
     G :: AbstractMatrix{Bool},
     packages :: Vector{P} = packages,
     sat :: Resolver.SAT{P} = sat,
-)
+) where {P}
     N = length(packages)
 
     # "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
@@ -312,7 +342,7 @@ function expand_colors(
     colors :: Vector{BitVector},
     packages :: Vector{P} = packages,
     sat :: Resolver.SAT{P} = sat,
-)
+) where {P}
     slices = map(copy, colors)
     order = copy(packages)
     todos = Set(packages)
@@ -341,28 +371,39 @@ end
 
 slices = expand_colors(colors)
 
-# summarize packages by slices they belong to
-sinc = [[s[i] for s in slices] for i=1:N]
-rinc = Dict{Vector{Bool},Vector{Int}}()
-for (i, k) in enumerate(sinc)
-    push!(get!(()->Int[], rinc, k), i)
-end
-
-# for each pattern, compute the complement of union of its slices
-Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in keys(rinc))
-
-# compute the true incompatibility graph
-G′ = copy(G)
-for (i, p) in enumerate(packages)
-    for j in Q[sinc[i]]
-        G′[i, j] && continue
-        q = packages[j]
-        sat_assume(sat, p, best[p])
-        sat_assume(sat, q, best[q])
-        is_satisfiable(sat) && continue
-        G′[i, j] = true
+function implicit_conflicts(
+    slices :: Vector{BitVector},
+    packages :: Vector{P} = packages,
+    best :: Dict{P,Int} = best,
+    G :: SparseMatrixCSC{Bool, Int64} = G,
+) where {P}
+    # summarize packages by slices they belong to
+    N = length(packages)
+    sinc = [[s[i] for s in slices] for i=1:N]
+    rinc = Dict{Vector{Bool},Vector{Int}}()
+    for (i, k) in enumerate(sinc)
+        push!(get!(()->Int[], rinc, k), i)
     end
+
+    # for each pattern, compute the complement of union of its slices
+    Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in keys(rinc))
+
+    # compute the true incompatibility graph
+    G′ = copy(G)
+    for (i, p) in enumerate(packages)
+        for j in Q[sinc[i]]
+            G′[i, j] && continue
+            q = packages[j]
+            sat_assume(sat, p, best[p])
+            sat_assume(sat, q, best[q])
+            is_satisfiable(sat) && continue
+            G′[i, j] = true
+        end
+    end
+    return G′
 end
+
+G′ = implicit_conflicts(slices)
 
 colors′ = color_sat_rlf(G′)
 slices′ = expand_colors(colors′)

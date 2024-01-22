@@ -116,57 +116,45 @@ function explicit_conflicts(
     return G
 end
 
-## index search helpers
+# optimal (min/max) index search
 
-# max index search
-# - checks for ties
-# - no early return
-function max_ind(
-    p  :: Function,       # index predicate
-    v  :: AbstractVector, # values vector
-    i₀ :: Int,            # initial index
-)
-    @assert p(i₀)
-    max_i = i₀
-    max_x = v[i₀]
-    tied = false
-    for i = i₀+1:length(v)
-        p(i) || continue
-        x = v[i]
-        if x > max_x
-            max_i = i
-            max_x = x
-        elseif x == max_x
-            tied = true
-        end
-    end
-    return max_i, max_x, tied
-end
+# NOTE: passing a stop_val invalidates `tied`
+# in cases where the early stop_val is found
 
-# min index search
-# - doesn't check for ties
-# - returns early if min_x hits zero
-function min_ind(
-    p  :: Function,       # index predicate
-    v  :: AbstractVector, # values vector
-    i₀ :: Int,            # initial index
-)
-    @assert p(i₀)
-    min_i = i₀
-    min_x = v[i₀]
-    for i = i₀+1:length(v)
-        min_x ≤ 0 && break
-        p(i) || continue
-        x = v[i]
-        if x < min_x
-            min_i = i
-            min_x = x
+for (name, lt) in ((:min_ind, :(<)), (:max_ind, :(>)))
+    @eval function $name(
+        predicate :: Function,       # index predicate
+        values    :: AbstractVector, # values vector
+        start_ind :: Int;            # start index
+        stop_val  :: Any = nothing,  # stop value
+    )
+        @assert predicate(start_ind)
+        opt_i = start_ind
+        opt_x = values[start_ind]
+        tied = false
+        for i = start_ind+1:length(values)
+            opt_x == stop_val && break
+            predicate(i) || continue
+            x = values[i]
+            if $lt(x, opt_x)
+                opt_i = i
+                opt_x = x
+            elseif x == opt_x
+                tied = true
+            end
         end
+        return opt_i, opt_x, tied
     end
-    return min_i
+    @eval $name(
+        predicate :: AbstractVector{Bool},
+        values    :: AbstractVector,
+        start_ind :: Int = findfirst(predicate);
+        stop_val  :: Any = nothing,
+    ) = $name(i->predicate[i], values, start_ind; stop_val)
 end
 
 # helper for iterating non-zeros of a sparse vector
+
 function eachnz(f::Function, S::SparseVector)
     for (i, j) in enumerate(S.nzind)
         v = S.nzval[i]
@@ -225,7 +213,7 @@ function color_sat_rlf(
             end
 
             # first node maximizes conflicts
-            i = max_ind(i->U[i], X, findfirst(U))[1]
+            i = max_ind(U, X)[1]
             A[i] = false
             add_node(i)
 
@@ -247,10 +235,10 @@ function color_sat_rlf(
                 i = findfirst(A)
                 i === nothing && break
                 # maximize friendliness with color
-                i, x, tied = max_ind(i->A[i], F, i)
+                i, x, tied = max_ind(A, F, i)
                 if tied
                     # minimize external conflicts
-                    i = min_ind(X, i) do i
+                    i, = min_ind(X, i, stop_val=0) do i
                         A[i] && F[i] == x
                     end
                 end

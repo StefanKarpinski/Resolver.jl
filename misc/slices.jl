@@ -18,6 +18,8 @@ using Resolver:
 import Pkg: depots1
 import Pkg.Registry: RegistryInstance, init_package_info!
 
+include("../test/registry.jl")
+
 ## load package uuid => name map from registry
 
 function load_packaage_uuid_name_map()
@@ -45,18 +47,6 @@ end
 const addrs = load_package_download_stats()
 popularity(p) = -get(addrs, p, 0)
 
-## load resolution problem
-
-include("../test/registry.jl")
-rp = registry.provider()
-info = Resolver.pkg_info(rp)
-
-## construct SAT problem
-
-sat = Resolver.SAT(info)
-@assert is_satisfiable(sat)
-@assert !is_satisfiable(sat, keys(info))
-
 ## find best installable version of each package
 
 function compute_best_versions(
@@ -66,6 +56,7 @@ function compute_best_versions(
     if ispath(best_file)
         best = open(deserialize, best_file)
     else
+        @info "Computing best pkg versions..."
         best = Dict{P,Int}()
         let prog = Progress(desc="Best versions", length(sat.info))
             for p in keys(sat.info)
@@ -88,13 +79,11 @@ function compute_best_versions(
     return best
 end
 
-best = compute_best_versions(sat)
-
 ## installable packages above median popularity, sorted by popularity
 
 function select_popular_packages(
+    best :: Dict{P,Int},
     top  :: Integer,
-    best :: Dict{P,Int} = best,
 ) where {P}
     packages = sort!(collect(keys(best)))
     sort!(packages, by = popularity)
@@ -102,20 +91,14 @@ function select_popular_packages(
     resize!(packages, N)
 end
 
-packages = select_popular_packages(1024)
-
-# pare down the SAT problem as well
-
-Resolver.filter_pkg_info!(info, packages)
-sat = Resolver.SAT(info)
-
 ## pairwise conflicts between best versions
 
 function explicit_conflicts(
-    packages :: Vector{P} = packages,
-    best :: Dict{P,Int} = best,
-    sat :: Resolver.SAT{P} = sat,
+    packages :: Vector{P},
+    best :: Dict{P,Int},
+    sat :: Resolver.SAT{P},
 ) where {P}
+    @info "Constructing explicit conflict graph..."
     N = length(packages)
     G = spzeros(Bool, N, N)
     for (i, p) in enumerate(packages)
@@ -132,8 +115,6 @@ function explicit_conflicts(
     end
     return G
 end
-
-G = explicit_conflicts()
 
 ## index search helpers
 
@@ -193,13 +174,14 @@ function eachnz(f::Function, S::SparseVector)
     end
 end
 
-## compute package slices
+## compute colorings of package graph
 
 function color_sat_rlf(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
     G :: AbstractMatrix{Bool},
-    packages :: Vector{P} = packages,
-    sat :: Resolver.SAT{P} = sat,
 ) where {P}
+    @info "Computing coloring..."
     N = length(packages)
 
     # "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
@@ -304,45 +286,17 @@ function color_sat_rlf(
         end
     end
 
+    @info "Colors: $(length(slices))"
     return slices
 end
 
-colors = color_sat_rlf(G)
-
-# There may be versions without explicit incompatibilities that cannot actually
-# be used together. The naive way of computing this is to cheack for pair that
-# isn't explicitly incompatible if the SAT problem is satisfiable. This way too
-# slow, however, as it's O(N^2) and each SAT call is non-trivial.
-#
-# One way of cutting that down is to use the explicit incompatibility graph and
-# graph coloring to partition the graph into disjoint compatible subsets. Since
-# this uses the explicit incompatibility graph for the heuristics, it may not
-# produce the optimal results, but we know each slice is compatible and any true
-# incompatibilities must be between the slices. Next, we grow those slices as
-# large as we can. If S is the original disjoint slice, write S* for the maximal
-# set "grown from" S. The pairs we must consider are the pairs that appear in
-# none of the slices. When expanding slices, we'll want to preferrentially add
-# versions that we haven't already added to other slices. A good heuristic might
-# be to add packages that belong to the fewest expanded slices already.
-#
-# Consider p ∈ S. We're looking for q that are not in any slice with p. If q is
-# in some slice with p, then we know they're compatible. The values of q that we
-# don't need to consider are all of those that appear in some slice with p, i.e.
-# the union of all the slices that p appears in. The complement of that union is
-# the set of q that we need to consider for incompatibility. Write Q(p) for the
-# complement of the union of expanded slices that contain p. We want to consider
-# pairs of the form p, q ∈ Q(p) when looking for potentially incompatible pairs.
-#
-# Once we've done this to compute the true pairwise compatibility graph, we can
-# run our slice coloring algorithm again and perhaps get better results since
-# our input graph for heuristics is more accurate.
-
 # maximally expand slices, deversifying coverage somewhat
 function expand_colors(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
     colors :: Vector{BitVector},
-    packages :: Vector{P} = packages,
-    sat :: Resolver.SAT{P} = sat,
 ) where {P}
+    @info "Expanding colors into maximal slices..."
     slices = map(copy, colors)
     order = copy(packages)
     todos = Set(packages)
@@ -369,41 +323,58 @@ function expand_colors(
     return slices
 end
 
-slices = expand_colors(colors)
-
+# compute the implicit conflict graph, i.e. which optimal versions of packages
+# are in practice pairwise uninstallable, as opposed to just explicit conflicts
 function implicit_conflicts(
+    packages :: Vector{P},
+    best :: Dict{P,Int},
     slices :: Vector{BitVector},
-    packages :: Vector{P} = packages,
-    best :: Dict{P,Int} = best,
-    G :: SparseMatrixCSC{Bool, Int64} = G,
 ) where {P}
-    # summarize packages by slices they belong to
+    @info "Computing implicit conflict graph..."
     N = length(packages)
-    sinc = [[s[i] for s in slices] for i=1:N]
-    rinc = Dict{Vector{Bool},Vector{Int}}()
-    for (i, k) in enumerate(sinc)
-        push!(get!(()->Int[], rinc, k), i)
-    end
-
-    # for each pattern, compute the complement of union of its slices
-    Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in keys(rinc))
-
+    # summarize packages by slices they belong to
+    S = [[s[i] for s in slices] for i=1:N]
+    # for each inclusiion pattern, compute complement of union of slices
+    Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in unique(S))
     # compute the true incompatibility graph
-    G′ = copy(G)
+    prog = Progress(desc="Implicit conflicts", N)
+    G = spzeros(Bool, N, N)
     for (i, p) in enumerate(packages)
-        for j in Q[sinc[i]]
-            G′[i, j] && continue
+        next!(prog; showvalues = [
+            ("package", p),
+        ])
+        for j in Q[S[i]]
+            G[i, j] && continue
             q = packages[j]
             sat_assume(sat, p, best[p])
             sat_assume(sat, q, best[q])
             is_satisfiable(sat) && continue
-            G′[i, j] = true
+            G[i, j] = true
         end
     end
-    return G′
+    return G
 end
 
-G′ = implicit_conflicts(slices)
+## top-level code
 
-colors′ = color_sat_rlf(G′)
-slices′ = expand_colors(colors′)
+@info "Loading pkg info..."
+info = Resolver.pkg_info(registry.provider())
+sat = Resolver.SAT(info)
+best = compute_best_versions(sat)
+
+# select top ~1024 most popular packages
+top = 1024
+packages = select_popular_packages(best, top)
+@assert length(packages) ≥ top
+
+# pare down the SAT problem to only popular packages and deps
+Resolver.filter_pkg_info!(info, packages)
+sat = Resolver.SAT(info)
+
+G₀ = explicit_conflicts(packages, best, sat)
+colors₀ = color_sat_rlf(packages, sat, G₀)
+slices₀ = expand_colors(packages, sat, colors₀)
+
+G₁ = implicit_conflicts(packages, best, slices₀)
+colors₁ = color_sat_rlf(packages, sat, G₁)
+slices₁ = expand_colors(packages, sat, colors₁)

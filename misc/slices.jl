@@ -242,7 +242,7 @@ function color_sat_rlf(
                         A[i] && F[i] == x
                     end
                 end
-                # check for satisfiability (not pure graph coloring)
+                # check for satisfiability (not done for pure graph coloring)
                 p = packages[i]
                 sat_assume(sat, p, best[p])
                 s = is_satisfiable(sat)
@@ -273,6 +273,80 @@ function color_sat_rlf(
 
             @assert all(==(1), reduce(+, colors, init=U))
         end
+    end
+
+    @info "Colors: $(length(colors))"
+    return colors
+end
+
+## compute vertex coloring of package graph using DSatur algorithm
+# https://en.wikipedia.org/wiki/Recursive_largest_first_algorithm
+
+function color_sat_dsatur(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
+    G :: AbstractMatrix{Bool},
+) where {P}
+    @info "Computing coloring (DSatur)..."
+    N = length(packages)
+
+    colors = BitVector[]
+    sats = Resolver.SAT[]
+
+    U = trues(N)                   # uncolored nodes
+    A = SparseVector{Bool,Int64}[] # adjacency vectors
+    S = fill(0, N)                 # saturation counts
+    X = G*U                        # conflicts counts
+
+    while (i = findfirst(U)) !== nothing
+        i, s, tied = max_ind(U, S, i)
+        if tied
+            # maximize external conflicts
+            i, = max_ind(X, i) do i
+                U[i] && S[i] == s
+            end
+        end
+        p = packages[i]
+        v = best[p]
+        Gᵢ = G[:,i]
+        # add node to first color it's compatible with
+        success = false
+        for (j, sat) in enumerate(sats)
+            sat_assume(sat, p, v)
+            if is_satisfiable(sat)
+                # add node to existing color
+                colors[j][i] = true
+                # add to sat instance
+                sat_add(sat, p, v)
+                sat_add(sat)
+                # update heuristic data
+                A[j] .|= Gᵢ
+                eachnz(Gᵢ) do k, _
+                    S[k] = sum(a[k] for a in A)
+                end
+                # end loop successfully
+                success = true
+                break
+            end
+        end
+        if !success
+            # create new color
+            push!(colors, falses(N))
+            colors[end][i] = true
+            # new corresponding sat instance
+            push!(sats, Resolver.SAT(sat.info))
+            sat_add(sats[end], p, v)
+            sat_add(sats[end])
+            # new adjacency vector
+            push!(A, Gᵢ)
+            S .+= Gᵢ
+        end
+        # remove node
+        X .-= Gᵢ
+        U[i] = false
+        @assert X == G*U
+        @assert S == [sum(a[k] for a in A) for k=1:N]
+        @assert all(==(1), reduce(+, colors, init=U))
     end
 
     @info "Colors: $(length(colors))"
@@ -344,6 +418,42 @@ function implicit_conflicts(
     return G
 end
 
+# check that a slice is satisfiable
+
+function check_slice(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
+    slice :: AbstractVector{Int},
+) where {P}
+    with_temp_clauses(sat) do
+        for i in slice
+            p = packages[i]
+            v = best[p]
+            sat_add(sat, p, v)
+            sat_add(sat)
+        end
+        @assert is_satisfiable(sat)
+    end
+end
+
+function check_slice(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
+    slice :: AbstractVector{Bool},
+) where {P}
+    check_slice(packages, sat, findall(slice))
+end
+
+function check_slices(
+    packages :: Vector{P},
+    sat :: Resolver.SAT{P},
+    slices :: AbstractVector,
+) where {P}
+    for slice in slices
+        check_slice(packages, sat, slice)
+    end
+end
+
 ## top-level code
 
 @info "Loading pkg info..."
@@ -351,7 +461,7 @@ info = Resolver.pkg_info(registry.provider())
 sat = Resolver.SAT(info)
 best = compute_best_versions(sat)
 
-# select top ~1024 most popular packages
+# select top most popular packages
 top = 1024
 packages = select_popular_packages(best, top)
 @assert length(packages) ≥ top
@@ -361,9 +471,11 @@ Resolver.filter_pkg_info!(info, packages)
 sat = Resolver.SAT(info)
 
 G₀ = explicit_conflicts(packages, best, sat)
-colors₀ = color_sat_rlf(packages, sat, G₀)
+colors₀ = color_sat_dsatur(packages, sat, G₀)
 slices₀ = expand_colors(packages, sat, colors₀)
 
 G₁ = implicit_conflicts(packages, best, slices₀)
-colors₁ = color_sat_rlf(packages, sat, G₁)
+colors₁ = color_sat_dsatur(packages, sat, G₁)
 slices₁ = expand_colors(packages, sat, colors₁)
+
+check_slices(packages, sat, slices₁)

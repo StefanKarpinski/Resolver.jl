@@ -174,38 +174,39 @@ function eachnz(f::Function, S::SparseVector)
     end
 end
 
-## compute colorings of package graph
+## compute vertex coloring of package graph using RLF algorithm
+# https://en.wikipedia.org/wiki/Recursive_largest_first_algorithm
 
 function color_sat_rlf(
     packages :: Vector{P},
     sat :: Resolver.SAT{P},
     G :: AbstractMatrix{Bool},
 ) where {P}
-    @info "Computing coloring..."
+    @info "Computing coloring (RLF)..."
     N = length(packages)
 
     # "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
     H = ((G*G .> 0) .- G .- I(N)) .> 0
 
-    slices = BitVector[]
-    A = trues(N) # available nodes
+    colors = BitVector[]
+    U = trues(N) # uncolored nodes
 
-    while any(A)
-        # generate a slice
+    while any(U)
+        # generate a color
         with_temp_clauses(sat) do
-            # slice data
-            S = falses(N)  # current slice (independent set)
-            n = 0          # slice size
+            # color data
+            C = falses(N)  # current color (independent set)
+            n = 0          # color size
 
             # heuristic data
-            C = copy(A)    # candidate nodes (compatible & available)
+            A = copy(U)    # available nodes (uncolored & compatible)
             F = fill(0, N) # friendly counts
-            X = G*A        # conflict counts (in remaining graph)
+            X = G*U        # conflict counts (in remaining graph)
 
             function add_node(i::Int)
                 # @assert !S[i]
-                # add to slice
-                S[i] = true
+                # add to color
+                C[i] = true
                 n += 1
                 # add to sat instance
                 p = packages[i]
@@ -214,23 +215,23 @@ function color_sat_rlf(
                 # update heuristic data
                 Gᵢ = G[:,i]
                 eachnz(Gᵢ) do j, _
-                    C[j] = false
+                    A[j] = false
                 end
                 X .-= Gᵢ
                 F .+= H[:,i]
-                # @assert !any(C .& (G*S .> 0))
-                # @assert F == H*S
-                # @assert X == G*(A - S)
+                # @assert !any(A .& (G*C .> 0))
+                # @assert F == H*C
+                # @assert X == G*(U - C)
             end
 
             # first node maximizes conflicts
-            i = max_ind(i->A[i], X, findfirst(A))[1]
-            C[i] = false
+            i = max_ind(i->U[i], X, findfirst(U))[1]
+            A[i] = false
             add_node(i)
 
             # progress
-            a = count(A)
-            prog = Progress(desc="Slice $(length(slices)+1)", a)
+            a = count(U)
+            prog = Progress(desc="Slice $(length(colors)+1)", a)
 
             # progress update
             next!(prog; showvalues = [
@@ -243,14 +244,14 @@ function color_sat_rlf(
 
             # add rest of nodes
             while true
-                i = findfirst(C)
+                i = findfirst(A)
                 i === nothing && break
-                # maximize friendliness with slice
-                i, x, tied = max_ind(i->C[i], F, i)
+                # maximize friendliness with color
+                i, x, tied = max_ind(i->A[i], F, i)
                 if tied
                     # minimize external conflicts
                     i = min_ind(X, i) do i
-                        C[i] && F[i] == x
+                        A[i] && F[i] == x
                     end
                 end
                 # check for satisfiability (not pure graph coloring)
@@ -267,7 +268,7 @@ function color_sat_rlf(
                     ("sat", s),
                 ])
                 # don't consider again
-                C[i] = false
+                A[i] = false
             end
 
             # progress done
@@ -276,18 +277,18 @@ function color_sat_rlf(
                 ("count", n),
             ])
 
-            # save slice
-            push!(slices, S)
+            # save color
+            push!(colors, C)
 
-            # remove from available nodes
-            A .&= .!S
+            # remove from uncolored nodes
+            U .&= .!C
 
-            @assert all(==(1), reduce(+, slices, init=A))
+            @assert all(==(1), reduce(+, colors, init=U))
         end
     end
 
-    @info "Colors: $(length(slices))"
-    return slices
+    @info "Colors: $(length(colors))"
+    return colors
 end
 
 # maximally expand slices, deversifying coverage somewhat

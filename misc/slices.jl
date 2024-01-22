@@ -20,7 +20,7 @@ import Pkg.Registry: RegistryInstance, init_package_info!
 
 include("../test/registry.jl")
 
-## load package uuid => name map from registry
+# load package uuid => name map from registry
 
 function load_packaage_uuid_name_map()
     reg_path = let p = joinpath(depots1(), "registries", "General.toml")
@@ -32,7 +32,7 @@ end
 
 const names = load_packaage_uuid_name_map()
 
-## download package download stats
+# download package download stats
 
 function load_package_download_stats()
     file = "tmp/package_requests.csv.gz"
@@ -47,7 +47,7 @@ end
 const addrs = load_package_download_stats()
 popularity(p) = -get(addrs, p, 0)
 
-## find best installable version of each package
+# find best installable version of each package
 
 function compute_best_versions(
     sat :: Resolver.SAT{P},
@@ -79,7 +79,7 @@ function compute_best_versions(
     return best
 end
 
-## installable packages above median popularity, sorted by popularity
+# installable packages above median popularity, sorted by popularity
 
 function select_popular_packages(
     best :: Dict{P,Int},
@@ -91,7 +91,7 @@ function select_popular_packages(
     resize!(packages, N)
 end
 
-## pairwise conflicts between best versions
+# pairwise conflicts between best versions
 
 function explicit_conflicts(
     packages :: Vector{P},

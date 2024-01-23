@@ -354,25 +354,40 @@ function color_sat_dsatur(
 end
 
 # maximally expand slices, deversifying coverage somewhat
-function expand_colors(
+function expand_slices(
     packages :: Vector{P},
     sat :: Resolver.SAT{P},
-    colors :: Vector{BitVector},
+    slices :: Vector{BitVector},
 ) where {P}
-    @info "Expanding colors into maximal slices..."
-    slices = map(copy, colors)
+    @info "Expanding slices..."
+    slices = map(copy, slices)
     order = copy(packages)
     todos = Set(packages)
-    for slice in slices
+    N = length(packages)
+    prog = Progress(desc="Expanding slices", N*length(slices))
+    for (k, slice) in enumerate(slices)
+        n = length(slice)
+        if n < N
+            resize!(slice, N)
+            slice[n+1:N] .= false
+        end
         with_temp_clauses(sat) do
             for (i, p) in enumerate(packages)
                 slice[i] || continue
                 sat_add(sat, p, best[p])
                 sat_add(sat)
+                next!(prog, showvalues = [
+                    ("slice", k),
+                    ("package", p),
+                ])
             end
             for p in order
                 i = findfirst(==(p), packages)
                 slice[i] && continue
+                next!(prog, showvalues = [
+                    ("slice", k),
+                    ("package", p),
+                ])
                 sat_assume(sat, p, best[p])
                 is_satisfiable(sat) || continue
                 sat_add(sat, p, best[p])
@@ -467,15 +482,21 @@ packages = select_popular_packages(best, top)
 @assert length(packages) ≥ top
 
 # pare down the SAT problem to only popular packages and deps
-Resolver.filter_pkg_info!(info, packages)
-sat = Resolver.SAT(info)
+info′ = copy(info)
+Resolver.filter_pkg_info!(info′, packages)
+sat = Resolver.SAT(info′)
 
 G₀ = explicit_conflicts(packages, best, sat)
 colors₀ = color_sat_dsatur(packages, sat, G₀)
-slices₀ = expand_colors(packages, sat, colors₀)
+slices₀ = expand_slices(packages, sat, colors₀)
 
 G₁ = implicit_conflicts(packages, best, slices₀)
 colors₁ = color_sat_dsatur(packages, sat, G₁)
-slices₁ = expand_colors(packages, sat, colors₁)
+slices₁ = expand_slices(packages, sat, colors₁)
 
 check_slices(packages, sat, slices₁)
+
+all_packages = sort!(collect(keys(best)))
+sort!(all_packages, by=popularity)
+sat = Resolver.SAT(info)
+slices = expand_slices(all_packages, sat, slices₁)

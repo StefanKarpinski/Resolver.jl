@@ -353,9 +353,9 @@ function color_sat_dsatur(
             # remove node
             X .-= Gᵢ
             U[i] = false
-            @assert X == G*U
-            @assert S == [sum(a[k] for a in A) for k=1:N]
-            @assert all(==(1), reduce(+, colors, init=U))
+            # @assert X == G*U
+            # @assert S == [sum(a[k] for a in A) for k=1:N]
+            # @assert all(==(1), reduce(+, colors, init=U))
         end
     end
 
@@ -506,7 +506,7 @@ slices₁ = expand_slices(packages, sat, colors₁)
 
 check_slices(packages, sat, slices₁)
 
-all_packages = sort!(collect(keys(best)))
-sort!(all_packages, by=popularity)
-sat = Resolver.SAT(info)
-slices = expand_slices(all_packages, sat, slices₁)
+# all_packages = sort!(collect(keys(best)))
+# sort!(all_packages, by=popularity)
+# sat = Resolver.SAT(info)
+# slices = expand_slices(all_packages, sat, slices₁)

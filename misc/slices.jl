@@ -9,8 +9,11 @@ using SparseArrays
 
 using Resolver:
     sat_assume,
+    sat_assume_var,
     sat_add,
+    sat_add_var,
     is_satisfiable,
+    sat_new_variable,
     extract_solution!,
     optimize_solution!,
     with_temp_clauses
@@ -291,62 +294,69 @@ function color_sat_dsatur(
     N = length(packages)
 
     colors = BitVector[]
-    sats = Resolver.SAT[]
+    vars = Int[] # SAT variables for colors
 
     U = trues(N)                   # uncolored nodes
     A = SparseVector{Bool,Int64}[] # adjacency vectors
     S = fill(0, N)                 # saturation counts
     X = G*U                        # conflicts counts
 
-    while (i = findfirst(U)) !== nothing
-        i, s, tied = max_ind(U, S, i)
-        if tied
-            # maximize external conflicts
-            i, = max_ind(X, i) do i
-                U[i] && S[i] == s
+    with_temp_clauses(sat) do
+        while (i = findfirst(U)) !== nothing
+            i, s, tied = max_ind(U, S, i)
+            if tied
+                # maximize external conflicts
+                i, = max_ind(X, i) do i
+                    U[i] && S[i] == s
+                end
             end
-        end
-        p = packages[i]
-        v = best[p]
-        Gᵢ = G[:,i]
-        # add node to first color it's compatible with
-        success = false
-        for (j, sat) in enumerate(sats)
-            sat_assume(sat, p, v)
-            if is_satisfiable(sat)
-                # add node to existing color
-                colors[j][i] = true
-                # add to sat instance
+            p = packages[i]
+            v = best[p]
+            Gᵢ = G[:,i]
+            # add node to first color it's compatible with
+            success = false
+            for (j, c) in enumerate(vars)
+                # check satisfiability: c & p@v
+                sat_assume_var(sat, c)
+                sat_assume(sat, p, v)
+                if is_satisfiable(sat)
+                    # add to existing color
+                    colors[j][i] = true
+                    # add to color: c => p@v
+                    sat_add_var(sat, -c)
+                    sat_add(sat, p, v)
+                    sat_add(sat)
+                    # update heuristic data
+                    A[j] .|= Gᵢ
+                    eachnz(Gᵢ) do k, _
+                        S[k] = sum(a[k] for a in A)
+                    end
+                    # end loop successfully
+                    success = true
+                    break
+                end
+            end
+            if !success
+                # create new color
+                push!(colors, falses(N))
+                colors[end][i] = true
+                # new SAT variable
+                c = sat_new_variable(sat)
+                push!(vars, c)
+                sat_add_var(sat, -c)
                 sat_add(sat, p, v)
                 sat_add(sat)
-                # update heuristic data
-                A[j] .|= Gᵢ
-                eachnz(Gᵢ) do k, _
-                    S[k] = sum(a[k] for a in A)
-                end
-                # end loop successfully
-                success = true
-                break
+                # new adjacency vector
+                push!(A, Gᵢ)
+                S .+= Gᵢ
             end
+            # remove node
+            X .-= Gᵢ
+            U[i] = false
+            @assert X == G*U
+            @assert S == [sum(a[k] for a in A) for k=1:N]
+            @assert all(==(1), reduce(+, colors, init=U))
         end
-        if !success
-            # create new color
-            push!(colors, falses(N))
-            colors[end][i] = true
-            # new corresponding sat instance
-            push!(sats, Resolver.SAT(sat.info))
-            sat_add(sats[end], p, v)
-            sat_add(sats[end])
-            # new adjacency vector
-            push!(A, Gᵢ)
-            S .+= Gᵢ
-        end
-        # remove node
-        X .-= Gᵢ
-        U[i] = false
-        @assert X == G*U
-        @assert S == [sum(a[k] for a in A) for k=1:N]
-        @assert all(==(1), reduce(+, colors, init=U))
     end
 
     @info "Colors: $(length(colors))"

@@ -112,12 +112,17 @@ function finalize(sat::SAT)
     PicoSAT.reset(pico)
 end
 
-sat_add(sat::SAT) = PicoSAT.add(sat.pico, 0)
+sat_new_variable(sat::SAT) = PicoSAT.inc_max_var(sat.pico)
+
+sat_add_var(sat::SAT, v::Integer) = PicoSAT.add(sat.pico, v)
+sat_assume_var(sat::SAT, v::Integer) = PicoSAT.assume(sat.pico, v)
+
+sat_add(sat::SAT) = sat_add_var(sat, 0)
 sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    PicoSAT.add(sat.pico, sat.vars[p] + i)
+    sat_add_var(sat, sat.vars[p] + i)
 
 sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    PicoSAT.assume(sat.pico, sat.vars[p] + i)
+    sat_assume_var(sat, sat.vars[p] + i)
 sat_assume(sat::SAT{P}, px::SetOrVec{P}) where {P} =
     foreach(p -> sat_assume(sat, p), px)
 

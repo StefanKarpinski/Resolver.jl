@@ -500,13 +500,13 @@ G₀ = explicit_conflicts(packages, best, sat)
 colors₀ = color_sat_dsatur(packages, sat, G₀)
 slices₀ = expand_slices(packages, sat, colors₀)
 
-G₁ = implicit_conflicts(packages, best, slices₀)
-colors₁ = color_sat_dsatur(packages, sat, G₁)
-slices₁ = expand_slices(packages, sat, colors₁)
+G = implicit_conflicts(packages, best, slices₀)
+colors = color_sat_dsatur(packages, sat, G)
+slices = expand_slices(packages, sat, colors)
 
-check_slices(packages, sat, slices₁)
+check_slices(packages, sat, slices)
 
 # all_packages = sort!(collect(keys(best)))
 # sort!(all_packages, by=popularity)
 # sat = Resolver.SAT(info)
-# slices = expand_slices(all_packages, sat, slices₁)
+# slices = expand_slices(all_packages, sat, slices)

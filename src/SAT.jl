@@ -123,8 +123,12 @@ sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
 
 sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
     sat_assume_var(sat, sat.vars[p] + i)
-sat_assume(sat::SAT{P}, px::SetOrVec{P}) where {P} =
-    foreach(p -> sat_assume(sat, p), px)
+sat_assume(sat::SAT{P}, v::SetOrVec{P}) where {P} =
+    foreach(p -> sat_assume(sat, p), v)
+sat_assume(sat::SAT{P}, d::Dict{P,<:Integer}) where {P} =
+    for (p, i) in d
+        sat_assume(sat, p, i)
+    end
 
 is_satisfiable(sat::SAT) =
     PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE

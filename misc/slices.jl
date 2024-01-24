@@ -15,6 +15,7 @@ using Resolver:
     is_satisfiable,
     sat_new_variable,
     extract_solution!,
+    solution,
     optimize_solution!,
     with_temp_clauses
 
@@ -444,40 +445,20 @@ function implicit_conflicts(
     return G
 end
 
-# check that a slice is satisfiable
+# sat add a slice
 
-function check_slice(
+function slice_dict(
     packages :: Vector{P},
-    sat :: Resolver.SAT{P},
-    slice :: AbstractVector{Int},
-) where {P}
-    with_temp_clauses(sat) do
-        for i in slice
-            p = packages[i]
-            v = best[p]
-            sat_add(sat, p, v)
-            sat_add(sat)
-        end
-        @assert is_satisfiable(sat)
-    end
-end
-
-function check_slice(
-    packages :: Vector{P},
-    sat :: Resolver.SAT{P},
+    best :: Dict{P,Int},
     slice :: AbstractVector{Bool},
 ) where {P}
-    check_slice(packages, sat, findall(slice))
-end
-
-function check_slices(
-    packages :: Vector{P},
-    sat :: Resolver.SAT{P},
-    slices :: AbstractVector,
-) where {P}
-    for slice in slices
-        check_slice(packages, sat, slice)
+    vers = Dict{P,Int}()
+    for (i, p) in enumerate(packages)
+        i ≤ length(slice) || break
+        slice[i] || continue
+        vers[p] = best[p]
     end
+    return vers
 end
 
 ## top-level code
@@ -493,9 +474,8 @@ packages = select_popular_packages(best, top)
 @assert length(packages) ≥ top
 
 # pare down the SAT problem to only popular packages and deps
-info′ = copy(info)
-Resolver.filter_pkg_info!(info′, packages)
-sat = Resolver.SAT(info′)
+Resolver.filter_pkg_info!(info, packages)
+sat = Resolver.SAT(info)
 
 G₀ = explicit_conflicts(packages, best, sat)
 colors₀ = color_sat_dsatur(packages, sat, G₀)
@@ -505,9 +485,52 @@ G = implicit_conflicts(packages, best, slices₀)
 colors = color_sat_dsatur(packages, sat, G)
 slices = expand_slices(packages, sat, colors)
 
-check_slices(packages, sat, slices)
+# check slices
+for slice in slices
+    vers = slice_dict(packages, best, slice)
+    sat_assume(sat, vers)
+    @assert is_satisfiable(sat)
+end
 
-# all_packages = sort!(collect(keys(best)))
-# sort!(all_packages, by=popularity)
-# sat = Resolver.SAT(info)
-# slices = expand_slices(all_packages, sat, slices)
+# turn slices into solutions
+sols = [slice_dict(packages, best, slice) for slice in slices]
+for sol in sols
+    with_temp_clauses(sat) do
+        for (p, v) in sol
+            sat_add(sat, p, v)
+            sat_add(sat)
+        end
+        for p in packages
+            p in keys(sol) && continue
+            sat_assume(sat, p)
+            is_satisfiable(sat) || continue
+
+            # require some version of p
+            sat_add(sat, p)
+            sat_add(sat)
+            extract_solution!(sat, sol)
+
+            # optimize p's version
+            best[p] < sol[p] &&
+            optimize_solution!(sat, sol) do
+                for i = 1:sol[p]-1
+                    sat_add(sat, p, i)
+                end
+                sat_add(sat)
+            end
+
+            # fix p's version
+            sat_add(sat, p, sol[p])
+            sat_add(sat)
+        end
+    end
+end
+
+vers = Dict{String,Vector{Int}}()
+for sol in sols
+    for (p, v) in sol
+        V = get!(()->Int[], vers, p)
+        v in V || push!(V, v)
+    end
+end
+map(sort!, values(vers))

@@ -315,7 +315,8 @@ function color_sat_dsatur(
             Gᵢ = G[:,i]
             # add node to first color it's compatible with
             success = false
-            for (j, c) in enumerate(vars)
+            for j in sortperm(colors, by = count)
+                c = vars[j]
                 # check satisfiability: c & p@v
                 sat_assume_var(sat, c)
                 sat_assume(sat, p, v)

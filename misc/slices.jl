@@ -483,15 +483,24 @@ slices₀ = expand_slices(packages, sat, colors₀)
 
 G = implicit_conflicts(packages, best, slices₀)
 colors = color_sat_dsatur(packages, sat, G)
-slices = expand_slices(packages, sat, colors)
 
-# check slices
-for slice in slices
-    vers = slice_dict(packages, best, slice)
-    sat_assume(sat, vers)
-    @assert is_satisfiable(sat)
+# turn colors into solutions
+sols = [slice_dict(packages, best, color) for color in colors]
+for sol in sols
+    with_temp_clauses(sat) do
+        for (p, v) in sol
+            sat_add(sat, p, v)
+            sat_add(sat)
+        end
+        pkgs, inds = resolve_inds(sat, keys(sol))
+        @show size(inds, 2)
+        union!(packages, pkgs)
+    end
 end
+sort!(packages)
+sort!(packages, by = popularity)
 
+#=
 # turn slices into solutions
 sols = [slice_dict(packages, best, slice) for slice in slices]
 for sol in sols
@@ -534,3 +543,4 @@ for sol in sols
     end
 end
 map(sort!, values(vers))
+=#

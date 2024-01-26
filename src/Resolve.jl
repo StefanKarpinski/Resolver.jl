@@ -1,13 +1,10 @@
 RESOLVE_MAX_SOLUTIONS::Int = 8
 
-function resolve(
-    sat  :: SAT{P,V},
+function resolve_core(
+    sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-) where {P,V}
-    # sort reqs for determinism
-    reqs = sort!(collect(reqs))
-
+) where {P}
     # solution search data strutures
     sol = Dict{P,Int}() # current solution
     sols = typeof(sol)[] # all solutions
@@ -162,9 +159,24 @@ function resolve(
         end
     end
 
+    # return solutions
+    return sols
+end
+
+function resolve(
+    sat  :: SAT{P,V},
+    reqs :: SetOrVec{P} = keys(sat.info);
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+) where {P,V}
+    # sort reqs for determinism
+    reqs = sort!(collect(reqs))
+
+    # generate solutions
+    sols = resolve_core(sat, reqs; max)
+
     # sort packages
     if !isempty(sols)
-        pkgs = sort!(collect(mapreduce(keys, union, sols, init=reqs)))
+        pkgs = sort!(collect(mapreduce(keys, ∪, sols, init=reqs)))
         sort!(pkgs, by = !in(reqs)) # required ones first
     else
         pkgs = reqs

@@ -8,6 +8,7 @@ using Serialization
 using SparseArrays
 
 using Resolver:
+    resolve_core,
     sat_assume,
     sat_assume_var,
     sat_add,
@@ -492,9 +493,10 @@ for sol in sols
             sat_add(sat, p, v)
             sat_add(sat)
         end
-        pkgs, inds = resolve_inds(sat, keys(sol))
-        @show size(inds, 2)
-        union!(packages, pkgs)
+        sols′ = resolve_core(sat, keys(sol))
+        for sol′ in sols′
+            union!(packages, keys(sol′))
+        end
     end
 end
 sort!(packages)

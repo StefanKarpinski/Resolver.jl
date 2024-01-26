@@ -173,11 +173,14 @@ function solution(sat::SAT{P,V}) where {P,V}
     return sol
 end
 
+sat_push(sat::SAT) = PicoSAT.push(sat.pico)
+sat_pop(sat::SAT) = PicoSAT.pop(sat.pico)
+
 function with_temp_clauses(body::Function, sat::SAT)
-    PicoSAT.push(sat.pico)
+    sat_push(sat)
     try body()
     finally
-        PicoSAT.pop(sat.pico)
+        sat_pop(sat)
     end
 end
 

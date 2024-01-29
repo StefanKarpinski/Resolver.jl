@@ -446,22 +446,6 @@ function implicit_conflicts(
     return G
 end
 
-# sat add a slice
-
-function slice_dict(
-    packages :: Vector{P},
-    best :: Dict{P,Int},
-    slice :: AbstractVector{Bool},
-) where {P}
-    vers = Dict{P,Int}()
-    for (i, p) in enumerate(packages)
-        i ≤ length(slice) || break
-        slice[i] || continue
-        vers[p] = best[p]
-    end
-    return vers
-end
-
 ## top-level code
 
 @info "Loading pkg info..."
@@ -471,36 +455,46 @@ best = compute_best_versions(sat)
 
 # select top most popular packages
 top = 1024
-packages = select_popular_packages(best, top)
-@assert length(packages) ≥ top
+packages₀ = select_popular_packages(best, top)
+@assert length(packages₀) ≥ top
 
 # pare down the SAT problem to only popular packages and deps
-Resolver.filter_pkg_info!(info, packages)
+Resolver.filter_pkg_info!(info, packages₀)
 sat = Resolver.SAT(info)
 
-G₀ = explicit_conflicts(packages, best, sat)
-colors₀ = color_sat_dsatur(packages, sat, G₀)
-slices₀ = expand_slices(packages, sat, colors₀)
+G₀ = explicit_conflicts(packages₀, best, sat)
+colors₀ = color_sat_dsatur(packages₀, sat, G₀)
+slices₀ = expand_slices(packages₀, sat, colors₀)
 
-G = implicit_conflicts(packages, best, slices₀)
-colors = color_sat_dsatur(packages, sat, G)
+G₁ = implicit_conflicts(packages₀, best, slices₀)
+colors₁ = color_sat_dsatur(packages₀, sat, G₁)
 
 # turn colors into solutions
-sols = [slice_dict(packages, best, color) for color in colors]
-for sol in sols
+packages₁ = mapreduce(∪, colors₁) do color
     with_temp_clauses(sat) do
-        for (p, v) in sol
-            sat_add(sat, p, v)
+        reqs = packages₀[color]
+        for p in reqs
+            sat_add(sat, p, best[p])
             sat_add(sat)
         end
-        sols′ = resolve_core(sat, keys(sol))
-        for sol′ in sols′
-            union!(packages, keys(sol′))
-        end
+        resolve(sat, reqs)[1]
     end
 end
-sort!(packages)
-sort!(packages, by = popularity)
+sort!(packages₁)
+sort!(packages₁, by = popularity)
+@assert packages₀ == packages₁[1:length(packages₀)]
+
+# potentially larger pkg info data
+info = Resolver.pkg_info(registry.provider(), packages₁)
+sat = Resolver.SAT(info)
+
+G₂ = explicit_conflicts(packages₁, best, sat)
+colors₂ = color_sat_dsatur(packages₁, sat, G₂)
+slices₂ = expand_slices(packages₁, sat, colors₂)
+
+G₃ = implicit_conflicts(packages₁, best, slices₂)
+colors₃ = color_sat_dsatur(packages₁, sat, G₃)
+
 
 #=
 # turn slices into solutions

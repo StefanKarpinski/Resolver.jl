@@ -1,29 +1,35 @@
+module Slices
+
+export
+    popularity,
+    compute_best_versions,
+    select_popular_packages,
+    explicit_conflicts,
+    color_sat_rlf,
+    color_sat_dsatur,
+    expand_slices,
+    implicit_conflicts
+
 using CSV
 using DataFrames
 using Downloads
 using LinearAlgebra
 using ProgressMeter
-using Resolver
 using Serialization
 using SparseArrays
 
 using Resolver:
-    resolve_core,
+    Resolver,
     sat_assume,
     sat_assume_var,
     sat_add,
     sat_add_var,
     is_satisfiable,
     sat_new_variable,
-    extract_solution!,
-    solution,
-    optimize_solution!,
     with_temp_clauses
 
 import Pkg: depots1
 import Pkg.Registry: RegistryInstance, init_package_info!
-
-include("../test/registry.jl")
 
 # load package uuid => name map from registry
 
@@ -35,22 +41,22 @@ function load_packaage_uuid_name_map()
     Dict(string(p.uuid) => p.name for p in values(reg_inst.pkgs))
 end
 
-const names = load_packaage_uuid_name_map()
+const NAMES = load_packaage_uuid_name_map()
 
 # download package download stats
 
 function load_package_download_stats()
-    file = "tmp/package_requests.csv.gz"
+    file = joinpath(@__DIR__, "../tmp/package_requests.csv.gz")
     url = "https://julialang-logs.s3.amazonaws.com/public_outputs/current/package_requests.csv.gz"
     isfile(file) || Downloads.download(url, file)
     df = CSV.read(`gzcat $file`, DataFrame)
     filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
     @assert allunique(df.package_uuid)
-    Dict(names[r.package_uuid] => r.request_addrs for r in eachrow(df))
+    Dict(NAMES[r.package_uuid] => r.request_addrs for r in eachrow(df))
 end
 
-const addrs = load_package_download_stats()
-popularity(p::AbstractString) = -get(addrs, p, 0)
+const ADDRS = load_package_download_stats()
+popularity(p::AbstractString) = -get(ADDRS, p, 0)
 popularity((p, v)::Pair{<:AbstractString,<:Integer}) = popularity(p)
 
 # find best installable version of each package
@@ -58,7 +64,7 @@ popularity((p, v)::Pair{<:AbstractString,<:Integer}) = popularity(p)
 function compute_best_versions(
     sat :: Resolver.SAT{P},
 ) where {P}
-    best_file = "tmp/best_vers.jls"
+    best_file = joinpath(@__DIR__, "../tmp/best_vers.jls")
     if ispath(best_file)
         best = open(deserialize, best_file)
     else
@@ -443,113 +449,4 @@ function implicit_conflicts(
     return G
 end
 
-## top-level code
-
-@info "Loading pkg info..."
-info = Resolver.pkg_info(registry.provider())
-sat = Resolver.SAT(info)
-best = compute_best_versions(sat)
-
-# select top most popular packages
-top = 1024
-packages₀ = select_popular_packages(best, top)
-@assert length(packages₀) ≥ top
-
-# pare down the SAT problem to only popular packages and deps
-Resolver.filter_pkg_info!(info, map(first, packages₀))
-sat = Resolver.SAT(info)
-
-G₀ = explicit_conflicts(packages₀, info)
-colors₀ = color_sat_dsatur(packages₀, sat, G₀)
-slices₀ = expand_slices(packages₀, sat, colors₀)
-
-G₁ = implicit_conflicts(packages₀, sat, slices₀)
-colors₁ = color_sat_dsatur(packages₀, sat, G₁)
-
-# find all packages needed for optimal solutions
-packages₁ = mapreduce(union!, colors₁) do color
-    with_temp_clauses(sat) do
-        reqs = packages₀[color]
-        for (p, v) in reqs
-            sat_add(sat, p, v)
-            sat_add(sat)
-        end
-        mapreduce(collect, union!, resolve_core(sat, first.(reqs)))
-    end
-end
-sort!(packages₁)
-sort!(packages₁, by = popularity)
-@assert first.(packages₀) ==
-    unique(first.(packages₁))[1:length(packages₀)]
-
-G₂ = explicit_conflicts(packages₁, info)
-colors₂ = color_sat_dsatur(packages₁, sat, G₂)
-slices₂ = expand_slices(packages₁, sat, colors₂)
-
-G₃ = implicit_conflicts(packages₁, sat, slices₂)
-colors₃ = color_sat_dsatur(packages₁, sat, G₃)
-
-packages = packages₁
-colors = colors₃
-
-vers = Dict{String,Vector{Int}}()
-for color in colors
-    with_temp_clauses(sat) do
-        reqs = packages[color]
-        for (p, v) in reqs
-            sat_add(sat, p, v)
-            sat_add(sat)
-        end
-        sols = resolve_core(sat, first.(reqs))
-        for sol in sols, (p, v) in sol
-            V = get!(()->Int[], vers, p)
-            v in V || push!(V, v)
-        end
-    end
-end
-foreach(sort!, values(vers))
-
-#=
-# turn slices into solutions
-sols = [slice_dict(packages, best, slice) for slice in slices]
-for sol in sols
-    with_temp_clauses(sat) do
-        for (p, v) in sol
-            sat_add(sat, p, v)
-            sat_add(sat)
-        end
-        for p in packages
-            p in keys(sol) && continue
-            sat_assume(sat, p)
-            is_satisfiable(sat) || continue
-
-            # require some version of p
-            sat_add(sat, p)
-            sat_add(sat)
-            extract_solution!(sat, sol)
-
-            # optimize p's version
-            best[p] < sol[p] &&
-            optimize_solution!(sat, sol) do
-                for i = 1:sol[p]-1
-                    sat_add(sat, p, i)
-                end
-                sat_add(sat)
-            end
-
-            # fix p's version
-            sat_add(sat, p, sol[p])
-            sat_add(sat)
-        end
-    end
-end
-
-vers = Dict{String,Vector{Int}}()
-for sol in sols
-    for (p, v) in sol
-        V = get!(()->Int[], vers, p)
-        v in V || push!(V, v)
-    end
-end
-map(sort!, values(vers))
-=#
+end # module

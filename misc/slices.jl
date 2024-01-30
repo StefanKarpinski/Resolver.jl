@@ -495,6 +495,62 @@ slices₂ = expand_slices(packages₁, sat, colors₂)
 G₃ = implicit_conflicts(packages₁, best, slices₂)
 colors₃ = color_sat_dsatur(packages₁, sat, G₃)
 
+packages = packages₁
+colors = colors₃
+
+vers = Dict{String,Vector{Int}}()
+for color in colors
+    with_temp_clauses(sat) do
+        reqs = packages[color]
+        for p in reqs
+            sat_add(sat, p, best[p])
+            sat_add(sat)
+        end
+        sols = resolve_core(sat, reqs)
+        for sol in sols, (p, v) in sol
+            V = get!(()->Int[], vers, p)
+            v in V || push!(V, v)
+        end
+    end
+end
+foreach(sort!, values(vers))
+filter!(vers) do (p, V)
+    length(V) > 1
+end
+
+# combatibility count
+cc = Dict{String,Dict{VersionNumber,Int}}()
+for color in colors
+    with_temp_clauses(sat) do
+        reqs = packages[color]
+        for p in reqs
+            sat_add(sat, p, best[p])
+            sat_add(sat)
+        end
+        for (p, V) in vers
+            d = get!(valtype(cc), cc, p)
+            for v in V
+                vv = info[p].versions[v]
+                if v == best[p]
+                    # keep best version first
+                    d[vv] = length(colors) + 1
+                else
+                    sat_assume(sat, p, v)
+                    s = is_satisfiable(sat)
+                    d[vv] = get(d, vv, 0) + s
+                end
+            end
+        end
+    end
+end
+
+# reorder by compatibility
+data = Resolver.pkg_data(registry.provider(), packages)
+for (p, data_p) in data
+    sort!(data_p.versions, by = v -> -get(get(valtype(cc), cc, p), v, 0))
+end
+info = Resolver.pkg_info(data, packages)
+sat = Resolver.SAT(info)
 
 #=
 # turn slices into solutions

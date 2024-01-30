@@ -50,7 +50,8 @@ function load_package_download_stats()
 end
 
 const addrs = load_package_download_stats()
-popularity(p) = -get(addrs, p, 0)
+popularity(p::AbstractString) = -get(addrs, p, 0)
+popularity((p, v)::Pair{<:AbstractString,<:Integer}) = popularity(p)
 
 # find best installable version of each package
 
@@ -90,7 +91,7 @@ function select_popular_packages(
     best :: Dict{P,Int},
     top  :: Integer,
 ) where {P}
-    packages = sort!(collect(keys(best)))
+    packages = sort!(collect(best))
     sort!(packages, by = popularity)
     N = searchsortedlast(packages, packages[top], by = popularity)
     resize!(packages, N)
@@ -99,23 +100,20 @@ end
 # pairwise conflicts between best versions
 
 function explicit_conflicts(
-    packages :: Vector{P},
-    best :: Dict{P,Int},
-    sat :: Resolver.SAT{P},
+    packages :: Vector{Pair{P,Int}},
+    info :: Dict{String,<:Resolver.PkgInfo{P}}
 ) where {P}
     @info "Constructing explicit conflict graph..."
     N = length(packages)
     G = spzeros(Bool, N, N)
-    for (i, p) in enumerate(packages)
-        v = best[p]
-        info_p = sat.info[p]
-        for (q, b) in info_p.interacts
-            w = get(best, q, 0)
-            w == 0 && continue
-            info_p.conflicts[v, b+w] || continue
-            j = findfirst(==(q), packages)
-            j === nothing && continue
-            G[i, j] = true
+    for (i, (p, v)) in enumerate(packages)
+        T_p = info[p].interacts
+        X_p = info[p].conflicts
+        for (j, (q, w)) in enumerate(packages)
+            if p == q  && v != w ||
+                q in keys(T_p) && X_p[v, T_p[q]+w]
+                G[i, j] = true
+            end
         end
     end
     return G
@@ -171,7 +169,7 @@ end
 # https://en.wikipedia.org/wiki/Recursive_largest_first_algorithm
 
 function color_sat_rlf(
-    packages :: Vector{P},
+    packages :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     G :: AbstractMatrix{Bool},
 ) where {P}
@@ -202,8 +200,8 @@ function color_sat_rlf(
                 C[i] = true
                 n += 1
                 # add to sat instance
-                p = packages[i]
-                sat_add(sat, p, best[p])
+                p, v = packages[i]
+                sat_add(sat, p, v)
                 sat_add(sat)
                 # update heuristic data
                 Gᵢ = G[:,i]
@@ -231,7 +229,7 @@ function color_sat_rlf(
                 ("avail", a - n),
                 ("count", n),
                 ("index", i),
-                ("package", packages[i]),
+                ("version", packages[i]),
                 ("sat", true),
             ])
 
@@ -248,8 +246,8 @@ function color_sat_rlf(
                     end
                 end
                 # check for satisfiability (not done for pure graph coloring)
-                p = packages[i]
-                sat_assume(sat, p, best[p])
+                p, v = packages[i]
+                sat_assume(sat, p, v)
                 s = is_satisfiable(sat)
                 s && add_node(i)
                 # progress update
@@ -257,7 +255,7 @@ function color_sat_rlf(
                     ("avail", a - n),
                     ("count", n),
                     ("index", i),
-                    ("package", p),
+                    ("version", p => v),
                     ("sat", s),
                 ])
                 # don't consider again
@@ -288,7 +286,7 @@ end
 # https://en.wikipedia.org/wiki/Recursive_largest_first_algorithm
 
 function color_sat_dsatur(
-    packages :: Vector{P},
+    packages :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     G :: AbstractMatrix{Bool},
 ) where {P}
@@ -312,8 +310,7 @@ function color_sat_dsatur(
                     U[i] && S[i] == s
                 end
             end
-            p = packages[i]
-            v = best[p]
+            p, v = packages[i]
             Gᵢ = G[:,i]
             # add node to first color it's compatible with
             success = false
@@ -368,7 +365,7 @@ end
 
 # maximally expand slices, deversifying coverage somewhat
 function expand_slices(
-    packages :: Vector{P},
+    packages :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
 ) where {P}
@@ -385,25 +382,25 @@ function expand_slices(
             slice[n+1:N] .= false
         end
         with_temp_clauses(sat) do
-            for (i, p) in enumerate(packages)
+            for (i, (p, v)) in enumerate(packages)
                 slice[i] || continue
-                sat_add(sat, p, best[p])
+                sat_add(sat, p, v)
                 sat_add(sat)
                 next!(prog, showvalues = [
                     ("slice", k),
-                    ("package", p),
+                    ("version", p => v),
                 ])
             end
-            for p in order
-                i = findfirst(==(p), packages)
+            for (p, v) in order
+                i = findfirst(==(p => v), packages)
                 slice[i] && continue
                 next!(prog, showvalues = [
                     ("slice", k),
-                    ("package", p),
+                    ("version", p => v),
                 ])
-                sat_assume(sat, p, best[p])
+                sat_assume(sat, p, v)
                 is_satisfiable(sat) || continue
-                sat_add(sat, p, best[p])
+                sat_add(sat, p, v)
                 sat_add(sat)
                 slice[i] = true
                 delete!(todos, p)
@@ -417,28 +414,28 @@ end
 # compute the implicit conflict graph, i.e. which optimal versions of packages
 # are in practice pairwise uninstallable, as opposed to just explicit conflicts
 function implicit_conflicts(
-    packages :: Vector{P},
-    best :: Dict{P,Int},
+    packages :: Vector{Pair{P,Int}},
+    sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
 ) where {P}
     @info "Computing implicit conflict graph..."
     N = length(packages)
-    # summarize packages by slices they belong to
+    # summarize vertices by slices they belong to
     S = [[s[i] for s in slices] for i=1:N]
-    # for each inclusiion pattern, compute complement of union of slices
+    # for each inclusion pattern, compute complement of union of slices
     Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in unique(S))
     # compute the true incompatibility graph
     prog = Progress(desc="Implicit conflicts", N)
     G = spzeros(Bool, N, N)
-    for (i, p) in enumerate(packages)
+    for (i, (p, v)) in enumerate(packages)
         next!(prog; showvalues = [
-            ("package", p),
+            ("version", p => v),
         ])
         for j in Q[S[i]]
             G[i, j] && continue
-            q = packages[j]
-            sat_assume(sat, p, best[p])
-            sat_assume(sat, q, best[q])
+            q, w = packages[j]
+            sat_assume(sat, p, v)
+            sat_assume(sat, q, w)
             is_satisfiable(sat) && continue
             G[i, j] = true
         end
@@ -459,40 +456,37 @@ packages₀ = select_popular_packages(best, top)
 @assert length(packages₀) ≥ top
 
 # pare down the SAT problem to only popular packages and deps
-Resolver.filter_pkg_info!(info, packages₀)
+Resolver.filter_pkg_info!(info, map(first, packages₀))
 sat = Resolver.SAT(info)
 
-G₀ = explicit_conflicts(packages₀, best, sat)
+G₀ = explicit_conflicts(packages₀, info)
 colors₀ = color_sat_dsatur(packages₀, sat, G₀)
 slices₀ = expand_slices(packages₀, sat, colors₀)
 
-G₁ = implicit_conflicts(packages₀, best, slices₀)
+G₁ = implicit_conflicts(packages₀, sat, slices₀)
 colors₁ = color_sat_dsatur(packages₀, sat, G₁)
 
-# turn colors into solutions
-packages₁ = mapreduce(∪, colors₁) do color
+# find all packages needed for optimal solutions
+packages₁ = mapreduce(union!, colors₁) do color
     with_temp_clauses(sat) do
         reqs = packages₀[color]
-        for p in reqs
-            sat_add(sat, p, best[p])
+        for (p, v) in reqs
+            sat_add(sat, p, v)
             sat_add(sat)
         end
-        resolve(sat, reqs)[1]
+        mapreduce(collect, union!, resolve_core(sat, first.(reqs)))
     end
 end
 sort!(packages₁)
 sort!(packages₁, by = popularity)
-@assert packages₀ == packages₁[1:length(packages₀)]
+@assert first.(packages₀) ==
+    unique(first.(packages₁))[1:length(packages₀)]
 
-# potentially larger pkg info data
-info = Resolver.pkg_info(registry.provider(), packages₁)
-sat = Resolver.SAT(info)
-
-G₂ = explicit_conflicts(packages₁, best, sat)
+G₂ = explicit_conflicts(packages₁, info)
 colors₂ = color_sat_dsatur(packages₁, sat, G₂)
 slices₂ = expand_slices(packages₁, sat, colors₂)
 
-G₃ = implicit_conflicts(packages₁, best, slices₂)
+G₃ = implicit_conflicts(packages₁, sat, slices₂)
 colors₃ = color_sat_dsatur(packages₁, sat, G₃)
 
 packages = packages₁
@@ -502,11 +496,11 @@ vers = Dict{String,Vector{Int}}()
 for color in colors
     with_temp_clauses(sat) do
         reqs = packages[color]
-        for p in reqs
-            sat_add(sat, p, best[p])
+        for (p, v) in reqs
+            sat_add(sat, p, v)
             sat_add(sat)
         end
-        sols = resolve_core(sat, reqs)
+        sols = resolve_core(sat, first.(reqs))
         for sol in sols, (p, v) in sol
             V = get!(()->Int[], vers, p)
             v in V || push!(V, v)
@@ -514,43 +508,6 @@ for color in colors
     end
 end
 foreach(sort!, values(vers))
-filter!(vers) do (p, V)
-    length(V) > 1
-end
-
-# combatibility count
-cc = Dict{String,Dict{VersionNumber,Int}}()
-for color in colors
-    with_temp_clauses(sat) do
-        reqs = packages[color]
-        for p in reqs
-            sat_add(sat, p, best[p])
-            sat_add(sat)
-        end
-        for (p, V) in vers
-            d = get!(valtype(cc), cc, p)
-            for v in V
-                vv = info[p].versions[v]
-                if v == best[p]
-                    # keep best version first
-                    d[vv] = length(colors) + 1
-                else
-                    sat_assume(sat, p, v)
-                    s = is_satisfiable(sat)
-                    d[vv] = get(d, vv, 0) + s
-                end
-            end
-        end
-    end
-end
-
-# reorder by compatibility
-data = Resolver.pkg_data(registry.provider(), packages)
-for (p, data_p) in data
-    sort!(data_p.versions, by = v -> -get(get(valtype(cc), cc, p), v, 0))
-end
-info = Resolver.pkg_info(data, packages)
-sat = Resolver.SAT(info)
 
 #=
 # turn slices into solutions

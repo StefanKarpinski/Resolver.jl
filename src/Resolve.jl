@@ -1,13 +1,11 @@
 RESOLVE_MAX_SOLUTIONS::Int = 8
 
-# IDEA: It might be possible to return the lexicographically best solutions
-# efficiently by requiring the next solutions to lexicographically improve on
-# the current best solution.
-
+# find the first `max` optimal solutions in lexicographical ordering
 function resolve_core(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
 ) where {P}
     # solution search data strutures
     sol = Dict{P,Int}() # current solution
@@ -21,60 +19,44 @@ function resolve_core(
             extract_solution!(sat, sol)
             @assert opts ⊆ keys(sol)
 
-            # optimize wrt quality
-            optimize_solution!(sat, sol) do
-                # clauses: disallow non-improvements
-                for p in opts
-                    p in keys(sol) || continue
-                    # allow as-good-or-better versions
-                    for i = 1:sol[p]
-                        sat_add(sat, p, i)
-                    end
-                    sat_add(sat)
-                end
-                # clause: require some improvement
-                for p in opts
-                    p in keys(sol) || continue
-                    # any strictly better versions
-                    for i = 1:sol[p]-1
-                        sat_add(sat, p, i)
-                    end
-                end
-                sat_add(sat)
-            end
-
-            # next optimization set: new dependencies
-            opts′ = empty(opts)
-            for p in opts
-                p in keys(sol) || continue
-                info_p = sat.info[p]
-                i = sol[p]
-                for (j, q) in enumerate(info_p.depends)
-                    info_p.conflicts[i, j] || continue
-                    q ∈ rest && push!(opts′, q)
-                end
-            end
-
-            if !isempty(opts′)
-                # recursion required
-                with_temp_clauses(sat) do
-                    # clauses: fix already optimized versions
-                    for p in opts
-                        p in keys(sol) || continue
-                        sat_add(sat, p, sol[p])
+            with_temp_clauses(sat) do
+                # optimize wrt quality
+                for p in sort!(collect(opts); by)
+                    optimize_solution!(sat, sol) do
+                        # some strictly better version
+                        for i = 1:sol[p]-1
+                            sat_add(sat, p, i)
+                        end
                         sat_add(sat)
                     end
-                    # recursive search call
+                    # fix optimized version
+                    sat_add(sat, p, sol[p])
+                    sat_add(sat)
+                end
+
+                # next optimization set: new dependencies
+                opts′ = empty(opts)
+                for p in opts
+                    p in keys(sol) || continue
+                    info_p = sat.info[p]
+                    i = sol[p]
+                    for (j, q) in enumerate(info_p.depends)
+                        info_p.conflicts[i, j] || continue
+                        q ∈ rest && push!(opts′, q)
+                    end
+                end
+
+                if !isempty(opts′) # recursive search
                     rest′ = setdiff(rest, opts′)
                     find_sat_solutions(opts′, rest′)
+                else # nothing left to optimize
+                    for p in rest
+                        # delete unreachable packages
+                        delete!(sol, p)
+                    end
+                    # save optimal solution
+                    push!(sols, copy(sol))
                 end
-            else # nothing left to optimize
-                for p in rest
-                    # delete unreachable packages
-                    delete!(sol, p)
-                end
-                # save optimal solution
-                push!(sols, copy(sol))
             end
             # max if we've hit max number of solutions
             0 < max ≤ length(sols) && break
@@ -99,33 +81,20 @@ function resolve_core(
             extract_solution!(sat, sol)
             @assert opts ⊈ keys(sol)
 
-            # optimize wrt coverage
-            optimize_solution!(sat, sol) do
-                # clauses: disallow non-improvements
-                for p in opts
-                    p in keys(sol) || continue
-                    sat_add(sat, p)
-                    sat_add(sat)
-                end
-                # clause: require some improvement
-                for p in opts
-                    p in keys(sol) && continue
-                    sat_add(sat, p)
-                end
-                sat_add(sat)
-            end
-
-            # next optimization set: subset of satisfied opts
-            opts′ = filter(in(keys(sol)), opts)
-            @assert !isempty(opts′)
-
             with_temp_clauses(sat) do
-                # clauses: don't regress opts coverage
-                for p in opts
-                    p in keys(sol) || continue
+                # optimize wrt coverage
+                for p in sort!(collect(opts); by)
+                    sat_assume(sat, p)
+                    is_satisfiable(sat) || continue
                     sat_add(sat, p)
                     sat_add(sat)
                 end
+
+                # next optimization set: subset of satisfied opts
+                extract_solution!(sat, sol)
+                opts′ = filter(in(keys(sol)), opts)
+                @assert !isempty(opts′)
+
                 # recursive search call
                 find_sat_solutions(opts′, rest)
             end
@@ -171,19 +140,18 @@ function resolve(
     sat  :: SAT{P,V},
     reqs :: SetOrVec{P} = keys(sat.info);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
 ) where {P,V}
-    # sort reqs for determinism
-    reqs = sort!(collect(reqs))
-
     # generate solutions
     sols = resolve_core(sat, reqs; max)
 
     # sort packages
+    pkgs = collect(reqs)
+    @assert pkgs !== reqs
     if !isempty(sols)
-        pkgs = sort!(collect(mapreduce(keys, ∪, sols, init=reqs)))
+        pkgs = mapreduce(keys, union!, sols, init=pkgs)
+        sort!(pkgs; by)
         sort!(pkgs, by = !in(reqs)) # required ones first
-    else
-        pkgs = reqs
     end
 
     # sort solutions
@@ -207,6 +175,7 @@ function resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(deps, reqs; filter)
@@ -217,6 +186,7 @@ function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
     filter :: Bool = true,
 ) where {P}
     info = pkg_info(data, reqs; filter)
@@ -227,6 +197,7 @@ function resolve(
     info :: Dict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
 ) where {P,V}
     sat = SAT(info)
     try resolve(sat, reqs; max)

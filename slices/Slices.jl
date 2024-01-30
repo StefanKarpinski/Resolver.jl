@@ -384,13 +384,7 @@ function expand_slices!(
                 sat_add(sat)
             end
             reqs = map(first, packages)
-            sols = resolve_core(sat, reqs)
-            # sort solutions lexicographically
-            for p in reverse(unique(first.(packages)))
-                # lowest version best, no version worst
-                sort!(sols, by = sol -> get(sol, p, typemax(Int)))
-            end
-            first(sols)
+            only(resolve_core(sat, reqs; max=1, by=popularity))
         end
         for (i, (p, v)) in enumerate(packages)
             slice[i] = get(sol, p, 0) == v

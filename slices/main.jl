@@ -37,8 +37,8 @@ packages₁ = mapreduce(union!, colors₁) do color
             sat_add(sat, p, v)
             sat_add(sat)
         end
-        sols = resolve_core(sat, first.(fixed), max=0)
-        mapreduce(collect, union!, sols)
+        sol = only(resolve_core(sat, first.(fixed); max=1, by=popularity))
+        sort!(collect(sol))
     end
 end
 sort!(packages₁)
@@ -62,9 +62,7 @@ for slice in slices
             sat_add(sat, p, v)
             sat_add(sat)
         end
-        sols = resolve_core(sat, first.(fixed))
-        @assert length(sols) == 1
-        sol = only(sols)
+        sol = only(resolve_core(sat, first.(fixed), max=1, by=popularity))
         @assert sol ⊆ packages # fails
         @assert sol ∩ packages ⊆ fixed # also fails
     end

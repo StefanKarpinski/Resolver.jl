@@ -27,22 +27,18 @@ packages₀ = select_popular_packages(best, top)
 Resolver.filter_pkg_info!(info, map(first, packages₀))
 sat = Resolver.SAT(info)
 
-G₀ = explicit_conflicts(packages₀, info)
-colors₀ = color_sat_dsatur(packages₀, sat, G₀)
-slices₀ = expand_slices(packages₀, sat, colors₀)
-
-G₁ = implicit_conflicts(packages₀, sat, slices₀)
-colors₁ = color_sat_dsatur(packages₀, sat, G₁)
+colors₁ = color_sat_dsatur(packages₀, sat)
 
 # find all packages needed for optimal solutions
 packages₁ = mapreduce(union!, colors₁) do color
     with_temp_clauses(sat) do
-        reqs = packages₀[color]
-        for (p, v) in reqs
+        fixed = packages₀[color]
+        for (p, v) in fixed
             sat_add(sat, p, v)
             sat_add(sat)
         end
-        mapreduce(collect, union!, resolve_core(sat, first.(reqs)))
+        sols = resolve_core(sat, first.(fixed), max=0)
+        mapreduce(collect, union!, sols)
     end
 end
 sort!(packages₁)
@@ -50,74 +46,26 @@ sort!(packages₁, by = popularity)
 @assert first.(packages₀) ==
     unique(first.(packages₁))[1:length(packages₀)]
 
-G₂ = explicit_conflicts(packages₁, info)
-colors₂ = color_sat_dsatur(packages₁, sat, G₂)
-slices₂ = expand_slices(packages₁, sat, colors₂)
+colors₂ = color_sat_dsatur(packages₁, sat)
 
-G₃ = implicit_conflicts(packages₁, sat, slices₂)
-colors₃ = color_sat_dsatur(packages₁, sat, G₃)
-
+# we have complete colors, grow to slices
 packages = packages₁
-colors = colors₃
+colors = colors₂
 
-vers = Dict{String,Vector{Int}}()
-for color in colors
+# expand slices
+slices = expand_slices(packages, sat, colors)
+
+for slice in slices
     with_temp_clauses(sat) do
-        reqs = packages[color]
-        for (p, v) in reqs
+        fixed = packages₁[slice]
+        for (p, v) in fixed
             sat_add(sat, p, v)
             sat_add(sat)
         end
-        sols = resolve_core(sat, first.(reqs))
-        for sol in sols, (p, v) in sol
-            V = get!(()->Int[], vers, p)
-            v in V || push!(V, v)
-        end
+        sols = resolve_core(sat, first.(fixed))
+        @assert length(sols) == 1
+        sol = only(sols)
+        @assert sol ⊆ packages # fails
+        @assert sol ∩ packages ⊆ fixed # also fails
     end
 end
-foreach(sort!, values(vers))
-
-#=
-# turn slices into solutions
-sols = [slice_dict(packages, best, slice) for slice in slices]
-for sol in sols
-    with_temp_clauses(sat) do
-        for (p, v) in sol
-            sat_add(sat, p, v)
-            sat_add(sat)
-        end
-        for p in packages
-            p in keys(sol) && continue
-            sat_assume(sat, p)
-            is_satisfiable(sat) || continue
-
-            # require some version of p
-            sat_add(sat, p)
-            sat_add(sat)
-            extract_solution!(sat, sol)
-
-            # optimize p's version
-            best[p] < sol[p] &&
-            optimize_solution!(sat, sol) do
-                for i = 1:sol[p]-1
-                    sat_add(sat, p, i)
-                end
-                sat_add(sat)
-            end
-
-            # fix p's version
-            sat_add(sat, p, sol[p])
-            sat_add(sat)
-        end
-    end
-end
-
-vers = Dict{String,Vector{Int}}()
-for sol in sols
-    for (p, v) in sol
-        V = get!(()->Int[], vers, p)
-        v in V || push!(V, v)
-    end
-end
-map(sort!, values(vers))
-=#

@@ -4,11 +4,10 @@ export
     popularity,
     compute_best_versions,
     select_popular_packages,
-    explicit_conflicts,
     color_sat_rlf,
     color_sat_dsatur,
     expand_slices,
-    implicit_conflicts
+    conflicts
 
 using CSV
 using DataFrames
@@ -20,6 +19,7 @@ using SparseArrays
 
 using Resolver:
     Resolver,
+    resolve_core,
     sat_assume,
     sat_assume_var,
     sat_add,
@@ -177,7 +177,7 @@ end
 function color_sat_rlf(
     packages :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
-    G :: AbstractMatrix{Bool},
+    G :: AbstractMatrix{Bool} = conflicts(packages, sat),
 ) where {P}
     @info "Computing coloring (RLF)..."
     N = length(packages)
@@ -235,7 +235,7 @@ function color_sat_rlf(
                 ("avail", a - n),
                 ("count", n),
                 ("index", i),
-                ("version", packages[i]),
+                ("package", packages[i][1]),
                 ("sat", true),
             ])
 
@@ -261,7 +261,7 @@ function color_sat_rlf(
                     ("avail", a - n),
                     ("count", n),
                     ("index", i),
-                    ("version", p => v),
+                    ("package", p),
                     ("sat", s),
                 ])
                 # don't consider again
@@ -294,7 +294,7 @@ end
 function color_sat_dsatur(
     packages :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
-    G :: AbstractMatrix{Bool},
+    G :: AbstractMatrix{Bool} = conflicts(packages, sat),
 ) where {P}
     @info "Computing coloring (DSatur)..."
     N = length(packages)
@@ -369,52 +369,42 @@ function color_sat_dsatur(
     return colors
 end
 
-# maximally expand slices, deversifying coverage somewhat
-function expand_slices(
+# use resolve to maximally expand slices
+function expand_slices!(
     packages :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
 ) where {P}
     @info "Expanding slices..."
-    slices = map(copy, slices)
-    order = copy(packages)
-    todos = Set(packages)
-    N = length(packages)
-    prog = Progress(desc="Expanding slices", N*length(slices))
-    for (k, slice) in enumerate(slices)
-        n = length(slice)
-        if n < N
-            resize!(slice, N)
-            slice[n+1:N] .= false
-        end
-        with_temp_clauses(sat) do
-            for (i, (p, v)) in enumerate(packages)
-                slice[i] || continue
+    for slice in slices
+        sol = with_temp_clauses(sat) do
+            fixed = packages[slice]
+            for (p, v) in fixed
                 sat_add(sat, p, v)
                 sat_add(sat)
-                next!(prog, showvalues = [
-                    ("slice", k),
-                    ("version", p => v),
-                ])
             end
-            for (p, v) in order
-                i = findfirst(==(p => v), packages)
-                slice[i] && continue
-                next!(prog, showvalues = [
-                    ("slice", k),
-                    ("version", p => v),
-                ])
-                sat_assume(sat, p, v)
-                is_satisfiable(sat) || continue
-                sat_add(sat, p, v)
-                sat_add(sat)
-                slice[i] = true
-                delete!(todos, p)
+            reqs = map(first, packages)
+            sols = resolve_core(sat, reqs)
+            # sort solutions lexicographically
+            for p in reverse(unique(first.(packages)))
+                # lowest version best, no version worst
+                sort!(sols, by = sol -> get(sol, p, typemax(Int)))
             end
+            first(sols)
         end
-        sort!(order, by = !in(todos))
+        for (i, (p, v)) in enumerate(packages)
+            slice[i] = get(sol, p, 0) == v
+        end
     end
     return slices
+end
+
+function expand_slices(
+    packages :: Vector{Pair{P,Int}},
+    sat :: Resolver.SAT{P},
+    slices :: Vector{BitVector},
+) where {P}
+    expand_slices!(packages, sat, map(copy, slices))
 end
 
 # compute the implicit conflict graph, i.e. which optimal versions of packages
@@ -435,7 +425,7 @@ function implicit_conflicts(
     G = spzeros(Bool, N, N)
     for (i, (p, v)) in enumerate(packages)
         next!(prog; showvalues = [
-            ("version", p => v),
+            ("package", p),
         ])
         for j in Q[S[i]]
             G[i, j] && continue
@@ -447,6 +437,16 @@ function implicit_conflicts(
         end
     end
     return G
+end
+
+function conflicts(
+    packages :: Vector{Pair{P,Int}},
+    sat :: Resolver.SAT{P},
+) where {P}
+    G = explicit_conflicts(packages, sat.info)
+    slices = color_sat_dsatur(packages, sat, G)
+    expand_slices!(packages, sat, slices)
+    implicit_conflicts(packages, sat, slices)
 end
 
 end # module

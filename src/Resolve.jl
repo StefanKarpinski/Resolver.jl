@@ -1,5 +1,9 @@
 RESOLVE_MAX_SOLUTIONS::Int = 8
 
+# IDEA: It might be possible to return the lexicographically best solutions
+# efficiently by requiring the next solutions to lexicographically improve on
+# the current best solution.
+
 function resolve_core(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);

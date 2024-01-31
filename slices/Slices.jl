@@ -119,8 +119,8 @@ function explicit_conflicts(
     info :: Dict{String,<:Resolver.PkgInfo{P}}
 ) where {P}
     @info "Constructing explicit conflict graph..."
-    N = length(vertices)
-    G = spzeros(Bool, N, N)
+    n = length(vertices)
+    G = spzeros(Bool, n, n)
     for (i, (p, v)) in enumerate(vertices)
         T_p = info[p].interacts
         X_p = info[p].conflicts

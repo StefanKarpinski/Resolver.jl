@@ -20,12 +20,12 @@ sat = Resolver.SAT(info)
 best = compute_best_versions(sat)
 
 # select best versions of most popular packages
-top = 1024
+top = 256
 vertices = select_popular_packages(best, top)
 @assert length(vertices) ≥ top
 
 # pare down the SAT problem to only popular packages and deps
-Resolver.filter_pkg_info!(info, map(first, vertices))
+Resolver.filter_pkg_info!(info, first.(vertices))
 sat = Resolver.SAT(info)
 
 G = conflicts(vertices, sat)

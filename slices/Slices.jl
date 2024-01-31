@@ -391,8 +391,8 @@ function expand_slices!(
                 sat_add(sat)
             end
             reqs = unique(first.(fixed))
-            sols = resolve_core(sat, reqs; max=0, by=popularity)
-            vers = mapreduce(Set, union!, sols, init=Set(vertices))
+            sol = only(resolve_core(sat, reqs; max=1, by=popularity))
+            vers = union!(Set(sol), vertices)
             # disallow versions not in vertices or some solution
             for (p, info_p) in sat.info, v = 1:length(info_p.versions)
                 (p => v) in vers && continue
@@ -401,8 +401,7 @@ function expand_slices!(
             end
             # now find the largest solutions that we can
             pkgs = unique(first.(vertices))
-            sols = resolve_core(sat, pkgs; max=0, by=popularity)
-            sol = argmax(length, sols)
+            sol = only(resolve_core(sat, pkgs; max=1, by=popularity))
             for (i, (p, v)) in enumerate(vertices)
                 slice[i] = get(sol, p, 0) == v
             end

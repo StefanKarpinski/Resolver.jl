@@ -6,8 +6,12 @@ export
     select_popular_packages,
     color_sat_rlf,
     color_sat_dsatur,
+    solve_slice,
     expand_slices,
-    conflicts
+    slices_support,
+    conflicts,
+    explicit_conflicts,
+    implicit_conflicts
 
 using CSV
 using DataFrames
@@ -26,7 +30,8 @@ using Resolver:
     sat_add_var,
     is_satisfiable,
     sat_new_variable,
-    with_temp_clauses
+    with_temp_clauses,
+    SetOrVec
 
 import Pkg: depots1
 import Pkg.Registry: RegistryInstance, init_package_info!
@@ -369,6 +374,22 @@ function color_sat_dsatur(
     return colors
 end
 
+function solve_slice(
+    vertices :: Vector{Pair{P,Int}},
+    sat :: Resolver.SAT{P},
+    slice :: BitVector,
+) where {P}
+    with_temp_clauses(sat) do
+        fixed = vertices[slice]
+        for (p, v) in fixed
+            sat_add(sat, p, v)
+            sat_add(sat)
+        end
+        reqs = unique(first.(fixed))
+        only(resolve_core(sat, reqs; max=1, by=popularity))
+    end
+end
+
 # use resolve to maximally expand slices
 function expand_slices!(
     vertices :: Vector{Pair{P,Int}},
@@ -377,15 +398,7 @@ function expand_slices!(
 ) where {P}
     @info "Expanding slices..."
     for slice in slices
-        sol = with_temp_clauses(sat) do
-            fixed = vertices[slice]
-            for (p, v) in fixed
-                sat_add(sat, p, v)
-                sat_add(sat)
-            end
-            reqs = map(first, vertices)
-            only(resolve_core(sat, reqs; max=1, by=popularity))
-        end
+        sol = solve_slice(vertices, sat, slice)
         for (i, (p, v)) in enumerate(vertices)
             slice[i] = get(sol, p, 0) == v
         end
@@ -401,12 +414,25 @@ function expand_slices(
     expand_slices!(vertices, sat, map(copy, slices))
 end
 
+function slices_support(
+    vertices :: Vector{Pair{P,Int}},
+    sat :: Resolver.SAT{P},
+    slices :: Vector{BitVector},
+) where {P}
+    vertices′ = mapreduce(union!, slices) do slice
+        sort!(collect(solve_slice(vertices, sat, slice)))
+    end
+    sort!(vertices′)
+    sort!(vertices′, by=popularity)
+end
+
 # compute the implicit conflict graph, i.e. which optimal versions of packages
 # are in practice pairwise uninstallable, as opposed to just explicit conflicts
 function implicit_conflicts(
     vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
+    skip :: SetOrVec{Int} = Set{Int}(),
 ) where {P}
     @info "Computing implicit conflict graph..."
     N = length(vertices)
@@ -415,6 +441,7 @@ function implicit_conflicts(
     # for each inclusion pattern, compute complement of union of slices
     Q = Dict(x => findall(.!reduce(.|, slices[x])) for x in unique(S))
     # compute the true incompatibility graph
+    skip = Set(skip)
     prog = Progress(desc="Implicit conflicts", N)
     G = spzeros(Bool, N, N)
     for (i, (p, v)) in enumerate(vertices)
@@ -422,7 +449,9 @@ function implicit_conflicts(
             ("package", p),
         ])
         for j in Q[S[i]]
-            G[i, j] && continue
+            if G[i, j] || i ∈ skip && j ∈ skip
+                continue
+            end
             q, w = vertices[j]
             sat_assume(sat, p, v)
             sat_assume(sat, q, w)

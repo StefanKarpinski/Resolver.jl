@@ -378,17 +378,21 @@ function solve_slice(
     vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slice :: BitVector,
+    reqs :: Vector{P} = unique(first.(vertices[slice]))
 ) where {P}
     with_temp_clauses(sat) do
-        fixed = vertices[slice]
-        for (p, v) in fixed
+        for (p, v) in vertices[slice]
             sat_add(sat, p, v)
             sat_add(sat)
         end
-        reqs = unique(first.(fixed))
         only(resolve_core(sat, reqs; max=1, by=popularity))
     end
 end
+
+# Can we grow less when expanding slices?
+# As large as we can without adding new vertices?
+# Allow new vertices that are forced by the original slice
+# Disallow additional new vertices beyond that
 
 # use resolve to maximally expand slices
 function expand_slices!(
@@ -398,7 +402,8 @@ function expand_slices!(
 ) where {P}
     @info "Expanding slices..."
     for slice in slices
-        sol = solve_slice(vertices, sat, slice)
+        reqs = unique(first.(vertices))
+        sol = solve_slice(vertices, sat, slice, reqs)
         for (i, (p, v)) in enumerate(vertices)
             slice[i] = get(sol, p, 0) == v
         end
@@ -420,7 +425,7 @@ function slices_support(
     slices :: Vector{BitVector},
 ) where {P}
     vertices′ = mapreduce(union!, slices) do slice
-        sort!(collect(solve_slice(vertices, sat, slice)))
+        collect(solve_slice(vertices, sat, slice))
     end
     sort!(vertices′)
     sort!(vertices′, by=popularity)

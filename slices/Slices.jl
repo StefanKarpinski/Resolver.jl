@@ -374,27 +374,9 @@ function color_sat_dsatur(
     return colors
 end
 
-function solve_slice(
-    vertices :: Vector{Pair{P,Int}},
-    sat :: Resolver.SAT{P},
-    slice :: BitVector,
-    reqs :: Vector{P} = unique(first.(vertices[slice]))
-) where {P}
-    with_temp_clauses(sat) do
-        for (p, v) in vertices[slice]
-            sat_add(sat, p, v)
-            sat_add(sat)
-        end
-        only(resolve_core(sat, reqs; max=1, by=popularity))
-    end
-end
-
-# Can we grow less when expanding slices?
-# As large as we can without adding new vertices?
-# Allow new vertices that are forced by the original slice
-# Disallow additional new vertices beyond that
-
 # use resolve to maximally expand slices
+#  - allow new vertices that may be forced by original slice
+#  - disallow additional new vertices beyond that
 function expand_slices!(
     vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
@@ -402,10 +384,28 @@ function expand_slices!(
 ) where {P}
     @info "Expanding slices..."
     for slice in slices
-        reqs = unique(first.(vertices))
-        sol = solve_slice(vertices, sat, slice, reqs)
-        for (i, (p, v)) in enumerate(vertices)
-            slice[i] = get(sol, p, 0) == v
+        with_temp_clauses(sat) do
+            fixed = vertices[slice]
+            for (p, v) in fixed
+                sat_add(sat, p, v)
+                sat_add(sat)
+            end
+            reqs = unique(first.(fixed))
+            sols = resolve_core(sat, reqs; max=0, by=popularity)
+            vers = mapreduce(Set, union!, sols, init=Set(vertices))
+            # disallow versions not in vertices or some solution
+            for (p, info_p) in sat.info, v = 1:length(info_p.versions)
+                (p => v) in vers && continue
+                sat_add(sat, p, v, not=true)
+                sat_add(sat)
+            end
+            # now find the largest solutions that we can
+            pkgs = unique(first.(vertices))
+            sols = resolve_core(sat, pkgs; max=0, by=popularity)
+            sol = argmax(length, sols)
+            for (i, (p, v)) in enumerate(vertices)
+                slice[i] = get(sol, p, 0) == v
+            end
         end
     end
     return slices
@@ -417,6 +417,22 @@ function expand_slices(
     slices :: Vector{BitVector},
 ) where {P}
     expand_slices!(vertices, sat, map(copy, slices))
+end
+
+function solve_slice(
+    vertices :: Vector{Pair{P,Int}},
+    sat :: Resolver.SAT{P},
+    slice :: BitVector,
+) where {P}
+    with_temp_clauses(sat) do
+        fixed = vertices[slice]
+        for (p, v) in fixed
+            sat_add(sat, p, v)
+            sat_add(sat)
+        end
+        reqs = unique(first.(fixed))
+        only(resolve_core(sat, reqs; max=1, by=popularity))
+    end
 end
 
 function slices_support(

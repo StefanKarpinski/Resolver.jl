@@ -118,11 +118,11 @@ sat_add_var(sat::SAT, v::Integer) = PicoSAT.add(sat.pico, v)
 sat_assume_var(sat::SAT, v::Integer) = PicoSAT.assume(sat.pico, v)
 
 sat_add(sat::SAT) = sat_add_var(sat, 0)
-sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    sat_add_var(sat, sat.vars[p] + i)
+sat_add(sat::SAT{P}, p::P, i::Integer=0; not::Bool=false) where {P} =
+    sat_add_var(sat, (-1)^not*(sat.vars[p] + i))
 
-sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    sat_assume_var(sat, sat.vars[p] + i)
+sat_assume(sat::SAT{P}, p::P, i::Integer=0; not::Bool=false) where {P} =
+    sat_assume_var(sat, (-1)^not*(sat.vars[p] + i))
 sat_assume(sat::SAT{P}, v::SetOrVec{P}) where {P} =
     foreach(p -> sat_assume(sat, p), v)
 sat_assume(sat::SAT{P}, d::Dict{P,<:Integer}) where {P} =

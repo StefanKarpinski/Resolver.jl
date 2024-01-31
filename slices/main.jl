@@ -20,7 +20,7 @@ sat = Resolver.SAT(info)
 best = compute_best_versions(sat)
 
 # select best versions of most popular packages
-top = 256
+top = 1024
 vertices = select_popular_packages(best, top)
 @assert length(vertices) ≥ top
 
@@ -35,7 +35,7 @@ while true
     # compute colors and expand to slices
     colors = color_sat_dsatur(vertices, sat, G)
     slices = expand_slices(vertices, sat, colors)
-    # if slices are self-contained, we're done:
+    # if slices are self-contained, we're done...
     vertices′ = slices_support(vertices, sat, slices)
     vertices′ == vertices && break
     # expand old conflict graph to new vertices

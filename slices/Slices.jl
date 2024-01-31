@@ -65,7 +65,7 @@ let # load package uuid => name map from registry
     end
 end
 
-popularity(p::AbstractString) = -get(ADDRS, p, 0)
+popularity(p::AbstractString) = (-get(ADDRS, p, 0), -get(NREQS, p, 0))
 popularity((p, v)::Pair{<:AbstractString,<:Integer}) = popularity(p)
 
 # find best installable version of each package

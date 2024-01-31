@@ -20,19 +20,19 @@ best = compute_best_versions(sat)
 
 # select top most popular packages
 top = 1024
-packages₀ = select_popular_packages(best, top)
-@assert length(packages₀) ≥ top
+vertices₀ = select_popular_packages(best, top)
+@assert length(vertices₀) ≥ top
 
 # pare down the SAT problem to only popular packages and deps
-Resolver.filter_pkg_info!(info, map(first, packages₀))
+Resolver.filter_pkg_info!(info, map(first, vertices₀))
 sat = Resolver.SAT(info)
 
-colors₁ = color_sat_dsatur(packages₀, sat)
+colors₁ = color_sat_dsatur(vertices₀, sat)
 
 # find all packages needed for optimal solutions
-packages₁ = mapreduce(union!, colors₁) do color
+vertices₁ = mapreduce(union!, colors₁) do color
     with_temp_clauses(sat) do
-        fixed = packages₀[color]
+        fixed = vertices₀[color]
         for (p, v) in fixed
             sat_add(sat, p, v)
             sat_add(sat)
@@ -41,29 +41,29 @@ packages₁ = mapreduce(union!, colors₁) do color
         sort!(collect(sol))
     end
 end
-sort!(packages₁)
-sort!(packages₁, by = popularity)
-@assert first.(packages₀) ==
-    unique(first.(packages₁))[1:length(packages₀)]
+sort!(vertices₁)
+sort!(vertices₁, by = popularity)
+@assert first.(vertices₀) ==
+    unique(first.(vertices₁))[1:length(vertices₀)]
 
-colors₂ = color_sat_dsatur(packages₁, sat)
+colors₂ = color_sat_dsatur(vertices₁, sat)
 
 # we have complete colors, grow to slices
-packages = packages₁
+vertices = vertices₁
 colors = colors₂
 
 # expand slices
-slices = expand_slices(packages, sat, colors)
+slices = expand_slices(vertices, sat, colors)
 
 for slice in slices
     with_temp_clauses(sat) do
-        fixed = packages₁[slice]
+        fixed = vertices₁[slice]
         for (p, v) in fixed
             sat_add(sat, p, v)
             sat_add(sat)
         end
         sol = only(resolve_core(sat, first.(fixed), max=1, by=popularity))
-        @assert sol ⊆ packages # fails
-        @assert sol ∩ packages ⊆ fixed # also fails
+        @assert sol ⊆ vertices # fails
+        @assert sol ∩ vertices ⊆ fixed # also fails
     end
 end

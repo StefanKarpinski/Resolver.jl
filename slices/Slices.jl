@@ -97,25 +97,25 @@ function select_popular_packages(
     best :: Dict{P,Int},
     top  :: Integer,
 ) where {P}
-    packages = sort!(collect(best))
-    sort!(packages, by = popularity)
-    N = searchsortedlast(packages, packages[top], by = popularity)
-    resize!(packages, N)
+    vertices = sort!(collect(best))
+    sort!(vertices, by = popularity)
+    N = searchsortedlast(vertices, vertices[top], by = popularity)
+    resize!(vertices, N)
 end
 
 # pairwise conflicts between best versions
 
 function explicit_conflicts(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     info :: Dict{String,<:Resolver.PkgInfo{P}}
 ) where {P}
     @info "Constructing explicit conflict graph..."
-    N = length(packages)
+    N = length(vertices)
     G = spzeros(Bool, N, N)
-    for (i, (p, v)) in enumerate(packages)
+    for (i, (p, v)) in enumerate(vertices)
         T_p = info[p].interacts
         X_p = info[p].conflicts
-        for (j, (q, w)) in enumerate(packages)
+        for (j, (q, w)) in enumerate(vertices)
             if p == q  && v != w ||
                 q in keys(T_p) && X_p[v, T_p[q]+w]
                 G[i, j] = true
@@ -175,12 +175,12 @@ end
 # https://en.wikipedia.org/wiki/Recursive_largest_first_algorithm
 
 function color_sat_rlf(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
-    G :: AbstractMatrix{Bool} = conflicts(packages, sat),
+    G :: AbstractMatrix{Bool} = conflicts(vertices, sat),
 ) where {P}
     @info "Computing coloring (RLF)..."
-    N = length(packages)
+    N = length(vertices)
 
     # "friendlies" matrix, aka "enemies of enemies", ie two-hop reachability
     H = ((G*G .> 0) .- G .- I(N)) .> 0
@@ -206,7 +206,7 @@ function color_sat_rlf(
                 C[i] = true
                 n += 1
                 # add to sat instance
-                p, v = packages[i]
+                p, v = vertices[i]
                 sat_add(sat, p, v)
                 sat_add(sat)
                 # update heuristic data
@@ -235,7 +235,7 @@ function color_sat_rlf(
                 ("avail", a - n),
                 ("count", n),
                 ("index", i),
-                ("package", packages[i][1]),
+                ("package", vertices[i][1]),
                 ("sat", true),
             ])
 
@@ -252,7 +252,7 @@ function color_sat_rlf(
                     end
                 end
                 # check for satisfiability (not done for pure graph coloring)
-                p, v = packages[i]
+                p, v = vertices[i]
                 sat_assume(sat, p, v)
                 s = is_satisfiable(sat)
                 s && add_node(i)
@@ -292,12 +292,12 @@ end
 # https://en.wikipedia.org/wiki/Recursive_largest_first_algorithm
 
 function color_sat_dsatur(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
-    G :: AbstractMatrix{Bool} = conflicts(packages, sat),
+    G :: AbstractMatrix{Bool} = conflicts(vertices, sat),
 ) where {P}
     @info "Computing coloring (DSatur)..."
-    N = length(packages)
+    N = length(vertices)
 
     colors = BitVector[]
     vars = Int[] # SAT variables for colors
@@ -316,7 +316,7 @@ function color_sat_dsatur(
                     U[i] && S[i] == s
                 end
             end
-            p, v = packages[i]
+            p, v = vertices[i]
             Gᵢ = G[:,i]
             # add node to first color it's compatible with
             success = false
@@ -371,22 +371,22 @@ end
 
 # use resolve to maximally expand slices
 function expand_slices!(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
 ) where {P}
     @info "Expanding slices..."
     for slice in slices
         sol = with_temp_clauses(sat) do
-            fixed = packages[slice]
+            fixed = vertices[slice]
             for (p, v) in fixed
                 sat_add(sat, p, v)
                 sat_add(sat)
             end
-            reqs = map(first, packages)
+            reqs = map(first, vertices)
             only(resolve_core(sat, reqs; max=1, by=popularity))
         end
-        for (i, (p, v)) in enumerate(packages)
+        for (i, (p, v)) in enumerate(vertices)
             slice[i] = get(sol, p, 0) == v
         end
     end
@@ -394,22 +394,22 @@ function expand_slices!(
 end
 
 function expand_slices(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
 ) where {P}
-    expand_slices!(packages, sat, map(copy, slices))
+    expand_slices!(vertices, sat, map(copy, slices))
 end
 
 # compute the implicit conflict graph, i.e. which optimal versions of packages
 # are in practice pairwise uninstallable, as opposed to just explicit conflicts
 function implicit_conflicts(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
     slices :: Vector{BitVector},
 ) where {P}
     @info "Computing implicit conflict graph..."
-    N = length(packages)
+    N = length(vertices)
     # summarize vertices by slices they belong to
     S = [[s[i] for s in slices] for i=1:N]
     # for each inclusion pattern, compute complement of union of slices
@@ -417,13 +417,13 @@ function implicit_conflicts(
     # compute the true incompatibility graph
     prog = Progress(desc="Implicit conflicts", N)
     G = spzeros(Bool, N, N)
-    for (i, (p, v)) in enumerate(packages)
+    for (i, (p, v)) in enumerate(vertices)
         next!(prog; showvalues = [
             ("package", p),
         ])
         for j in Q[S[i]]
             G[i, j] && continue
-            q, w = packages[j]
+            q, w = vertices[j]
             sat_assume(sat, p, v)
             sat_assume(sat, q, w)
             is_satisfiable(sat) && continue
@@ -434,13 +434,13 @@ function implicit_conflicts(
 end
 
 function conflicts(
-    packages :: Vector{Pair{P,Int}},
+    vertices :: Vector{Pair{P,Int}},
     sat :: Resolver.SAT{P},
 ) where {P}
-    G = explicit_conflicts(packages, sat.info)
-    slices = color_sat_dsatur(packages, sat, G)
-    expand_slices!(packages, sat, slices)
-    implicit_conflicts(packages, sat, slices)
+    G = explicit_conflicts(vertices, sat.info)
+    slices = color_sat_dsatur(vertices, sat, G)
+    expand_slices!(vertices, sat, slices)
+    implicit_conflicts(vertices, sat, slices)
 end
 
 end # module

@@ -13,6 +13,7 @@ export
     explicit_conflicts,
     implicit_conflicts
 
+using Base: UUID
 using CSV
 using DataFrames
 using Downloads
@@ -36,31 +37,34 @@ using Resolver:
 import Pkg: depots1
 import Pkg.Registry: RegistryInstance, init_package_info!
 
-# load package uuid => name map from registry
+# some global dicts
 
-function load_packaage_uuid_name_map()
+const NAMES = Dict{String,String}()
+const ADDRS = Dict{String,Int}()
+const NREQS = Dict{String,Int}()
+
+let # load package uuid => name map from registry
     reg_path = let p = joinpath(depots1(), "registries", "General.toml")
         isfile(p) ? p : splitext(p)[1]
     end
     reg_inst = RegistryInstance(reg_path)
-    Dict(string(p.uuid) => p.name for p in values(reg_inst.pkgs))
-end
-
-const NAMES = load_packaage_uuid_name_map()
-
-# download package download stats
-
-function load_package_download_stats()
+    for p in values(reg_inst.pkgs)
+        NAMES[string(p.uuid)] = p.name
+    end
+    # load package download stats
     file = joinpath(@__DIR__, "../tmp/package_requests.csv.gz")
     url = "https://julialang-logs.s3.amazonaws.com/public_outputs/current/package_requests.csv.gz"
     isfile(file) || Downloads.download(url, file)
     df = CSV.read(`gzcat $file`, DataFrame)
     filter!(r -> r.status === 200 && isequal(r.client_type, "user"), df)
     @assert allunique(df.package_uuid)
-    Dict(NAMES[r.package_uuid] => r.request_addrs for r in eachrow(df))
+    for r in eachrow(df)
+        name = NAMES[r.package_uuid]
+        ADDRS[name] = r.request_addrs
+        NREQS[name] = r.request_count
+    end
 end
 
-const ADDRS = load_package_download_stats()
 popularity(p::AbstractString) = -get(ADDRS, p, 0)
 popularity((p, v)::Pair{<:AbstractString,<:Integer}) = popularity(p)
 
@@ -103,8 +107,8 @@ function select_popular_packages(
     top  :: Integer,
 ) where {P}
     vertices = sort!(collect(best))
-    sort!(vertices, by = popularity)
-    N = searchsortedlast(vertices, vertices[top], by = popularity)
+    sort!(vertices, by=popularity)
+    N = searchsortedlast(vertices, vertices[top], by=popularity)
     resize!(vertices, N)
 end
 

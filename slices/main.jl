@@ -20,7 +20,7 @@ sat = Resolver.SAT(info)
 best = compute_best_versions(sat)
 
 # select best versions of most popular packages
-top = 600
+top = 1000
 vertices = select_popular_packages(best, top)
 @assert length(vertices) ≥ top
 

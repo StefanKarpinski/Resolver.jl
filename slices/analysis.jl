@@ -35,10 +35,10 @@ end
 sample_packages(r::Integer) =
     sort!(unique(sample_package() for _ = 1:r), by=popularity)
 
-const cache = Dict{Vector{Int},Int}()
+const cache = Dict{Vector{Int},Tuple{Int,Int}}()
 cache_size::Int = 10000
 
-function cache_fill!(sol::Dict{String,Int}, time::Integer = 0)
+function cache_fill!(sol::Dict{String,Int}, t₁::Integer = 0)
     hit = tot = 0
     s = sort!(indexin(sol, V))
     # compute precompile sets
@@ -53,7 +53,8 @@ function cache_fill!(sol::Dict{String,Int}, time::Integer = 0)
         p = s[findall(Ds[:,i])]
         hit += p ∈ keys(cache)
         tot += 1
-        cache[p] = time
+        t₀ = get(cache, p, (t₁, t₁))[1]
+        cache[p] = (t₀, t₁)
     end
     # evict from cache (LRU)
     if length(cache) > cache_size

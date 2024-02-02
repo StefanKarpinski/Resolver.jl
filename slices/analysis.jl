@@ -69,8 +69,7 @@ end
 # default cache warmup: solve each package
 function cache_warmup!(solve::Function)
     for p in pkgs
-        sol = solve([p])
-        cache_fill!(sol)
+        cache_fill!(solve([p]))
     end
 end
 
@@ -129,4 +128,10 @@ function slice_resolve(reqs::AbstractVector{String})
     end
     # fall back to local resolve
     local_resolve(reqs)
+end
+
+function cache_warmup!(solve::typeof(slice_resolve))
+    for s in slices
+        cache_fill!(Dict(vertices[s]))
+    end
 end

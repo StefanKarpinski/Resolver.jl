@@ -175,7 +175,7 @@ function resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by   :: Function = identity, # ordering
+    by   :: Function = identity, # package ordering
 ) where {P}
     info = pkg_info(deps, reqs)
     resolve(info, reqs; max)
@@ -185,7 +185,7 @@ function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by   :: Function = identity, # ordering
+    by   :: Function = identity, # package ordering
 ) where {P}
     info = pkg_info(data, reqs)
     resolve(info, reqs; max)
@@ -195,7 +195,7 @@ function resolve(
     info :: Dict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by   :: Function = identity, # ordering
+    by   :: Function = identity, # package ordering
 ) where {P,V}
     sat = SAT(info)
     try resolve(sat, reqs; max)

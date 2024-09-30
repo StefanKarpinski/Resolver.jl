@@ -172,24 +172,22 @@ end
 # convenience entry points
 
 function resolve(
-    deps   :: DepsProvider{P},
-    reqs   :: SetOrVec{P} = deps.packages;
-    max    :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by     :: Function = identity, # ordering
-    filter :: Bool = true,
+    deps :: DepsProvider{P},
+    reqs :: SetOrVec{P} = deps.packages;
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
 ) where {P}
-    info = pkg_info(deps, reqs; filter)
+    info = pkg_info(deps, reqs)
     resolve(info, reqs; max)
 end
 
 function resolve(
-    data   :: AbstractDict{P,<:PkgData{P}},
-    reqs   :: SetOrVec{P} = keys(data);
-    max    :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by     :: Function = identity, # ordering
-    filter :: Bool = true,
+    data :: AbstractDict{P,<:PkgData{P}},
+    reqs :: SetOrVec{P} = keys(data);
+    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    by   :: Function = identity, # ordering
 ) where {P}
-    info = pkg_info(data, reqs; filter)
+    info = pkg_info(data, reqs)
     resolve(info, reqs; max)
 end
 

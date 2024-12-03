@@ -1,10 +1,10 @@
-RESOLVE_MAX_SOLUTIONS::Int = 8
+DEFAULT_MAX_SOLUTIONS::Int = 8
 
 # find the first `max` optimal solutions in lexicographical ordering
 function resolve_core(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
 ) where {P}
     # solution search data structures
@@ -139,7 +139,7 @@ end
 function resolve(
     sat  :: SAT{P,V},
     reqs :: SetOrVec{P} = keys(sat.info);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
 ) where {P,V}
     # generate solutions
@@ -174,7 +174,7 @@ end
 function resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # package ordering
 ) where {P}
     info = pkg_info(deps, reqs)
@@ -184,7 +184,7 @@ end
 function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # package ordering
 ) where {P}
     info = pkg_info(data, reqs)
@@ -194,7 +194,7 @@ end
 function resolve(
     info :: Dict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # package ordering
 ) where {P,V}
     sat = SAT(info)

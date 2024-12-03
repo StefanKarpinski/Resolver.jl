@@ -7,7 +7,7 @@ function resolve_core(
     max  :: Integer = RESOLVE_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
 ) where {P}
-    # solution search data strutures
+    # solution search data structures
     sol = Dict{P,Int}() # current solution
     sols = typeof(sol)[] # all solutions
 

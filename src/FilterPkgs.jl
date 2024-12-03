@@ -20,7 +20,7 @@ of required "root" packages, using the following recursive logic:
 - D[end] conflicts w. reachable & P[i] depends on D => P[i+1] reachable
 
 The function returns a dictionary mapping packages to the maximum version index
-of that package that could be reached in an optimal solution. If a pacakge
+of that package that could be reached in an optimal solution. If a package
 cannot appear in an optimal solution, it will not appear in this dictionary.
 """
 function find_reachable(
@@ -153,11 +153,11 @@ function mark_necessary!(
         # get conflicts & dimensions
         X = info[p].conflicts
         m = size(X, 1) - 1
-        m > 1 || continue # unique version cannot be reundant
+        m > 1 || continue # unique version cannot be redundant
         n = size(X, 2) - 1
         # active indices
         append!(empty!(J), (j for j = 1:m if X[j, end]))
-        length(J) > 1 || continue # unique version cannot be reundant
+        length(J) > 1 || continue # unique version cannot be redundant
         append!(empty!(K), (k for k = 1:n if X[end, k]))
         # find redundant versions
         empty!(R)

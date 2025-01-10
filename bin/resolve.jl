@@ -15,6 +15,10 @@ function sort_versions(vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)
 end
 
+function sort_packages_by(pkg::UUID)
+    pkg
+end
+
 const EXCLUDES = push!(Set(keys(stdlibs())), JULIA_UUID)
 const PACKAGES = Dict{UUID,Vector{PkgEntry}}()
 
@@ -77,6 +81,11 @@ const dp = DepsProvider(keys(PACKAGES)) do uuid::UUID
     PkgData(vers, deps, comp)
 end
 
-reqs = [UUID("a93c6f00-e57d-5684-b7b6-d8193f3e46c0")] # DataFrames
-pkgs, vers = resolve(dp, reqs)
+reqs = [
+    UUID("a93c6f00-e57d-5684-b7b6-d8193f3e46c0"), # DataFrames
+    UUID("0c46a032-eb83-5123-abaf-570d42b7fbaa"), # DifferentialEquations
+    UUID("682c06a0-de6a-54ab-a142-c8b1cf79cde6"), # JSON
+]
+pkgs, vers = resolve(dp, reqs; by = sort_packages_by)
 names = [first(PACKAGES[u]).name for u in pkgs]
+display([names vers])

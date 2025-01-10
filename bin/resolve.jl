@@ -1,5 +1,7 @@
 #!/usr/bin/env julia
 
+## imports
+
 import Base: UUID
 import Pkg.Registry:
     init_package_info!,
@@ -11,6 +13,8 @@ import Pkg.Types: stdlibs
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData, resolve
 
+## sorting of versions and packages
+
 function sort_versions(vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)
 end
@@ -18,6 +22,8 @@ end
 function sort_packages_by(pkg::UUID)
     pkg
 end
+
+## extracting the dependency graph from registries
 
 const EXCLUDES = push!(Set(keys(stdlibs())), JULIA_UUID)
 const PACKAGES = Dict{UUID,Vector{PkgEntry}}()
@@ -80,6 +86,8 @@ const dp = DepsProvider(keys(PACKAGES)) do uuid::UUID
     # return resolver PkgData structure
     PkgData(vers, deps, comp)
 end
+
+## do an actual resolve
 
 reqs = [
     UUID("a93c6f00-e57d-5684-b7b6-d8193f3e46c0"), # DataFrames

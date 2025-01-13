@@ -1,0 +1,4 @@
+[deps]
+HistoricalStdlibVersions = "6df8b67a-e8a0-4029-b4b7-ac196fe72102"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+Resolver = "ecd60e94-5748-11e9-04dc-1fe0f95e4121"

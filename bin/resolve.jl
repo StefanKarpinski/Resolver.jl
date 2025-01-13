@@ -1,15 +1,18 @@
 #!/usr/bin/env julia
 
+push!(empty!(LOAD_PATH), @__DIR__)
+
 ## imports
 
 import Base: UUID
+import HistoricalStdlibVersions
 import Pkg.Registry:
     init_package_info!,
     JULIA_UUID,
     PkgEntry,
     reachable_registries,
     RegistryInstance
-import Pkg.Types: stdlibs
+import Pkg.Types: EnvCache, get_last_stdlibs
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData, resolve
 
@@ -19,14 +22,18 @@ function sort_versions(vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)
 end
 
-function sort_packages_by(pkg::UUID)
-    pkg
+const ZERO_UUID = reinterpret(UUID, UInt128(0))
+
+function sort_packages_by(uuid::UUID)
+    uuid == JULIA_UUID ? ZERO_UUID : uuid
 end
 
 ## extracting the dependency graph from registries
 
-const EXCLUDES = push!(Set(keys(stdlibs())), JULIA_UUID)
+const JULIA_VER = VERSION # Julia version desired
+const EXCLUDES = Set(keys(get_last_stdlibs(JULIA_VER)))
 const PACKAGES = Dict{UUID,Vector{PkgEntry}}()
+const COMPAT = Dict{UUID,VersionSpec}() # populated later
 
 for reg in reachable_registries()
     for (uuid, entry) in reg.pkgs
@@ -35,16 +42,25 @@ for reg in reachable_registries()
     end
 end
 
-const dp = DepsProvider(keys(PACKAGES)) do uuid::UUID
+dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
     vers = Set{VersionNumber}()
     deps = Dict{VersionNumber,Vector{UUID}}()
     comp = Dict{VersionNumber,Dict{UUID,VersionSpec}}()
+    uuid == JULIA_UUID &&
+        return PkgData([JULIA_VER], deps, comp)
     for entry in PACKAGES[uuid]
         info = init_package_info!(entry)
-        # add versions from this registry
-        union!(vers, keys(info.version_info))
+        # compat-filtered versions from this registry
+        new_vers = if !haskey(COMPAT, uuid)
+            collect(keys(info.version_info))
+        else
+            filter(keys(info.version_info)) do v
+                v in COMPAT[uuid]
+            end
+        end
         # scan versions and populate deps & compat data
-        for v in keys(info.version_info)
+        for v in new_vers
+            push!(vers, v)
             uuids = Dict{String,UUID}()
             deps_v = get!(()->valtype(deps)(), deps, v)
             for (r, d) in info.deps
@@ -87,13 +103,23 @@ const dp = DepsProvider(keys(PACKAGES)) do uuid::UUID
     PkgData(vers, deps, comp)
 end
 
+## load project & manifest
+
+path = expanduser("~/dev/HTTP/Project.toml")
+env = EnvCache(path)
+proj = env.project
+uuids = merge(proj.deps, proj.weakdeps, proj.extras)
+uuids["julia"] = JULIA_UUID
+reqs = sort!(filter!(∉(EXCLUDES), collect(values(proj.deps))))
+push!(reqs, JULIA_UUID)
+
+# populate COMPAT dict for dependency provider
+for (name, comp) in proj.compat
+    COMPAT[uuids[name]] = comp.val
+end
+
 ## do an actual resolve
 
-reqs = [
-    UUID("a93c6f00-e57d-5684-b7b6-d8193f3e46c0"), # DataFrames
-    UUID("0c46a032-eb83-5123-abaf-570d42b7fbaa"), # DifferentialEquations
-    UUID("682c06a0-de6a-54ab-a142-c8b1cf79cde6"), # JSON
-]
-pkgs, vers = resolve(dp, reqs; by = sort_packages_by)
+pkgs, vers = resolve(dp(), reqs; by = sort_packages_by)
 names = [first(PACKAGES[u]).name for u in pkgs]
 display([names vers])

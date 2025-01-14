@@ -1,9 +1,12 @@
 #!/usr/bin/env julia
 
+## parse command arguments
+
 const USAGE = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
-  --julia=<version>       Julia version to resolve for (default: $VERSION)
+  --julia=<version>       version to resolve for (default: $VERSION)
+  --additional=<pkgs>     additional packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
   --fix[=<pkgs>]          prefer current full version number
   --fix-minor[=<pkgs>]    prefer current major.minor version
@@ -49,6 +52,7 @@ const PROJ = let proj = nothing,
     opt_re = r"""
         ^--(
             julia |
+            additional |
             prioritize |
             (?:fix|max|min)(?:-(?:minor|major))?
         )(?:=(.+))?$
@@ -83,23 +87,20 @@ import Pkg.Types: EnvCache, get_last_stdlibs
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData, resolve
 
-## sorting of versions and packages
+## some global constants
 
-function sort_versions(uuid::UUID, vers::Set{VersionNumber})
-    sort!(collect(vers), rev=true)
+const JULIA_VER = !haskey(OPTS, "julia") ? VERSION : let
+    # TODO: treat argument as VersionSpec and download versions
+    # from https://julialang-s3.julialang.org/bin/versions.json
+    # to get the actual Julia versions and pick maximal matching
+    str = OPTS["julia"]
+    isnothing(str) && usage("Option requires an argument: --julia")
+    ver = tryparse(VersionNumber, str)
+    @something ver usage("Invalid version number: --julia=$str")
 end
-
-const ZERO_UUID = reinterpret(UUID, UInt128(0))
-
-function sort_packages_by(uuid::UUID)
-    uuid == JULIA_UUID ? ZERO_UUID : uuid
-end
-
-## extracting the dependency graph from registries
-
-const JULIA_VER = VERSION # Julia version desired
 const EXCLUDES = Set(keys(get_last_stdlibs(JULIA_VER)))
 const PACKAGES = Dict{UUID,Vector{PkgEntry}}()
+const UUIDS = Dict{String,Vector{UUID}}()
 const COMPAT = Dict{UUID,VersionSpec}() # populated later
 
 for reg in reachable_registries()
@@ -108,6 +109,17 @@ for reg in reachable_registries()
         push!(get!(()->PkgEntry[], PACKAGES, uuid), entry)
     end
 end
+for (uuid, entries) in PACKAGES, entry in entries
+    push!(get!(()->UUID[], UUIDS, entry.name), uuid)
+end
+foreach(sort!, values(UUIDS))
+
+## declare functions sorting functions
+
+function sort_versions end
+function sort_packages_by end
+
+## extracting the dependency graph from registries
 
 dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
     vers = Set{VersionNumber}()
@@ -172,16 +184,86 @@ end
 
 ## load project & manifest
 
-env = EnvCache(PROJ)
-proj = env.project
-uuids = merge(proj.deps, proj.weakdeps, proj.extras)
-uuids["julia"] = JULIA_UUID
-deps = sort!(filter!(∉(EXCLUDES), collect(values(proj.deps))))
-push!(deps, JULIA_UUID)
+let env = EnvCache(PROJ)
+    proj = env.project
+    global const uuids = merge(proj.deps, proj.weakdeps, proj.extras)
+    uuids["julia"] = JULIA_UUID
+    global const deps = filter!(∉(EXCLUDES), collect(values(proj.deps)))
+    push!(deps, JULIA_UUID)
+    for (name, comp) in proj.compat
+        COMPAT[uuids[name]] = comp.val
+    end
+end
 
-# populate COMPAT dict for dependency provider
-for (name, comp) in proj.compat
-    COMPAT[uuids[name]] = comp.val
+## parsing a packages spec
+
+function parse_packages(str::AbstractString)
+    pkgs = UUID[]
+    for item in split(str, ',')
+        if item == "@deps"
+            union!(pkgs, deps)
+            continue
+        end
+        uuid = tryparse(UUID, item)
+        if isnothing(uuid)
+            if item in keys(uuids)
+                uuid = uuids[item]
+            elseif item in keys(UUIDS)
+                list = UUIDS[item]
+                length(list) == 1 || usage("Ambiguous package name: $item")
+                uuid = only(list)
+            end
+        end
+        uuid isa UUID || usage("Invalid value for --prioritize: $item")
+        uuid ∉ pkgs && push!(pkgs, uuid)
+    end
+    return pkgs
+end
+
+## additional requirements
+
+if haskey(OPTS, "additional")
+    str = OPTS["additional"]
+    isnothing(str) && usage("Option requires an argument: --additional")
+    union!(deps, parse_packages(str))
+end
+
+## sorting packages (resolution priority)
+
+const ZERO_UUID = reinterpret(UUID, UInt128(0))
+
+function default_sort_packages_by(uuid::UUID)
+    uuid == JULIA_UUID ? ZERO_UUID : uuid
+end
+
+sort!(deps, by = default_sort_packages_by)
+
+if !haskey(OPTS, "prioritize")
+    sort_packages_by(uuid::UUID) = default_sort_packages_by(uuid)
+else
+    let
+        str = OPTS["prioritize"]
+        isnothing(str) && usage("Option requires an argument: --prioritize")
+        prioritize = parse_packages(str)
+        priority = Dict(map(reverse, enumerate(prioritize)))
+        ∞ = length(prioritize) + 1
+        global function sort_packages_by(uuid::UUID)
+            get(priority, uuid, ∞), default_sort_packages_by(uuid)
+        end
+        @show prioritize
+    end
+end
+
+## interpret options
+
+for (key, val) in OPTS
+
+end
+
+## sorting versions and packages
+
+function sort_versions(uuid::UUID, vers::Set{VersionNumber})
+    sort!(collect(vers), rev=true)
 end
 
 ## do an actual resolve

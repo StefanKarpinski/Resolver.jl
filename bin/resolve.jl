@@ -11,6 +11,7 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --fix[=<pkgs>]          prefer current full version number
   --fix-minor[=<pkgs>]    prefer current major.minor version
   --fix-major[=<pkgs>]    prefer current major version
+  --unfix=[<pkgs>]        override previous fix options
   --max[=<pkgs>]          maximize major.minor.patch
   --max-minor[=<pkgs>]    maximize major.minor; minimize patch
   --max-major[=<pkgs>]    maximize major; minimize minor.patch
@@ -49,14 +50,10 @@ end
 
 const OPTS = Vector{Pair{String,Union{String,Nothing}}}()
 const PROJ = let proj = nothing,
-    opt_re = r"""
-        ^--(
-            julia |
-            additional |
-            prioritize |
-            (?:fix|max|min)(?:-(?:minor|major))?
-        )(?:=(.+))?$
-    """x
+    opt_re = r"""^--(
+        julia | additional | prioritize |
+        unfix | (?:fix|max|min) (?:-(?:minor|major))?
+    )(?:=(.+))?$"""x
     for arg in ARGS
         if startswith(arg, "-")
             arg in ("-h", "--help") && usage()
@@ -209,11 +206,12 @@ const FIXED_MAP = Dict{UUID,String}()
 const ORDER_MAP = Dict{UUID,String}()
 
 fix_level(key::AbstractString) =
+    key == "unfix" ? "none" :
     key == "fix"   ? "all" :
     chopprefix(key, "fix-")
 
 for (key, val) in OPTS
-    startswith(key, r"fix|max|min") || continue
+    startswith(key, r"(un)?fix|max|min") || continue
     if isnothing(val)
         # set defaults
         if contains(key, "fix")

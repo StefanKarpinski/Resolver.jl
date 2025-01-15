@@ -5,6 +5,7 @@
 const USAGE = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
+  --save[=<file>]         write new manifest to file (default: in-place)
   --julia=<version>       version to resolve for (default: $VERSION)
   --additional=<pkgs>     additional packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
@@ -51,7 +52,7 @@ end
 const OPTS = Vector{Pair{String,Union{String,Nothing}}}()
 const PROJ = let proj = nothing,
     opt_re = r"""^--(
-        julia | additional | prioritize |
+        save | julia | additional | prioritize |
         unfix | (?:fix|max|min) (?:-(?:minor|major))?
     )(?:=(.+))?$"""x
     for arg in ARGS
@@ -68,33 +69,32 @@ const PROJ = let proj = nothing,
     expand_project(proj)
 end
 
-function handle_opt(body::Function, name::AbstractString, default::Any=nothing)
+function handle_opt(body::Function, name::AbstractString, value::Any=nothing)
     for (key, val) in OPTS
-        key ≠ name && continue
-        return body(val)
+        key == name || continue
+        value = body(val)
     end
-    return default
+    return value
 end
 
 ## imports
 
 push!(empty!(LOAD_PATH), @__DIR__)
 
-import Base: UUID, thismajor, thisminor, thispatch
+import Base: SHA1, UUID, thismajor, thisminor, thispatch
 import HistoricalStdlibVersions
 import Pkg.Registry:
-    init_package_info!,
-    JULIA_UUID,
-    PkgEntry,
-    reachable_registries,
-    RegistryInstance
-import Pkg.Types: EnvCache, get_last_stdlibs
+    JULIA_UUID, PkgEntry, RegistryInstance,
+    init_package_info!, reachable_registries
+import Pkg.Types:
+    EnvCache, Manifest, PackageEntry,
+    get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData, resolve
 
 ## options: target Julia version
 
-const JULIA_VER = handle_opt("julia", VERSION) do str
+const julia_version = handle_opt("julia", VERSION) do str
     isnothing(str) && usage("Option requires an argument: --julia")
     # TODO: treat argument as VersionSpec and download versions
     # from https://julialang-s3.julialang.org/bin/versions.json
@@ -103,7 +103,7 @@ const JULIA_VER = handle_opt("julia", VERSION) do str
     @something ver usage("Invalid version number: --julia=$str")
 end
 
-const EXCLUDES = Set(keys(get_last_stdlibs(JULIA_VER)))
+const EXCLUDES = Set(keys(get_last_stdlibs(julia_version)))
 const PACKAGES = Dict{UUID,Vector{PkgEntry}}()
 const UUIDS = Dict{String,Vector{UUID}}()
 
@@ -120,8 +120,8 @@ foreach(sort!, values(UUIDS))
 
 ## load project & manifest
 
-let env = EnvCache(PROJ)
-    proj = env.project
+const env = EnvCache(PROJ)
+let proj = env.project
     global const uuids = merge(proj.deps, proj.weakdeps, proj.extras)
     uuids["julia"] = JULIA_UUID
     global const deps = filter!(∉(EXCLUDES), collect(values(proj.deps)))
@@ -130,10 +130,10 @@ let env = EnvCache(PROJ)
     for (name, comp) in proj.compat
         COMPAT[uuids[name]] = comp.val
     end
-    global const MANIFEST = Dict{UUID,VersionNumber}()
+    global const old_versions = Dict{UUID,VersionNumber}()
     for (uuid, entry) in env.manifest.deps
         isnothing(entry.version) && continue
-        MANIFEST[uuid] = entry.version
+        old_versions[uuid] = entry.version
     end
 end
 
@@ -181,19 +181,19 @@ sort!(deps, by = default_sort_packages_by)
 
 sort_packages_by(uuid::UUID) = default_sort_packages_by(uuid)
 
-const PRIORITY = Dict{UUID,Int}()
-
-handle_opt("prioritize") do str
-    isnothing(str) && usage("Option requires an argument: --prioritize")
-    prioritize = parse_packages(str)
-    for (i, uuid) in  enumerate(prioritize)
-        PRIORITY[uuid] = i
+let i = 0
+    priority = Dict{UUID,Int}()
+    handle_opt("prioritize") do str
+        isnothing(str) && usage("Option requires an argument: --prioritize")
+        for uuid in parse_packages(str)
+            priority[uuid] = (i += 1)
+        end
     end
-end
-
-if !isempty(PRIORITY)
-    function sort_packages_by(uuid::UUID)
-        get(PRIORITY, uuid, typemax(Int)), default_sort_packages_by(uuid)
+    if !isempty(priority)
+        n = i + 1
+        global function sort_packages_by(uuid::UUID)
+            get(priority, uuid, n), default_sort_packages_by(uuid)
+        end
     end
 end
 
@@ -262,7 +262,7 @@ dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
     deps = Dict{VersionNumber,Vector{UUID}}()
     comp = Dict{VersionNumber,Dict{UUID,VersionSpec}}()
     uuid == JULIA_UUID &&
-        return PkgData([JULIA_VER], deps, comp)
+        return PkgData([julia_version], deps, comp)
     for entry in PACKAGES[uuid]
         info = init_package_info!(entry)
         # compat-filtered versions from this registry
@@ -309,7 +309,7 @@ dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
     # sort versions
     fixed_p = fixed(
         get(FIXED_MAP, uuid, FIXED_DEF),
-        get(MANIFEST, uuid, nothing),
+        get(old_versions, uuid, nothing),
     )
     order_lt = order(get(ORDER_MAP, uuid, ORDER_DEF))
     function lt(u::VersionNumber, v::VersionNumber)
@@ -330,6 +330,44 @@ end
 
 ## do an actual resolve
 
-pkgs, vers = resolve(dp(), deps; by = sort_packages_by)
-names = [first(PACKAGES[u]).name for u in pkgs]
-display([names vers])
+versions = let
+    pkgs, vers = resolve(dp(), deps; max=1, by=sort_packages_by)
+    for uuid in deps
+        i = findfirst(==(uuid), pkgs)
+        isnothing(vers[i]) && error("Unsatisfiable")
+    end
+    Dict{UUID,VersionNumber}(p => v for (p, v) in zip(pkgs, vers))
+end
+
+## generate a manifest to output
+
+manifest_deps = Dict{UUID, PackageEntry}()
+for (uuid, version) in versions
+    uuid == JULIA_UUID && continue
+    infos = Set{Tuple{String,SHA1}}()
+    for entry in PACKAGES[uuid]
+        info = init_package_info!(entry)
+        haskey(info.version_info, version) || continue
+        tree = info.version_info[version].git_tree_sha1
+        push!(infos, (entry.name, tree))
+    end
+    if length(infos) ≠ 1
+        name = first(PACKAGES[uuid]).name
+        abbr = string(uuid)[1:8]
+        error("Package $name [$abbr]: version $version resolved but " *
+            length(infos) > 1 ? "has conflicting definitions" : "not found")
+    end
+    name, tree_hash = only(infos)
+    manifest_deps[uuid] = PackageEntry(; name, version, tree_hash)
+end
+
+# TODO: need to handle project_hash, stdlibs and deps graph
+manifest = Manifest(; julia_version, deps = manifest_deps)
+
+handle_opt("save", false) do str
+    manifest_file = something(str, env.manifest_file)
+    write_manifest(manifest, manifest_file)
+    return true
+end || begin
+    write_manifest(stdout, manifest)
+end

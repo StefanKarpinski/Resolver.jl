@@ -208,20 +208,24 @@ ORDER_DEF::String = "max"
 const FIXED_MAP = Dict{UUID,String}()
 const ORDER_MAP = Dict{UUID,String}()
 
+fix_level(key::AbstractString) =
+    key == "fix"   ? "all" :
+    chopprefix(key, "fix-")
+
 for (key, val) in OPTS
     startswith(key, r"fix|max|min") || continue
     if isnothing(val)
         # set defaults
-        if startswith(key, "fix")
-            global FIXED_DEF = key
+        if contains(key, "fix")
+            global FIXED_DEF = fix_level(key)
         else
             global ORDER_DEF = key
         end
     else
         pkgs = parse_packages(val)
         for uuid in pkgs
-            if startswith(key, "fix")
-                FIXED_MAP[uuid] = key
+            if contains(key, "fix")
+                FIXED_MAP[uuid] = fix_level(key)
             else
                 ORDER_MAP[uuid] = key
             end
@@ -233,14 +237,14 @@ end
 
 fixed(level::String, u::Nothing) = v::VersionNumber -> true
 
-function fixed(level::String, u::VersionNumber)
+function fixed(level::String, u::VersionNumber) :: Function
     level == "none"  && return v::VersionNumber -> true
     level == "all"   && return v::VersionNumber -> v == u
     level == "minor" && return v::VersionNumber -> thisminor(v) == thisminor(u)
     level == "major" && return v::VersionNumber -> thismajor(v) == thismajor(u)
 end
 
-function order(level::String)
+function order(level::String) :: Function
     level == "min" && return (u::VersionNumber, v::VersionNumber) -> u < v
     level == "max" && return (u::VersionNumber, v::VersionNumber) -> u > v
     level == "min-minor" && return (u::VersionNumber, v::VersionNumber) ->

@@ -81,7 +81,7 @@ end
 
 push!(empty!(LOAD_PATH), @__DIR__)
 
-import Base: SHA1, UUID, thismajor, thisminor, thispatch
+import Base: SHA1, UUID, thismajor, thisminor
 import HistoricalStdlibVersions
 import Pkg.Registry:
     JULIA_UUID, PkgEntry, RegistryInstance,

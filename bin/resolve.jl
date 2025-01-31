@@ -226,7 +226,7 @@ for (key, val) in OPTS
         for uuid in pkgs
             FIX_MAJOR[uuid] = true
         end
-    elseif key in ("max", "min")
+    elseif startswith(key, r"max|min")
         for uuid in pkgs
             ORDER_MAP[uuid] = key
         end

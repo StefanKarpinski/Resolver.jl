@@ -396,6 +396,11 @@ end || begin
         version = vers[i]
         version === nothing && continue
         name = first(PACKAGES[uuid]).name
-        println(uuid, " ", rpad(name, width), " ", version)
+        try println(uuid, " ", rpad(name, width), " ", version)
+        catch err
+            err isa Base.IOError &&
+            err.code == Base.UV_EPIPE || rethrow()
+            exit(2)
+        end
     end
 end

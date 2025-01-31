@@ -5,6 +5,7 @@
 const USAGE = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
+  --help -h               print this help message
   --manifest[=<file>]     write new manifest to file
   --julia=<version>       version to resolve for (default: $VERSION)
   --additional=<pkgs>     additional packages to require
@@ -29,7 +30,7 @@ Wherever <pkgs> appears you can specify a comma separated list of:
 """
 
 function usage()
-    println(stderr, USAGE)
+    println(stdout, USAGE)
     exit(0)
 end
 

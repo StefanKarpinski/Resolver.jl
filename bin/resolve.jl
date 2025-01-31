@@ -12,7 +12,7 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --fix[=<pkgs>]          prefer current full version number
   --fix-minor[=<pkgs>]    prefer current major.minor version
   --fix-major[=<pkgs>]    prefer current major version
-  --unfix=[<pkgs>]        override previous fix options
+  --unfix=[<pkgs>]        undo (override) previous fix options
   --max[=<pkgs>]          maximize major.minor.patch
   --max-minor[=<pkgs>]    maximize major.minor; minimize patch
   --max-major[=<pkgs>]    maximize major; minimize minor.patch
@@ -171,7 +171,7 @@ end
 
 ## options: sorting packages (resolution priority)
 
-const ZERO_UUID = reinterpret(UUID, UInt128(0))
+const ZERO_UUID = UUID(0)
 
 function default_sort_packages_by(uuid::UUID)
     uuid == JULIA_UUID ? ZERO_UUID : uuid
@@ -199,47 +199,63 @@ end
 
 ## options: sorting versions
 
-FIXED_DEF::String = "none"
-ORDER_DEF::String = "max"
-
-const FIXED_MAP = Dict{UUID,String}()
-const ORDER_MAP = Dict{UUID,String}()
-
-fix_level(key::AbstractString) =
-    key == "unfix" ? "none" :
-    key == "fix"   ? "all" :
-    chopprefix(key, "fix-")
+# zero UUID used for defaults
+const FIX_PATCH = Dict(ZERO_UUID => false)
+const FIX_MINOR = Dict(ZERO_UUID => false)
+const FIX_MAJOR = Dict(ZERO_UUID => false)
+const ORDER_MAP = Dict(ZERO_UUID => "max")
 
 for (key, val) in OPTS
     startswith(key, r"(un)?fix|max|min") || continue
-    if isnothing(val)
-        # set defaults
-        if contains(key, "fix")
-            global FIXED_DEF = fix_level(key)
-        else
-            global ORDER_DEF = key
+    pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
+    if key == "unfix"
+        for uuid in pkgs,
+            dict in (FIX_PATCH, FIX_MINOR, FIX_MAJOR)
+            dict[uuid] = false
+        end
+    elseif key == "fix"
+        for uuid in pkgs
+            FIX_PATCH[uuid] = true
+        end
+    elseif key == "fix-minor"
+        for uuid in pkgs
+            FIX_MINOR[uuid] = true
+        end
+    elseif key == "fix-major"
+        for uuid in pkgs
+            FIX_MAJOR[uuid] = true
+        end
+    elseif key in ("max", "min")
+        for uuid in pkgs
+            ORDER_MAP[uuid] = key
         end
     else
-        pkgs = parse_packages(val)
-        for uuid in pkgs
-            if contains(key, "fix")
-                FIXED_MAP[uuid] = fix_level(key)
-            else
-                ORDER_MAP[uuid] = key
-            end
-        end
+        error("unexpected error: key = $key")
     end
 end
 
 ## helpers for version sorting
 
-fixed(level::String, u::Nothing) = v::VersionNumber -> true
+function fixed(
+    u::Nothing, # no old version
+    fix_patch::Bool,
+    fix_minor::Bool,
+    fix_major::Bool,
+)
+    v::VersionNumber -> 0x0
+end
 
-function fixed(level::String, u::VersionNumber) :: Function
-    level == "none"  && return v::VersionNumber -> true
-    level == "all"   && return v::VersionNumber -> v == u
-    level == "minor" && return v::VersionNumber -> thisminor(v) == thisminor(u)
-    level == "major" && return v::VersionNumber -> thismajor(v) == thismajor(u)
+function fixed(
+    u::VersionNumber, # old version
+    fix_patch::Bool,
+    fix_minor::Bool,
+    fix_major::Bool,
+) :: Function
+    function fixed_by(v::VersionNumber)
+        fix_patch && u == v                       ? 0x3 :
+        fix_minor && thisminor(u) == thisminor(v) ? 0x2 :
+        fix_major && thismajor(u) == thismajor(v) ? 0x1 : 0x0
+    end
 end
 
 function order(level::String) :: Function
@@ -307,14 +323,16 @@ dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
         delete!(c, x)
     end
     # sort versions
-    fixed_p = fixed(
-        get(FIXED_MAP, uuid, FIXED_DEF),
+    fixed_by = fixed(
         get(old_versions, uuid, nothing),
+        get(FIX_PATCH, uuid, FIX_PATCH[ZERO_UUID]),
+        get(FIX_MINOR, uuid, FIX_MINOR[ZERO_UUID]),
+        get(FIX_MAJOR, uuid, FIX_MAJOR[ZERO_UUID]),
     )
-    order_lt = order(get(ORDER_MAP, uuid, ORDER_DEF))
+    order_lt = order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
     function lt(u::VersionNumber, v::VersionNumber)
-        fixed_u = fixed_p(u)
-        fixed_v = fixed_p(v)
+        fixed_u = fixed_by(u) :: UInt8
+        fixed_v = fixed_by(v) :: UInt8
         fixed_u ≠ fixed_v ? fixed_u > fixed_v : order_lt(u, v)
     end
     vers = sort!(collect(vers); lt)

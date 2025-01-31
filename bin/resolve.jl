@@ -14,12 +14,12 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --fix-minor[=<pkgs>]    prefer current major.minor version
   --fix-major[=<pkgs>]    prefer current major version
   --unfix=[<pkgs>]        undo (override) previous fix options
-  --max[=<pkgs>]          maximize major.minor.patch
-  --max-minor[=<pkgs>]    maximize major.minor; minimize patch
-  --max-major[=<pkgs>]    maximize major; minimize minor.patch
-  --min[=<pkgs>]          minimize major.minor.patch
-  --min-minor[=<pkgs>]    minimize major.minor; maximize patch
-  --min-major[=<pkgs>]    minimize major; maximize minor.patch
+  --max[=<pkgs>]          maximize version number
+  --max-minor[=<pkgs>]    maximize major.minor (minimize patch)
+  --max-major[=<pkgs>]    maximize major (minimize minor.patch)
+  --min[=<pkgs>]          minimize version number
+  --min-minor[=<pkgs>]    minimize major.minor (maximize patch)
+  --min-major[=<pkgs>]    minimize major (maximize minor.patch)
 
 Wherever <pkgs> appears you can specify a comma separated list of:
 

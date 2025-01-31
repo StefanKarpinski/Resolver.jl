@@ -390,11 +390,12 @@ handle_opt("manifest", false) do str
 end || begin
     # just print packages and versions
     names = [first(PACKAGES[uuid]).name for uuid in pkgs]
-    width = maximum(length, names) + 1
+    width = maximum(length, names)
     for (i, uuid) in enumerate(pkgs)
+        uuid === JULIA_UUID && continue
         version = vers[i]
         version === nothing && continue
         name = first(PACKAGES[uuid]).name
-        println(rpad(name, width), " ", version)
+        println(uuid, " ", rpad(name, width), " ", version)
     end
 end

@@ -5,7 +5,7 @@
 const USAGE = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
-  --save[=<file>]         write new manifest to file (default: in-place)
+  --manifest[=<file>]     write new manifest to file
   --julia=<version>       version to resolve for (default: $VERSION)
   --additional=<pkgs>     additional packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
@@ -52,7 +52,7 @@ end
 const OPTS = Vector{Pair{String,Union{String,Nothing}}}()
 const PROJ = let proj = nothing,
     opt_re = r"""^--(
-        save | julia | additional | prioritize |
+        manifest | julia | additional | prioritize |
         unfix | (?:fix|max|min) (?:-(?:minor|major))?
     )(?:=(.+))?$"""x
     for arg in ARGS
@@ -348,44 +348,52 @@ end
 
 ## do an actual resolve
 
-versions = let
-    pkgs, vers = resolve(dp(), deps; max=1, by=sort_packages_by)
-    for uuid in deps
-        i = findfirst(==(uuid), pkgs)
-        isnothing(vers[i]) && error("Unsatisfiable")
-    end
-    Dict{UUID,VersionNumber}(p => v for (p, v) in zip(pkgs, vers))
+pkgs, vers = resolve(dp(), deps; max=1, by=sort_packages_by)
+for uuid in deps
+    i = findfirst(==(uuid), pkgs)
+    isnothing(vers[i]) && error("Unsatisfiable")
 end
 
-## generate a manifest to output
-
-manifest_deps = Dict{UUID, PackageEntry}()
-for (uuid, version) in versions
-    uuid == JULIA_UUID && continue
-    infos = Set{Tuple{String,SHA1}}()
-    for entry in PACKAGES[uuid]
-        info = init_package_info!(entry)
-        haskey(info.version_info, version) || continue
-        tree = info.version_info[version].git_tree_sha1
-        push!(infos, (entry.name, tree))
-    end
-    if length(infos) ≠ 1
-        name = first(PACKAGES[uuid]).name
-        abbr = string(uuid)[1:8]
-        error("Package $name [$abbr]: version $version resolved but " *
-            length(infos) > 1 ? "has conflicting definitions" : "not found")
-    end
-    name, tree_hash = only(infos)
-    manifest_deps[uuid] = PackageEntry(; name, version, tree_hash)
-end
-
-# TODO: need to handle project_hash, stdlibs and deps graph
-manifest = Manifest(; julia_version, deps = manifest_deps)
-
-handle_opt("save", false) do str
+handle_opt("manifest", false) do str
     manifest_file = something(str, env.manifest_file)
-    write_manifest(manifest, manifest_file)
+    # generate a manifest file
+    manifest_deps = Dict{UUID, PackageEntry}()
+    for (i, uuid) in enumerate(pkgs)
+        uuid === JULIA_UUID && continue
+        version = vers[i]
+        version === nothing && continue
+        infos = Set{Tuple{String,SHA1}}()
+        for entry in PACKAGES[uuid]
+            info = init_package_info!(entry)
+            haskey(info.version_info, version) || continue
+            tree = info.version_info[version].git_tree_sha1
+            push!(infos, (entry.name, tree))
+        end
+        if length(infos) ≠ 1
+            name = first(PACKAGES[uuid]).name
+            abbr = string(uuid)[1:8]
+            error("Package $name [$abbr]: version $version resolved but " *
+                (length(infos) > 1 ? "has conflicting definitions" : "not found"))
+        end
+        name, tree_hash = only(infos)
+        manifest_deps[uuid] = PackageEntry(; name, version, tree_hash)
+    end
+    # TODO: need to handle project_hash, stdlibs and deps graph
+    manifest = Manifest(; julia_version, deps = manifest_deps)
+    if manifest_file == "-"
+        write_manifest(stdout, manifest)
+    else
+        write_manifest(manifest, manifest_file)
+    end
     return true
 end || begin
-    write_manifest(stdout, manifest)
+    # just print packages and versions
+    names = [first(PACKAGES[uuid]).name for uuid in pkgs]
+    width = maximum(length, names) + 1
+    for (i, uuid) in enumerate(pkgs)
+        version = vers[i]
+        version === nothing && continue
+        name = first(PACKAGES[uuid]).name
+        println(rpad(name, width), " ", version)
+    end
 end

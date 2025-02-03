@@ -36,21 +36,25 @@ function PkgData(
     PkgData{P,V,S,Vers,Deps,Comp}(versions, depends, compat)
 end
 
-struct DepsProvider{P, D<:PkgData, F<:Function}
+struct DepsProvider{P, D<:PkgData, R} # function or callable
     packages :: Vector{P}
-    provider :: F
+    provider :: R
 end
 
 function DepsProvider(
-    provider :: Function,
+    provider :: R,
     packages :: SetOrVec{P},
-) where {P}
+) where {P,R}
+    # check arguments
+    hasmethod(provider, Tuple{P}) ||
+        throw(ArgumentError("provider need provider(::P) method"))
     isempty(packages) &&
         throw(ArgumentError("must provide at least one package"))
+
+    # construct provider
     packages = sort!(P[p for p in packages])
     D = typeof(provider(first(packages)))
-    F = typeof(provider)
-    DepsProvider{P,D,F}(packages, provider)
+    DepsProvider{P,D,R}(packages, provider)
 end
 
 pkg_data(deps::DepsProvider{P,D}, pkg::P) where {P,D<:PkgData} =

@@ -57,7 +57,7 @@ function _handle_opts(body::Function, pred::Function, value::Any)
         if val isa String
             hasmethod(body, Tuple{Symbol,String}) ||
             hasmethod(body, Tuple{String}) ||
-            usage("Option $opt does not take an argument (got $(repr(val)))")
+                usage("Option $opt: unexpected argument: $(repr(val))")
         end
         # check for required arguments
         if val isa Nothing
@@ -65,7 +65,7 @@ function _handle_opts(body::Function, pred::Function, value::Any)
             hasmethod(body, Tuple{Nothing}) ||
             hasmethod(body, Tuple{Symbol}) ||
             hasmethod(body, Tuple{}) ||
-                usage("Option $opt requires an argument")
+                usage("Option $opt: requires an argument")
         end
         # call the first applicable method of body
         value =

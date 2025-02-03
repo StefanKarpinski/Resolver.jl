@@ -1,5 +1,7 @@
 #!/usr/bin/env julia
 
+push!(empty!(LOAD_PATH), @__DIR__)
+
 ## parsing command arguments
 
 include("Options.jl")
@@ -55,15 +57,14 @@ const PROJ = length(ARGS) ≥ 1 ?
 
 ## imports
 
-push!(empty!(LOAD_PATH), @__DIR__)
+include("Registries.jl")
 
 import Base: SHA1, UUID, thismajor, thisminor
-import HistoricalStdlibVersions
 import Pkg.Registry:
     JULIA_UUID, PkgEntry, RegistryInstance,
     init_package_info!, reachable_registries
 import Pkg.Types:
-    EnvCache, Manifest, PackageEntry,
+    Context, EnvCache, Manifest, PackageEntry,
     get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData, resolve
@@ -78,32 +79,19 @@ const julia_version = handle_opts(:julia, VERSION) do val::String
     @something ver usage("Invalid version number: --julia=$val")
 end
 
-const EXCLUDES = Set(keys(get_last_stdlibs(julia_version)))
-const PACKAGES = Dict{UUID,Vector{PkgEntry}}()
-const UUIDS = Dict{String,Vector{UUID}}()
-
-for reg in reachable_registries()
-    for (uuid, entry) in reg.pkgs
-        uuid in EXCLUDES && continue
-        push!(get!(()->PkgEntry[], PACKAGES, uuid), entry)
-    end
-end
-for (uuid, entries) in PACKAGES, entry in entries
-    push!(get!(()->UUID[], UUIDS, entry.name), uuid)
-end
-foreach(sort!, values(UUIDS))
-
 ## load project & manifest
 
 const env = EnvCache(PROJ)
+const ctx = Context(; env)
+
 let proj = env.project
-    global const uuids = merge(proj.deps, proj.weakdeps, proj.extras)
-    uuids["julia"] = JULIA_UUID
-    global const deps = filter!(∉(EXCLUDES), collect(values(proj.deps)))
-    push!(deps, JULIA_UUID)
-    global const COMPAT = Dict{UUID,VersionSpec}()
+    global const project_uuids = merge(proj.deps, proj.weakdeps, proj.extras)
+    project_uuids["julia"] = JULIA_UUID
+    global const project_deps = collect(values(proj.deps))
+    push!(project_deps, JULIA_UUID)
+    global const project_compat = Dict{UUID,VersionSpec}()
     for (name, comp) in proj.compat
-        COMPAT[uuids[name]] = comp.val
+        project_compat[project_uuids[name]] = comp.val
     end
     global const old_versions = Dict{UUID,VersionNumber}()
     for (uuid, entry) in env.manifest.deps
@@ -118,13 +106,13 @@ function parse_packages(str::AbstractString)
     pkgs = UUID[]
     for item in split(str, ',')
         if item == "@deps"
-            union!(pkgs, deps)
+            union!(pkgs, project_deps)
             continue
         end
         uuid = tryparse(UUID, item)
         if isnothing(uuid)
-            if item in keys(uuids)
-                uuid = uuids[item]
+            if item in keys(project_uuids)
+                uuid = project_uuids[item]
             elseif item in keys(UUIDS)
                 list = UUIDS[item]
                 length(list) == 1 || usage("Ambiguous package name: $item")
@@ -139,8 +127,10 @@ end
 
 ## options: additional requirements
 
+global const reqs = copy(project_deps)
+
 handle_opts(:additional) do val::String
-    union!(deps, parse_packages(val))
+    union!(reqs, parse_packages(val))
 end
 
 ## options: sorting packages (resolution priority)
@@ -151,7 +141,7 @@ function default_sort_packages_by(uuid::UUID)
     uuid == JULIA_UUID ? ZERO_UUID : uuid
 end
 
-sort!(deps, by = default_sort_packages_by)
+sort!(reqs, by = default_sort_packages_by)
 
 sort_packages_by(uuid::UUID) = default_sort_packages_by(uuid)
 
@@ -206,7 +196,7 @@ handle_opts(r"^((un)?fix|max|min)") do opt, val
     end
 end
 
-## helpers for version sorting
+## version sorting
 
 function fixed(
     u::Nothing, # no old version
@@ -243,58 +233,7 @@ function order(level::Symbol) :: Function
         thismajor(u) ≠ thismajor(v) ? thismajor(u) > thismajor(v) : u < v
 end
 
-## extracting the dependency graph from registries
-
-dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
-    vers = Set{VersionNumber}()
-    deps = Dict{VersionNumber,Vector{UUID}}()
-    comp = Dict{VersionNumber,Dict{UUID,VersionSpec}}()
-    uuid == JULIA_UUID &&
-        return PkgData([julia_version], deps, comp)
-    for entry in PACKAGES[uuid]
-        info = init_package_info!(entry)
-        # compat-filtered versions from this registry
-        new_vers = if !haskey(COMPAT, uuid)
-            collect(keys(info.version_info))
-        else
-            filter(keys(info.version_info)) do v
-                v in COMPAT[uuid]
-            end
-        end
-        # scan versions and populate deps & compat data
-        for v in new_vers
-            push!(vers, v)
-            uuids = Dict{String,UUID}()
-            deps_v = get!(()->valtype(deps)(), deps, v)
-            for (r, d) in info.deps
-                v in r || continue
-                merge!(uuids, d)
-                union!(deps_v, values(d))
-            end
-            comp_v = get!(()->valtype(comp)(), comp, v)
-            for (r, c) in info.compat
-                v in r || continue
-                for (name, spec) in c
-                    u = uuids[name]
-                    if haskey(comp_v, u)
-                        comp_v[u] = spec ∩ comp_v[u]
-                    else
-                        comp_v[u] = spec
-                    end
-                end
-            end
-        end
-    end
-    # scrub excluded uuids from deps and sort
-    for d in values(deps)
-        setdiff!(d, EXCLUDES)
-        sort!(d)
-    end
-    # scrub excluded uuids from compat
-    for c in values(comp), x in EXCLUDES
-        delete!(c, x)
-    end
-    # sort versions
+function sort_versions(uuid::UUID, vers::Set{VersionNumber})
     fixed_by = fixed(
         get(old_versions, uuid, nothing),
         get(FIX_PATCH, uuid, FIX_PATCH[ZERO_UUID]),
@@ -307,21 +246,16 @@ dp() = DepsProvider(keys(PACKAGES)) do uuid::UUID
         fixed_v = fixed_by(v) :: UInt8
         fixed_u ≠ fixed_v ? fixed_u > fixed_v : order_lt(u, v)
     end
-    vers = sort!(collect(vers); lt)
-    # deduplicate data structures to save some memory
-    for i = 1:length(vers)-1, j = i+1:length(vers)
-        v, w = vers[i], vers[j]
-        deps[v] == deps[w] && (deps[v] = deps[w])
-        comp[v] == comp[w] && (comp[v] = comp[w])
-    end
-    # return resolver PkgData structure
-    PkgData(vers, deps, comp)
+    sort!(collect(vers); lt)
 end
 
 ## do an actual resolve
 
-pkgs, vers = resolve(dp(), deps; max=1, by=sort_packages_by)
-for uuid in deps
+const packages, rp =
+    registry_provider(; julia_version, project_compat, sort_versions)
+intersect!(reqs, rp.packages)
+pkgs, vers = resolve(rp, reqs; max=1, by=sort_packages_by)
+for uuid in reqs
     i = findfirst(==(uuid), pkgs)
     isnothing(vers[i]) && error("Unsatisfiable")
 end
@@ -335,14 +269,14 @@ handle_opts(:manifest, false) do val
         version = vers[i]
         version === nothing && continue
         infos = Set{Tuple{String,SHA1}}()
-        for entry in PACKAGES[uuid]
+        for entry in packages[uuid]
             info = init_package_info!(entry)
             haskey(info.version_info, version) || continue
             tree = info.version_info[version].git_tree_sha1
             push!(infos, (entry.name, tree))
         end
         if length(infos) ≠ 1
-            name = first(PACKAGES[uuid]).name
+            name = first(packages[uuid]).name
             abbr = string(uuid)[1:8]
             error("Package $name [$abbr]: version $version resolved but " *
                 (length(infos) > 1 ? "has conflicting definitions" : "not found"))
@@ -360,18 +294,18 @@ handle_opts(:manifest, false) do val
     return true
 end || begin
     # just print packages and versions
-    names = [first(PACKAGES[uuid]).name for uuid in pkgs]
+    names = [first(packages[uuid]).name for uuid in pkgs]
     width = maximum(length, names)
     for (i, uuid) in enumerate(pkgs)
         uuid === JULIA_UUID && continue
         version = vers[i]
         version === nothing && continue
-        name = first(PACKAGES[uuid]).name
+        name = first(packages[uuid]).name
         try println(uuid, " ", rpad(name, width), " ", version)
         catch err
-            err isa Base.IOError &&
-            err.code == Base.UV_EPIPE || rethrow()
-            exit(2)
+            # no stack trace for SIGPIPE
+            err isa Base.IOError && err.code == Base.UV_EPIPE && exit(2)
+            rethrow() # some other error
         end
     end
 end

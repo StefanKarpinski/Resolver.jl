@@ -2,7 +2,9 @@
 
 ## parsing command arguments
 
-const USAGE = """
+include("Options.jl")
+
+USAGE[] = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
   --help -h               print this help message
@@ -29,17 +31,14 @@ Wherever <pkgs> appears you can specify a comma separated list of:
   * @deps for all packages in the [deps] section of the project file
 """
 
-function usage()
-    println(stdout, USAGE)
-    exit(0)
-end
+parse_opts!(ARGS, split("""
+    manifest julia additional prioritize
+    fix fix-minor fix-major unfix
+    max max-minor max-major
+    min min-minor min-major
+"""))
 
-function usage(msg)
-    println(stderr, "[ERROR] $msg\n\n$USAGE")
-    exit(1)
-end
-
-expand_project(path::Nothing) = Base.active_project()
+length(ARGS) ≤ 1 || usage("At most one project can be specified.")
 
 function expand_project(path::AbstractString)
     isdir(path) && for name in Base.project_names
@@ -50,33 +49,9 @@ function expand_project(path::AbstractString)
     usage("Not a project path: $path")
 end
 
-const OPTS = Vector{Pair{String,Union{String,Nothing}}}()
-const PROJ = let proj = nothing,
-    opt_re = r"""^--(
-        manifest | julia | additional | prioritize |
-        unfix | (?:fix|max|min) (?:-(?:minor|major))?
-    )(?:=(.+))?$"""x
-    for arg in ARGS
-        if startswith(arg, "-")
-            arg in ("-h", "--help") && usage()
-            m = match(opt_re, arg)
-            isnothing(m) && usage("Invalid option: $arg")
-            push!(OPTS, m[1] => m[2])
-        else
-            isnothing(proj) || usage("At most one project can be specified.")
-            proj = arg
-        end
-    end
-    expand_project(proj)
-end
-
-function handle_opt(body::Function, name::AbstractString, value::Any=nothing)
-    for (key, val) in OPTS
-        key == name || continue
-        value = body(val)
-    end
-    return value
-end
+const PROJ = length(ARGS) ≥ 1 ?
+    expand_project(ARGS[1]) :
+    Base.active_project()
 
 ## imports
 
@@ -95,13 +70,12 @@ import Resolver: DepsProvider, PkgData, resolve
 
 ## options: target Julia version
 
-const julia_version = handle_opt("julia", VERSION) do str
-    isnothing(str) && usage("Option requires an argument: --julia")
+const julia_version = handle_opts(:julia, VERSION) do val::String
     # TODO: treat argument as VersionSpec and download versions
     # from https://julialang-s3.julialang.org/bin/versions.json
     # to get the actual Julia versions and pick maximal matching
-    ver = tryparse(VersionNumber, str)
-    @something ver usage("Invalid version number: --julia=$str")
+    ver = tryparse(VersionNumber, val)
+    @something ver usage("Invalid version number: --julia=$val")
 end
 
 const EXCLUDES = Set(keys(get_last_stdlibs(julia_version)))
@@ -165,9 +139,8 @@ end
 
 ## options: additional requirements
 
-handle_opt("additional") do str
-    isnothing(str) && usage("Option requires an argument: --additional")
-    union!(deps, parse_packages(str))
+handle_opts(:additional) do val::String
+    union!(deps, parse_packages(val))
 end
 
 ## options: sorting packages (resolution priority)
@@ -184,8 +157,7 @@ sort_packages_by(uuid::UUID) = default_sort_packages_by(uuid)
 
 let i = 0
     priority = Dict{UUID,Int}()
-    handle_opt("prioritize") do str
-        isnothing(str) && usage("Option requires an argument: --prioritize")
+    handle_opts(:prioritize) do str::String
         for uuid in parse_packages(str)
             priority[uuid] = (i += 1)
         end
@@ -204,34 +176,33 @@ end
 const FIX_PATCH = Dict(ZERO_UUID => false)
 const FIX_MINOR = Dict(ZERO_UUID => false)
 const FIX_MAJOR = Dict(ZERO_UUID => false)
-const ORDER_MAP = Dict(ZERO_UUID => "max")
+const ORDER_MAP = Dict(ZERO_UUID => :max)
 
-for (key, val) in OPTS
-    startswith(key, r"(un)?fix|max|min") || continue
+handle_opts(r"^((un)?fix|max|min)") do opt, val
     pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
-    if key == "unfix"
+    if opt == :unfix
         for uuid in pkgs,
             dict in (FIX_PATCH, FIX_MINOR, FIX_MAJOR)
             dict[uuid] = false
         end
-    elseif key == "fix"
+    elseif opt == :fix
         for uuid in pkgs
             FIX_PATCH[uuid] = true
         end
-    elseif key == "fix-minor"
+    elseif opt == :fix_minor
         for uuid in pkgs
             FIX_MINOR[uuid] = true
         end
-    elseif key == "fix-major"
+    elseif opt == :fix_major
         for uuid in pkgs
             FIX_MAJOR[uuid] = true
         end
-    elseif startswith(key, r"max|min")
+    elseif opt in (:max, :max_minor, :max_major, :min, :min_minor, :min_major)
         for uuid in pkgs
-            ORDER_MAP[uuid] = key
+            ORDER_MAP[uuid] = opt
         end
     else
-        error("unexpected error: key = $key")
+        error("Internal error: unexpected option name: $opt")
     end
 end
 
@@ -259,16 +230,16 @@ function fixed(
     end
 end
 
-function order(level::String) :: Function
-    level == "min" && return (u::VersionNumber, v::VersionNumber) -> u < v
-    level == "max" && return (u::VersionNumber, v::VersionNumber) -> u > v
-    level == "min-minor" && return (u::VersionNumber, v::VersionNumber) ->
+function order(level::Symbol) :: Function
+    level == :min && return (u::VersionNumber, v::VersionNumber) -> u < v
+    level == :max && return (u::VersionNumber, v::VersionNumber) -> u > v
+    level == :min_minor && return (u::VersionNumber, v::VersionNumber) ->
         thisminor(u) ≠ thisminor(v) ? thisminor(u) < thisminor(v) : u > v
-    level == "max-minor" && return (u::VersionNumber, v::VersionNumber) ->
+    level == :max_minor && return (u::VersionNumber, v::VersionNumber) ->
         thisminor(u) ≠ thisminor(v) ? thisminor(u) > thisminor(v) : u < v
-    level == "min-major" && return (u::VersionNumber, v::VersionNumber) ->
+    level == :min_major && return (u::VersionNumber, v::VersionNumber) ->
         thismajor(u) ≠ thismajor(v) ? thismajor(u) < thismajor(v) : u > v
-    level == "max-major" && return (u::VersionNumber, v::VersionNumber) ->
+    level == :max_major && return (u::VersionNumber, v::VersionNumber) ->
         thismajor(u) ≠ thismajor(v) ? thismajor(u) > thismajor(v) : u < v
 end
 
@@ -355,8 +326,8 @@ for uuid in deps
     isnothing(vers[i]) && error("Unsatisfiable")
 end
 
-handle_opt("manifest", false) do str
-    manifest_file = something(str, env.manifest_file)
+handle_opts(:manifest, false) do val
+    manifest_file = something(val, env.manifest_file)
     # generate a manifest file
     manifest_deps = Dict{UUID, PackageEntry}()
     for (i, uuid) in enumerate(pkgs)
@@ -379,7 +350,7 @@ handle_opt("manifest", false) do str
         name, tree_hash = only(infos)
         manifest_deps[uuid] = PackageEntry(; name, version, tree_hash)
     end
-    # TODO: need to handle project_hash, stdlibs and deps graph
+    # TODO: need to handle project_hash, stdlibs, deps, weakdeps & extensions
     manifest = Manifest(; julia_version, deps = manifest_deps)
     if manifest_file == "-"
         write_manifest(stdout, manifest)

@@ -263,17 +263,30 @@ end
 handle_opts(:manifest, false) do val
     manifest_file = something(val, env.manifest_file)
     # generate a manifest file
-    manifest_deps = Dict{UUID, PackageEntry}()
+    manifest_deps = Dict{UUID,PackageEntry}()
     for (i, uuid) in enumerate(pkgs)
         uuid === JULIA_UUID && continue
         version = vers[i]
         version === nothing && continue
-        infos = Set{Tuple{String,SHA1}}()
+        infos = Set{Tuple{String,SHA1,Dict{String,UUID},Dict{String,UUID}}}()
         for entry in packages[uuid]
             info = init_package_info!(entry)
             haskey(info.version_info, version) || continue
             tree = info.version_info[version].git_tree_sha1
-            push!(infos, (entry.name, tree))
+            deps = Dict{String,UUID}()
+            for (r, d) in info.deps
+                version in r || continue
+                merge!(deps, d)
+            end
+            if get(deps, "julia", nothing) == JULIA_UUID
+                delete!(deps, "julia")
+            end
+            weakdeps = Dict{String,UUID}()
+            for (r, d) in info.weak_deps
+                version in r || continue
+                merge!(weakdeps, d)
+            end
+            push!(infos, (entry.name, tree, deps, weakdeps))
         end
         if length(infos) ≠ 1
             name = first(packages[uuid]).name
@@ -281,8 +294,14 @@ handle_opts(:manifest, false) do val
             error("Package $name [$abbr]: version $version resolved but " *
                 (length(infos) > 1 ? "has conflicting definitions" : "not found"))
         end
-        name, tree_hash = only(infos)
-        manifest_deps[uuid] = PackageEntry(; name, version, tree_hash)
+        name, tree_hash, deps, weakdeps = only(infos)
+        manifest_deps[uuid] = PackageEntry(;
+            name,
+            version,
+            tree_hash,
+            deps,
+            weakdeps,
+        )
     end
     # TODO: need to handle project_hash, stdlibs, deps, weakdeps & extensions
     manifest = Manifest(; julia_version, deps = manifest_deps)

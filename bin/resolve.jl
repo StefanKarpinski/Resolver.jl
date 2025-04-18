@@ -55,6 +55,18 @@ const PROJ = length(ARGS) ≥ 1 ?
     expand_project(ARGS[1]) :
     Base.active_project()
 
+## download Julia versions
+
+import Downloads
+
+julia_versions_url = "https://julialang-s3.julialang.org/bin/versions.json"
+julia_versions_file = joinpath(@__DIR__, "julia_versions.json")
+
+if !isfile(julia_versions_file) ||
+    time() - mtime(julia_versions_file) > 3600 # 1 hour
+    Downloads.download(julia_versions_url, julia_versions_file)
+end
+
 ## imports
 
 include("Registries.jl")

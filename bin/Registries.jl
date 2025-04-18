@@ -4,15 +4,29 @@ export registry_provider
 
 import Base: UUID
 import HistoricalStdlibVersions # populates data for get_last_stdlibs
-import Pkg.Registry: JULIA_UUID, PkgEntry,
-    init_package_info!, reachable_registries
+import JSON
+import Pkg.Registry: JULIA_UUID, PkgEntry, init_package_info!, reachable_registries
 import Pkg.Types: get_last_stdlibs
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData
 
-## extracting the dependency graph from registries
+## load Julia versions
 
-# TODO: instead of excluding, can we fix data for stdlibs?
+julia_versions_data = JSON.parsefile(julia_versions_file)
+const JULIA_VERSIONS = sort!(VersionNumber.(keys(julia_versions_data)))
+
+# drop prerelease versions
+# unless there is no corresponding final release
+# in which case only keep the last prerelease
+filter!(JULIA_VERSIONS) do v
+    isempty(v.prerelease) && return true
+    Base.thispatch(v) ∈ JULIA_VERSIONS && return false
+    all(JULIA_VERSIONS) do v′
+        Base.thispatch(v) ≠ Base.thispatch(v′) || v′ ≤ v
+    end
+end
+
+## extracting the dependency graph from registries
 
 function sort_versions_default(uuid::UUID, vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)

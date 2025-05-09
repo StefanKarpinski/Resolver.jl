@@ -11,7 +11,7 @@ usage: $PROGRAM_FILE [options] [<project path>]
 
   --help -h               print this help message
   --manifest[=<file>]     write new manifest to file
-  --julia=<version>       version to resolve for (default: $VERSION)
+  --julia=<versions>      versions to resolve for (default: any)
   --additional=<pkgs>     additional packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
   --fix[=<pkgs>]          prefer current full version number
@@ -24,6 +24,7 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --min[=<pkgs>]          minimize version number
   --min-minor[=<pkgs>]    minimize major.minor (maximize patch)
   --min-major[=<pkgs>]    minimize major (maximize minor.patch)
+  --prereleases[=<pkgs>]  allow prerelease versions
 
 Wherever <pkgs> appears you can specify a comma separated list of:
 
@@ -38,6 +39,7 @@ parse_opts!(ARGS, split("""
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
+    prereleases
 """))
 
 length(ARGS) ≤ 1 || usage("At most one project can be specified.")
@@ -55,18 +57,6 @@ const PROJ = length(ARGS) ≥ 1 ?
     expand_project(ARGS[1]) :
     Base.active_project()
 
-## download Julia versions
-
-import Downloads
-
-julia_versions_url = "https://julialang-s3.julialang.org/bin/versions.json"
-julia_versions_file = joinpath(@__DIR__, "julia_versions.json")
-
-if !isfile(julia_versions_file) ||
-    time() - mtime(julia_versions_file) > 3600 # 1 hour
-    Downloads.download(julia_versions_url, julia_versions_file)
-end
-
 ## imports
 
 include("Registries.jl")
@@ -78,17 +68,14 @@ import Pkg.Registry:
 import Pkg.Types:
     Context, EnvCache, Manifest, PackageEntry,
     get_last_stdlibs, write_manifest
-import Pkg.Versions: VersionSpec
+import Pkg.Versions: VersionSpec, semver_spec
 import Resolver: DepsProvider, PkgData, resolve
 
 ## options: target Julia version
 
-const julia_version = handle_opts(:julia, VERSION) do val::String
-    # TODO: treat argument as VersionSpec and download versions
-    # from https://julialang-s3.julialang.org/bin/versions.json
-    # to get the actual Julia versions and pick maximal matching
-    ver = tryparse(VersionNumber, val)
-    @something ver usage("Invalid version number: --julia=$val")
+const julia_versions = handle_opts(:julia, VersionSpec("1")) do val::String
+    ver = semver_spec(val, throw=false)
+    @something ver usage("Invalid semver version spec: --julia=$val")
 end
 
 ## load project & manifest
@@ -109,6 +96,9 @@ let proj = env.project
     for (uuid, entry) in env.manifest.deps
         isnothing(entry.version) && continue
         old_versions[uuid] = entry.version
+    end
+    if env.manifest.julia_version !== nothing
+        old_versions[JULIA_UUID] = env.manifest.julia_version
     end
 end
 
@@ -175,14 +165,19 @@ end
 ## options: sorting versions
 
 # zero UUID used for defaults
+const allow_pre = Dict(ZERO_UUID => false)
 const FIX_PATCH = Dict(ZERO_UUID => false)
 const FIX_MINOR = Dict(ZERO_UUID => false)
 const FIX_MAJOR = Dict(ZERO_UUID => false)
 const ORDER_MAP = Dict(ZERO_UUID => :max)
 
-handle_opts(r"^((un)?fix|max|min)") do opt, val
+handle_opts(r"^((un)?fix|max|min|prereleases)") do opt, val
     pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
-    if opt == :unfix
+    if opt == :prereleases
+        for uuid in pkgs
+            allow_pre[uuid] = true
+        end
+    elseif opt == :unfix
         for uuid in pkgs,
             dict in (FIX_PATCH, FIX_MINOR, FIX_MAJOR)
             dict[uuid] = false
@@ -252,19 +247,19 @@ function sort_versions(uuid::UUID, vers::Set{VersionNumber})
         get(FIX_MINOR, uuid, FIX_MINOR[ZERO_UUID]),
         get(FIX_MAJOR, uuid, FIX_MAJOR[ZERO_UUID]),
     )
-    order_lt = order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
+    <ₒ = order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
     function lt(u::VersionNumber, v::VersionNumber)
         fixed_u = fixed_by(u) :: UInt8
         fixed_v = fixed_by(v) :: UInt8
-        fixed_u ≠ fixed_v ? fixed_u > fixed_v : order_lt(u, v)
+        fixed_u ≠ fixed_v ? fixed_u > fixed_v : u <ₒ v
     end
     sort!(collect(vers); lt)
 end
 
 ## do an actual resolve
 
-const packages, rp =
-    registry_provider(; julia_version, project_compat, sort_versions)
+const packages, stdlibs, rp =
+    registry_provider(; julia_versions, project_compat, sort_versions, allow_pre)
 intersect!(reqs, rp.packages)
 pkgs, vers = resolve(rp, reqs; max=1, by=sort_packages_by)
 for uuid in reqs
@@ -272,15 +267,24 @@ for uuid in reqs
     isnothing(vers[i]) && error("Unsatisfiable")
 end
 
-handle_opts(:manifest, false) do val
-    manifest_file = something(val, env.manifest_file)
-    # generate a manifest file
-    manifest_deps = Dict{UUID,PackageEntry}()
-    for (i, uuid) in enumerate(pkgs)
-        uuid === JULIA_UUID && continue
-        version = vers[i]
-        version === nothing && continue
-        infos = Set{Tuple{String,SHA1,Dict{String,UUID},Dict{String,UUID}}}()
+const julia_version = vers[findfirst(==(JULIA_UUID), pkgs)]
+
+struct ManifestEntry
+    name :: String
+    version :: Union{Nothing,VersionNumber}
+    tree_hash :: Union{Nothing,SHA1}
+    deps :: Dict{String,UUID}
+    weakdeps :: Dict{String,UUID}
+    # TODO: extensions
+end
+
+const info_map = Dict{UUID,ManifestEntry}()
+
+for (i, uuid) in enumerate(pkgs)
+    uuid === JULIA_UUID && continue
+    version = vers[i]
+    infos = Set{ManifestEntry}()
+    if uuid in keys(packages)
         for entry in packages[uuid]
             info = init_package_info!(entry)
             haskey(info.version_info, version) || continue
@@ -298,25 +302,78 @@ handle_opts(:manifest, false) do val
                 version in r || continue
                 merge!(weakdeps, d)
             end
-            push!(infos, (entry.name, tree, deps, weakdeps))
+            push!(infos, ManifestEntry(
+                entry.name,
+                version,
+                tree,
+                deps,
+                weakdeps,
+                # TODO: extensions
+            ))
         end
-        if length(infos) ≠ 1
-            name = first(packages[uuid]).name
-            abbr = string(uuid)[1:8]
-            error("Package $name [$abbr]: version $version resolved but " *
-                (length(infos) > 1 ? "has conflicting definitions" : "not found"))
-        end
-        name, tree_hash, deps, weakdeps = only(infos)
-        manifest_deps[uuid] = PackageEntry(;
-            name,
-            version,
-            tree_hash,
-            deps,
-            weakdeps,
-        )
     end
-    # TODO: need to handle project_hash, stdlibs, deps, weakdeps & extensions
-    manifest = Manifest(; julia_version, deps = manifest_deps)
+    if isempty(infos)
+        if uuid in keys(stdlibs) && version in keys(stdlibs[uuid])
+            info = stdlibs[uuid][version][1]
+            deps = Dict{String,UUID}()
+            for dep in info.deps
+                dep == JULIA_UUID && continue
+                name = first(stdlibs[dep])[end][1].name
+                deps[name] = dep
+            end
+            weakdeps = Dict{String,UUID}()
+            for dep in info.weakdeps
+                dep == JULIA_UUID && continue
+                name = first(stdlibs[dep])[end][1].name
+                weakdeps[name] = dep
+            end
+            push!(infos, ManifestEntry(
+                info.name,
+                info.version, # can be nothing
+                nothing,      # must be nothing (stdlib)
+                deps,
+                weakdeps,
+                # TODO: extensions
+            ))
+        end
+    end
+    if length(infos) < 1
+        error("Package $uuid resolved but not found (shouldn't happen)")
+    end
+    if length(infos) > 1
+        names = unique(info.name for info in infos)
+        if length(names) == 1
+            name = only(names)
+        else
+            name = join(sort!(names), "/")
+        end
+        error("Package $name [$uuid]: version $version resolved but has multiple conflicting definitions")
+    end
+    info_map[uuid] = only(infos)
+end
+
+handle_opts(:manifest, false) do val
+    manifest_file = something(val, env.manifest_file)
+    deps = Dict{UUID,PackageEntry}(
+        uuid => PackageEntry(;
+            info.name,
+            info.version,
+            info.tree_hash,
+            info.deps,
+            info.weakdeps,
+            # TODO: extensions
+        )
+        for (uuid, info) in info_map
+    )
+    # metaprogram around Manifest struct differences
+    if hasfield(Manifest, :project_hash)
+        manifest = Manifest(; env.manifest.project_hash, julia_version, deps)
+    else
+        manifest = Manifest(; julia_version, deps)
+        if haskey(env.manifest.other, "project_hash")
+            manifest.other["project_hash"] = env.manifest.other["project_hash"]
+        end
+    end
     if manifest_file == "-"
         write_manifest(stdout, manifest)
     else
@@ -325,13 +382,10 @@ handle_opts(:manifest, false) do val
     return true
 end || begin
     # just print packages and versions
-    names = [first(packages[uuid]).name for uuid in pkgs]
-    width = maximum(length, names)
+    width = maximum(textwidth(info.name) for info in values(info_map))
     for (i, uuid) in enumerate(pkgs)
-        uuid === JULIA_UUID && continue
         version = vers[i]
-        version === nothing && continue
-        name = first(packages[uuid]).name
+        name = uuid == JULIA_UUID ? "julia" : info_map[uuid].name
         try println(uuid, " ", rpad(name, width), " ", version)
         catch err
             # no stack trace for SIGPIPE

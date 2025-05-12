@@ -53,21 +53,25 @@ function expand_project(path::AbstractString)
     usage("Not a project path: $path")
 end
 
-const PROJ = length(ARGS) ≥ 1 ?
-    expand_project(ARGS[1]) :
-    Base.active_project()
+const PROJ = length(ARGS) ≥ 1 ? expand_project(ARGS[1]) : Base.active_project()
 
 ## imports
 
 include("Registries.jl")
 
 import Base: SHA1, UUID, thismajor, thisminor
-import Pkg.Registry:
-    JULIA_UUID, PkgEntry, RegistryInstance,
-    init_package_info!, reachable_registries
-import Pkg.Types:
-    Context, EnvCache, Manifest, PackageEntry,
-    get_last_stdlibs, write_manifest
+import Pkg
+import Pkg.Operations: download_source
+if isdefined(Pkg.Operations, :fixups_from_projectfile!)
+    import Pkg.Operations: fixups_from_projectfile!
+elseif isdefined(Pkg.Operations, :fixup_ext!)
+    import Pkg.Operations: fixup_ext!
+    const fixups_from_projectfile! = fixup_ext!
+else
+    error("Pkg too old to support generating manifests with extensions")
+end
+import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
+import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
 import Resolver: DepsProvider, PkgData, resolve
 
@@ -81,7 +85,6 @@ end
 ## load project & manifest
 
 const env = EnvCache(PROJ)
-const ctx = Context(; env)
 
 let proj = env.project
     global const project_uuids = merge(proj.deps, proj.weakdeps, proj.extras)
@@ -275,7 +278,6 @@ struct ManifestEntry
     tree_hash :: Union{Nothing,SHA1}
     deps :: Dict{String,UUID}
     weakdeps :: Dict{String,UUID}
-    # TODO: extensions
 end
 
 const info_map = Dict{UUID,ManifestEntry}()
@@ -308,7 +310,6 @@ for (i, uuid) in enumerate(pkgs)
                 tree,
                 deps,
                 weakdeps,
-                # TODO: extensions
             ))
         end
     end
@@ -333,7 +334,6 @@ for (i, uuid) in enumerate(pkgs)
                 nothing,      # must be nothing (stdlib)
                 deps,
                 weakdeps,
-                # TODO: extensions
             ))
         end
     end
@@ -356,16 +356,16 @@ handle_opts(:manifest, false) do val
     manifest_file = something(val, env.manifest_file)
     deps = Dict{UUID,PackageEntry}(
         uuid => PackageEntry(;
+            uuid,
             info.name,
             info.version,
             info.tree_hash,
             info.deps,
             info.weakdeps,
-            # TODO: extensions
         )
         for (uuid, info) in info_map
     )
-    # metaprogram around Manifest struct differences
+    # set project_hash (metaprogram around version differences)
     if hasfield(Manifest, :project_hash)
         manifest = Manifest(; env.manifest.project_hash, julia_version, deps)
     else
@@ -374,6 +374,12 @@ handle_opts(:manifest, false) do val
             manifest.other["project_hash"] = env.manifest.other["project_hash"]
         end
     end
+    # getting extension info requires downloading packages
+    env.manifest = manifest
+    ctx = Context(; env)
+    download_source(ctx)
+    fixups_from_projectfile!(ctx)
+    # now output the manifest
     if manifest_file == "-"
         write_manifest(stdout, manifest)
     else

@@ -121,27 +121,49 @@ function registry_provider(;
                 end
                 # scan versions and populate deps & compat data
                 for v in new_vers
+                    # NOTE: we probably won't support the same name meaning
+                    # different things in deps vs weakdeps, but here we can
+                    # allow it, so we defensively do allow it
                     push!(vers, v)
-                    uuids = Dict{String,UUID}()
+                    # strong deps
+                    deps_uuids = Dict{String,UUID}()
                     deps_v = get!(()->valtype(deps)(), deps, v)
                     for (r, d) in info.deps
                         v in r || continue
-                        merge!(uuids, d)
+                        merge!(deps_uuids, d)
                         union!(deps_v, values(d))
                     end
+                    # strong compat
                     comp_v = get!(()->valtype(comp)(), comp, v)
                     for (r, c) in info.compat
                         v in r || continue
                         for (name, spec) in c
-                            u = uuids[name]
-                            if haskey(comp_v, u)
+                            u = deps_uuids[name]
+                            if u in keys(comp_v)
                                 comp_v[u] = spec ∩ comp_v[u]
                             else
                                 comp_v[u] = spec
                             end
                         end
                     end
-                    # TODO: handle weakdeps
+                    # weak deps
+                    weak_uuids = Dict{String,UUID}()
+                    for (r, d) in info.weak_deps
+                        v in r || continue
+                        merge!(weak_uuids, d)
+                    end
+                    # weak compat
+                    for (r, c) in info.weak_compat
+                        v in r || continue
+                        for (name, spec) in c
+                            u = weak_uuids[name]
+                            if u in keys(comp_v)
+                                comp_v[u] = spec ∩ comp_v[u]
+                            else
+                                comp_v[u] = spec
+                            end
+                        end
+                    end
                 end
             end
         elseif uuid ∉ keys(stdlibs)
@@ -154,7 +176,8 @@ function registry_provider(;
                 push!(vers, v)
                 deps[v] = stdlib_info.deps
                 comp[v] = Dict(JULIA_UUID => VersionSpec(julia_compat))
-                # TODO: handle weakdeps
+                # NOTE: weakdeps only affect compat, which is implicitly
+                # handled by compatibility with the julia version
             end
         end
         # insert dependency on julia itself

@@ -51,7 +51,8 @@ function pkg_info(
         for (v, comp_pv) in data_p.compat
             # don't combine loops--it changes what continue does
             for (q, comp_pvq) in comp_pv
-                (q == p || q in interacts_p) && continue
+                # continue if q is unreachable (weak dep) or already processed
+                (q == p || q ∉ keys(data) || q in interacts_p) && continue
                 interacts_q = interacts[q]
                 for w in data[q].versions
                     w in comp_pvq && continue

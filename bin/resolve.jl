@@ -402,8 +402,13 @@ end || begin
     # just print packages and versions
     width = maximum(textwidth(info.name) for info in values(info_map))
     for (i, uuid) in enumerate(pkgs)
-        version = vers[i]
-        name = uuid == JULIA_UUID ? "julia" : info_map[uuid].name
+        if uuid == JULIA_UUID
+            name = "julia"
+            version = julia_version
+        else
+            name = info_map[uuid].name
+            version = something(info_map[uuid].version, julia_version)
+        end
         try println(uuid, " ", rpad(name, width), " ", version)
         catch err
             # no stack trace for SIGPIPE

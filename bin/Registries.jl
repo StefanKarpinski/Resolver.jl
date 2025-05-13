@@ -74,12 +74,28 @@ function registry_provider(;
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
             deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
-            if stdlib_ver in keys(deps_u)
-                # NOTE: should be identical but sometimes disagree
-                union!(deps_u[stdlib_ver].deps, stdlib_info.deps)
-            else
-                deps_u[stdlib_ver] = stdlib_info
+            # Sometimes HistoricalStdlibVersions gives the same
+            # version number to stdlib entries with different deps.
+            # This is horrible and bad and wrong. To deal with this
+            # we tack on a build number to make different versions.
+            # This is a horrible hack, but desperate times and all.
+            build = 0
+            original_ver = stdlib_ver
+            while stdlib_ver in keys(deps_u) && !(
+                    deps_u[stdlib_ver].name     == stdlib_info.name &&
+                    deps_u[stdlib_ver].uuid     == stdlib_info.uuid &&
+                    deps_u[stdlib_ver].deps     == stdlib_info.deps &&
+                    deps_u[stdlib_ver].weakdeps == stdlib_info.weakdeps
+                )
+                stdlib_ver = VersionNumber(
+                    original_ver.major,
+                    original_ver.minor,
+                    original_ver.patch,
+                    original_ver.prerelease,
+                    (original_ver.build..., "fake", build += 1),
+                )
             end
+            deps_u[stdlib_ver] = stdlib_info
         end
     end
 

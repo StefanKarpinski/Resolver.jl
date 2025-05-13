@@ -64,14 +64,7 @@ function registry_provider(;
     julia_vers = filter(in(julia_versions), JULIA_VERSIONS)
     filter_pre!(JULIA_UUID, julia_vers)
 
-    stdlibs = Dict{UUID, # stdlib UUID
-        Dict{VersionNumber, # stdlib version
-            Tuple{
-                StdlibInfo, # stdlib info
-                Vector{VersionNumber}, # compatible julia versions
-            }
-        }
-    }()
+    stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
     for julia_ver in julia_vers
         last_stdlibs = UNREGISTERED_STDLIBS
         for (v, this_stdlibs) in STDLIBS_BY_VERSION
@@ -80,22 +73,12 @@ function registry_provider(;
         end
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
-            stdlibs_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
-            if stdlib_ver in keys(stdlibs_u)
-                stdlibs_uv = stdlibs_u[stdlib_ver]
-                @assert stdlibs_uv[1].name == stdlib_info.name
-                @assert stdlibs_uv[1].uuid == stdlib_info.uuid
-                if stdlibs_uv[1].version !== nothing
-                    @assert stdlibs_uv[1].version == stdlib_ver
-                end
-                # @assert stdlibs_uv[1].deps == stdlib_info.deps
-                if stdlibs_uv[1].deps != stdlib_info.deps
-                    union!(stdlibs_uv[1].deps, stdlib_info.deps)
-                end
-                @assert stdlibs_uv[1].weakdeps == stdlib_info.weakdeps
-                push!(stdlibs_uv[2], julia_ver)
+            deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
+            if stdlib_ver in keys(deps_u)
+                # NOTE: should be identical but sometimes disagree
+                union!(deps_u[stdlib_ver].deps, stdlib_info.deps)
             else
-                stdlibs_u[stdlib_ver] = (stdlib_info, [julia_ver])
+                deps_u[stdlib_ver] = stdlib_info
             end
         end
     end
@@ -108,7 +91,18 @@ function registry_provider(;
             union!(vers, julia_vers)
             for v in vers
                 deps[v] = valtype(deps)()
-                comp[v] = valtype(comp)()
+                # find relevant stdlibs stanza
+                last_stdlibs = UNREGISTERED_STDLIBS
+                for (v′, this_stdlibs) in STDLIBS_BY_VERSION
+                    v′ ≥ Base.thispatch(v) && break
+                    last_stdlibs = this_stdlibs
+                end
+                # add compat for all stdlibs of this version
+                comp_v = get!(()->valtype(comp)(), comp, v)
+                for (stdlib_uuid, stdlib_info) in last_stdlibs
+                    stdlib_ver = something(stdlib_info.version, v)
+                    comp_v[stdlib_uuid] = VersionSpec(stdlib_ver)
+                end
             end
         elseif uuid in keys(packages)
             for entry in packages[uuid]
@@ -171,23 +165,22 @@ function registry_provider(;
         end
         # patch in historical stdlib info
         if uuid in keys(stdlibs)
-            for (v, (stdlib_info, julia_compat)) in stdlibs[uuid]
+            for (v, info) in stdlibs[uuid]
                 v in vers && continue # prefer real registry data
                 push!(vers, v)
-                deps[v] = stdlib_info.deps
-                comp[v] = Dict(JULIA_UUID => VersionSpec(julia_compat))
-                # NOTE: weakdeps only affect compat, which is implicitly
-                # handled by compatibility with the julia version
+                deps[v] = info.deps
             end
         end
         # insert dependency on julia itself
         if uuid != JULIA_UUID
             for v in vers
-                if JULIA_UUID ∉ deps[v]
-                    push!(deps[v], JULIA_UUID)
+                deps_v = get!(()->valtype(deps)(), deps, v)
+                if JULIA_UUID ∉ deps_v
+                    push!(deps_v, JULIA_UUID)
                 end
-                if JULIA_UUID ∉ keys(comp[v])
-                    comp[v][JULIA_UUID] = VersionSpec("*")
+                comp_v = get!(()->valtype(comp)(), comp, v)
+                if JULIA_UUID ∉ keys(comp_v)
+                    comp_v[JULIA_UUID] = VersionSpec("*")
                 end
             end
         end

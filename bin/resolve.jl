@@ -284,8 +284,29 @@ const info_map = Dict{UUID,ManifestEntry}()
 for (i, uuid) in enumerate(pkgs)
     uuid === JULIA_UUID && continue
     version = vers[i]
-    infos = Set{ManifestEntry}()
-    if uuid in keys(packages)
+    if uuid in keys(stdlibs) && version in keys(stdlibs[uuid])
+        info = stdlibs[uuid][version]
+        deps = Dict{String,UUID}()
+        for dep in info.deps
+            dep == JULIA_UUID && continue
+            name = first(stdlibs[dep])[end].name
+            deps[name] = dep
+        end
+        weakdeps = Dict{String,UUID}()
+        for dep in info.weakdeps
+            dep == JULIA_UUID && continue
+            name = first(stdlibs[dep])[end].name
+            weakdeps[name] = dep
+        end
+        info_map[uuid] = ManifestEntry(
+            info.name,
+            info.version, # can be nothing
+            nothing,      # tree hash must be nothing
+            deps,
+            weakdeps,
+        )
+    elseif uuid in keys(packages)
+        infos = Set{ManifestEntry}()
         for entry in packages[uuid]
             info = init_package_info!(entry)
             haskey(info.version_info, version) || continue
@@ -311,44 +332,19 @@ for (i, uuid) in enumerate(pkgs)
                 weakdeps,
             ))
         end
-    end
-    if isempty(infos)
-        if uuid in keys(stdlibs) && version in keys(stdlibs[uuid])
-            info = stdlibs[uuid][version][1]
-            deps = Dict{String,UUID}()
-            for dep in info.deps
-                dep == JULIA_UUID && continue
-                name = first(stdlibs[dep])[end][1].name
-                deps[name] = dep
+        if length(infos) > 1
+            names = unique(info.name for info in infos)
+            if length(names) == 1
+                name = only(names)
+            else
+                name = join(sort!(names), "/")
             end
-            weakdeps = Dict{String,UUID}()
-            for dep in info.weakdeps
-                dep == JULIA_UUID && continue
-                name = first(stdlibs[dep])[end][1].name
-                weakdeps[name] = dep
-            end
-            push!(infos, ManifestEntry(
-                info.name,
-                info.version, # can be nothing
-                nothing,      # must be nothing (stdlib)
-                deps,
-                weakdeps,
-            ))
+            error("Package $name [$uuid]: version $version resolved but has multiple conflicting definitions")
         end
-    end
-    if length(infos) < 1
+        info_map[uuid] = only(infos)
+    else
         error("Package $uuid resolved but not found (shouldn't happen)")
     end
-    if length(infos) > 1
-        names = unique(info.name for info in infos)
-        if length(names) == 1
-            name = only(names)
-        else
-            name = join(sort!(names), "/")
-        end
-        error("Package $name [$uuid]: version $version resolved but has multiple conflicting definitions")
-    end
-    info_map[uuid] = only(infos)
 end
 
 handle_opts(:manifest, false) do val

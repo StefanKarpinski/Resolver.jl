@@ -61,7 +61,7 @@ include("Registries.jl")
 
 import Base: SHA1, UUID, thismajor, thisminor
 import Pkg
-import Pkg.Operations: download_source
+import Pkg.Operations: record_project_hash, download_source
 if isdefined(Pkg.Operations, :fixups_from_projectfile!)
     import Pkg.Operations: fixups_from_projectfile!
 elseif isdefined(Pkg.Operations, :fixup_ext!)
@@ -364,26 +364,29 @@ handle_opts(:manifest, false) do val
         )
         for (uuid, info) in info_map
     )
-    # set project_hash (metaprogram around version differences)
-    if hasfield(Manifest, :project_hash)
-        manifest = Manifest(; env.manifest.project_hash, julia_version, deps)
-    else
-        manifest = Manifest(; julia_version, deps)
-        if haskey(env.manifest.other, "project_hash")
-            manifest.other["project_hash"] = env.manifest.other["project_hash"]
-        end
-    end
-    # getting extension info requires downloading packages
+    # create manifest and record project hash
+    manifest = Manifest(; julia_version, deps)
     env.manifest = manifest
+    record_project_hash(env)
+    # getting extension info requires downloading packages
+    # this half-installs packages, so don't pollute the main depot
+    push!(DEPOT_PATH, mktempdir())
     ctx = Context(; env)
     download_source(ctx)
     if @isdefined fixups_from_projectfile!
-        fixups_from_projectfile!(ctx)
+        if applicable(fixups_from_projectfile!, ctx)
+            fixups_from_projectfile!(ctx)
+        elseif applicable(fixups_from_projectfile!, env)
+            fixups_from_projectfile!(env)
+        else
+            error("Pkg too new, don't know how to call fixups_from_projectfile!")
+        end
     elseif @isdefined fixup_ext!
         fixup_ext!(env)
     else
         error("Pkg too old to support generating manifests with extensions")
     end
+    pop!(DEPOT_PATH)
     # now output the manifest
     if manifest_file == "-"
         write_manifest(stdout, manifest)

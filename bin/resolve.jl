@@ -66,7 +66,6 @@ if isdefined(Pkg.Operations, :fixups_from_projectfile!)
     import Pkg.Operations: fixups_from_projectfile!
 elseif isdefined(Pkg.Operations, :fixup_ext!)
     import Pkg.Operations: fixup_ext!
-    const fixups_from_projectfile! = fixup_ext!
 else
     error("Pkg too old to support generating manifests with extensions")
 end
@@ -378,7 +377,13 @@ handle_opts(:manifest, false) do val
     env.manifest = manifest
     ctx = Context(; env)
     download_source(ctx)
-    fixups_from_projectfile!(ctx)
+    if @isdefined fixups_from_projectfile!
+        fixups_from_projectfile!(ctx)
+    elseif @isdefined fixup_ext!
+        fixup_ext!(env)
+    else
+        error("Pkg too old to support generating manifests with extensions")
+    end
     # now output the manifest
     if manifest_file == "-"
         write_manifest(stdout, manifest)

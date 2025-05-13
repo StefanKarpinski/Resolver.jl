@@ -196,7 +196,7 @@ function registry_provider(;
         PkgData(vers, deps, comp)
     end
 
-    return packages, stdlibs, rp
+    return packages, rp
 end
 
 end # module

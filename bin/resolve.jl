@@ -73,6 +73,7 @@ import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_inf
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
 import Resolver: DepsProvider, PkgData, resolve
+import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 
 ## options: target Julia version
 
@@ -260,7 +261,7 @@ end
 
 ## do an actual resolve
 
-const packages, stdlibs, rp =
+const packages, rp =
     registry_provider(; julia_versions, project_compat, sort_versions, allow_pre)
 intersect!(reqs, rp.packages)
 pkgs, vers = resolve(rp, reqs; max=1, by=sort_packages_by)
@@ -270,6 +271,13 @@ for uuid in reqs
 end
 
 const julia_version = vers[findfirst(==(JULIA_UUID), pkgs)]
+const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
+    for (v, this_stdlibs) in STDLIBS_BY_VERSION
+        v ≥ Base.thispatch(julia_version) && break
+        last_stdlibs = this_stdlibs
+    end
+    last_stdlibs
+end
 
 struct ManifestEntry
     name :: String
@@ -284,24 +292,24 @@ const info_map = Dict{UUID,ManifestEntry}()
 for (i, uuid) in enumerate(pkgs)
     uuid === JULIA_UUID && continue
     version = vers[i]
-    if uuid in keys(stdlibs) && version in keys(stdlibs[uuid])
-        info = stdlibs[uuid][version]
+    if uuid in keys(stdlibs)
+        info = stdlibs[uuid]
         deps = Dict{String,UUID}()
         for dep in info.deps
             dep == JULIA_UUID && continue
-            name = first(stdlibs[dep])[end].name
+            name = stdlibs[dep].name
             deps[name] = dep
         end
         weakdeps = Dict{String,UUID}()
         for dep in info.weakdeps
             dep == JULIA_UUID && continue
-            name = first(stdlibs[dep])[end].name
+            name = stdlibs[dep].name
             weakdeps[name] = dep
         end
         info_map[uuid] = ManifestEntry(
             info.name,
             info.version, # can be nothing
-            nothing,      # tree hash must be nothing
+            nothing, # tree hash must be nothing
             deps,
             weakdeps,
         )

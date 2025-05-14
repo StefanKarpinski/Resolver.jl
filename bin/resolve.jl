@@ -104,13 +104,13 @@ end
 const env = EnvCache(PROJ)
 
 let proj = env.project
-    global const project_uuids = merge(proj.deps, proj.weakdeps, proj.extras)
-    project_uuids["julia"] = JULIA_UUID
+    global const project_names = merge(proj.deps, proj.weakdeps, proj.extras)
+    project_names["julia"] = JULIA_UUID
     global const project_deps = collect(values(proj.deps))
     push!(project_deps, JULIA_UUID)
     global const project_compat = Dict{UUID,VersionSpec}()
     for (name, comp) in proj.compat
-        project_compat[project_uuids[name]] = comp.val
+        project_compat[project_names[name]] = comp.val
     end
     global const old_versions = Dict{UUID,VersionNumber}()
     for (uuid, entry) in env.manifest.deps
@@ -119,8 +119,34 @@ let proj = env.project
     end
     if env.manifest.julia_version !== nothing
         old_versions[JULIA_UUID] = env.manifest.julia_version
+    elseif isfile(env.manifest_file)
+        for line in eachline(env.manifest_file)
+            m = match(r"^#\s+julia_version\s*=\s*\"(.*?)\"\s*$", line)
+            m === nothing && continue
+            v = tryparse(VersionNumber, m[1])
+            v === nothing && continue
+            old_versions[JULIA_UUID] = v
+        end
     end
 end
+
+## load packages from installed registries
+
+const packages = Dict{UUID,Vector{PkgEntry}}()
+
+for reg in reachable_registries()
+    for (uuid, entry) in reg.pkgs
+        push!(get!(()->PkgEntry[], packages, uuid), entry)
+    end
+end
+
+const package_names = Dict{String,Vector{UUID}}()
+
+for (uuid, entries) in packages, entry in entries
+    uuids = get!(()->valtype(package_names)(), package_names, entry.name)
+    uuid in uuids || push!(uuids, uuid)
+end
+foreach(sort!, values(package_names))
 
 ## options: parsing packages specs
 
@@ -132,13 +158,13 @@ function parse_packages(str::AbstractString)
             continue
         end
         uuid = tryparse(UUID, item)
-        if isnothing(uuid)
-            if item in keys(project_uuids)
-                uuid = project_uuids[item]
-            elseif item in keys(UUIDS)
-                list = UUIDS[item]
-                length(list) == 1 || usage("Ambiguous package name: $item")
-                uuid = only(list)
+        if isnothing(uuid) # must be a name then
+            if item in keys(project_names)
+                uuid = project_names[item]
+            elseif item in keys(package_names)
+                uuids = package_names[item]
+                length(uuids) == 1 || usage("Ambiguous package name: $item")
+                uuid = only(uuids)
             end
         end
         uuid isa UUID || usage("Invalid value for --prioritize: $item")
@@ -155,34 +181,9 @@ handle_opts(:extra_deps) do val::String
     union!(reqs, parse_packages(val))
 end
 
-## options: sorting packages (resolution priority)
+## options: sorting versions
 
 const ZERO_UUID = UUID(0)
-
-function default_sort_packages_by(uuid::UUID)
-    uuid == JULIA_UUID ? ZERO_UUID : uuid
-end
-
-sort!(reqs, by = default_sort_packages_by)
-
-sort_packages_by(uuid::UUID) = default_sort_packages_by(uuid)
-
-let i = 0
-    priority = Dict{UUID,Int}()
-    handle_opts(:prioritize) do str::String
-        for uuid in parse_packages(str)
-            priority[uuid] = (i += 1)
-        end
-    end
-    if !isempty(priority)
-        n = i + 1
-        global function sort_packages_by(uuid::UUID)
-            get(priority, uuid, n), default_sort_packages_by(uuid)
-        end
-    end
-end
-
-## options: sorting versions
 
 # zero UUID used for defaults
 const allow_pre = Dict(ZERO_UUID => false)
@@ -191,29 +192,36 @@ const FIX_MINOR = Dict(ZERO_UUID => false)
 const FIX_MAJOR = Dict(ZERO_UUID => false)
 const ORDER_MAP = Dict(ZERO_UUID => :max)
 
+# list of all fixed packages
+const FIXED = UUID[]
+
 handle_opts(r"^(allow_pre|(un)?fix|max|min)") do opt, val
     pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
     if opt == :allow_pre
         for uuid in pkgs
             allow_pre[uuid] = true
         end
+    elseif opt == :fix
+        for uuid in pkgs
+            FIX_PATCH[uuid] = true
+            uuid in FIXED || push!(FIXED, uuid)
+        end
+    elseif opt == :fix_minor
+        for uuid in pkgs
+            FIX_MINOR[uuid] = true
+            uuid in FIXED || push!(FIXED, uuid)
+        end
+    elseif opt == :fix_major
+        for uuid in pkgs
+            FIX_MAJOR[uuid] = true
+            uuid in FIXED || push!(FIXED, uuid)
+        end
     elseif opt == :unfix
         for uuid in pkgs,
             dict in (FIX_PATCH, FIX_MINOR, FIX_MAJOR)
             dict[uuid] = false
         end
-    elseif opt == :fix
-        for uuid in pkgs
-            FIX_PATCH[uuid] = true
-        end
-    elseif opt == :fix_minor
-        for uuid in pkgs
-            FIX_MINOR[uuid] = true
-        end
-    elseif opt == :fix_major
-        for uuid in pkgs
-            FIX_MAJOR[uuid] = true
-        end
+        filter!(∉(pkgs), FIXED)
     elseif opt in (:max, :max_minor, :max_major, :min, :min_minor, :min_major)
         for uuid in pkgs
             ORDER_MAP[uuid] = opt
@@ -276,10 +284,44 @@ function sort_versions(uuid::UUID, vers::Set{VersionNumber})
     sort!(collect(vers); lt)
 end
 
+## options: sorting packages (resolution priority)
+
+function default_sort_packages_by(uuid::UUID)
+    uuid == JULIA_UUID ? ZERO_UUID : uuid
+end
+
+sort!(reqs, by = default_sort_packages_by)
+sort!(FIXED, by = default_sort_packages_by)
+
+sort_packages_by(uuid::UUID) = default_sort_packages_by(uuid)
+
+let i = 0
+    priority = Dict{UUID,Int}()
+    handle_opts(:prioritize) do str::String
+        for uuid in parse_packages(str)
+            priority[uuid] = (i += 1)
+        end
+    end
+    for uuid in FIXED
+        priority[uuid] = (i += 1)
+    end
+    if !isempty(priority)
+        n = i + 1
+        global function sort_packages_by(uuid::UUID)
+            get(priority, uuid, n), default_sort_packages_by(uuid)
+        end
+    end
+end
+
 ## do an actual resolve
 
-const packages, rp =
-    registry_provider(; julia_versions, project_compat, sort_versions, allow_pre)
+const rp = registry_provider(
+    packages;
+    julia_versions,
+    project_compat,
+    sort_versions,
+    allow_pre,
+)
 intersect!(reqs, rp.packages)
 pkgs, vers = resolve(rp, reqs; max=1, by=sort_packages_by)
 for uuid in reqs
@@ -463,7 +505,6 @@ else # generate a manifest
         # julia_version = "$julia_version"
         # manifest_format = "$(manifest.manifest_format)"
         # project_hash = "$(env.manifest.other["project_hash"])"
-        #
 
         """
         print(io, header)

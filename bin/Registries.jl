@@ -40,20 +40,13 @@ function sort_versions_default(uuid::UUID, vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)
 end
 
-function registry_provider(;
+function registry_provider(
+    packages       :: Dict{UUID,Vector{PkgEntry}};
     julia_versions :: VersionSpec = VersionSpec("1"),
     project_compat :: Dict{UUID,VersionSpec} = Dict{UUID,VersionSpec}(),
     sort_versions  :: Function = sort_versions_default,
     allow_pre      :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
 )
-    packages = Dict{UUID,Vector{PkgEntry}}()
-
-    for reg in reachable_registries()
-        for (uuid, entry) in reg.pkgs
-            push!(get!(()->PkgEntry[], packages, uuid), entry)
-        end
-    end
-
     function filter_pre!(uuid::UUID, vers::Vector{VersionNumber})
         if !get(allow_pre, uuid, allow_pre[UUID(0)])
             filter!(v->isempty(v.prerelease), vers)
@@ -99,7 +92,7 @@ function registry_provider(;
         end
     end
 
-    rp = DepsProvider(keys(packages)) do uuid::UUID
+    return DepsProvider(keys(packages)) do uuid::UUID
         vers = Set{VersionNumber}()
         deps = Dict{VersionNumber,Vector{UUID}}()
         comp = Dict{VersionNumber,Dict{UUID,VersionSpec}}()
@@ -211,8 +204,6 @@ function registry_provider(;
         # return resolver PkgData structure
         PkgData(vers, deps, comp)
     end
-
-    return packages, rp
 end
 
 end # module

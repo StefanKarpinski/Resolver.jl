@@ -68,7 +68,7 @@ function registry_provider(;
     for julia_ver in julia_vers
         last_stdlibs = UNREGISTERED_STDLIBS
         for (v, this_stdlibs) in STDLIBS_BY_VERSION
-            v ≥ Base.thispatch(julia_ver) && break
+            v > Base.thispatch(julia_ver) && break
             last_stdlibs = this_stdlibs
         end
         for (uuid, stdlib_info) in last_stdlibs
@@ -110,7 +110,7 @@ function registry_provider(;
                 # find relevant stdlibs stanza
                 last_stdlibs = UNREGISTERED_STDLIBS
                 for (v′, this_stdlibs) in STDLIBS_BY_VERSION
-                    v′ ≥ Base.thispatch(v) && break
+                    v′ > Base.thispatch(v) && break
                     last_stdlibs = this_stdlibs
                 end
                 # add compat for all stdlibs of this version

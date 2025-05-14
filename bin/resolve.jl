@@ -273,7 +273,7 @@ end
 const julia_version = vers[findfirst(==(JULIA_UUID), pkgs)]
 const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
     for (v, this_stdlibs) in STDLIBS_BY_VERSION
-        v ≥ Base.thispatch(julia_version) && break
+        v > Base.thispatch(julia_version) && break
         last_stdlibs = this_stdlibs
     end
     last_stdlibs
@@ -291,7 +291,6 @@ const info_map = Dict{UUID,ManifestEntry}()
 
 for (i, uuid) in enumerate(pkgs)
     uuid === JULIA_UUID && continue
-    version = vers[i]
     if uuid in keys(stdlibs)
         info = stdlibs[uuid]
         deps = Dict{String,UUID}()
@@ -314,6 +313,7 @@ for (i, uuid) in enumerate(pkgs)
             weakdeps,
         )
     elseif uuid in keys(packages)
+        version = vers[i]
         infos = Set{ManifestEntry}()
         for entry in packages[uuid]
             info = init_package_info!(entry)
@@ -340,7 +340,9 @@ for (i, uuid) in enumerate(pkgs)
                 weakdeps,
             ))
         end
-        if length(infos) > 1
+        if length(infos) < 1
+            error("Package $uuid: version $version resolved but no registry entries found")
+        elseif length(infos) > 1
             names = unique(info.name for info in infos)
             if length(names) == 1
                 name = only(names)

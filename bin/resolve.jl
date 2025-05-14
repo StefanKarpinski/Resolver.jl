@@ -416,16 +416,24 @@ else # generate a manifest
         push!(DEPOT_PATH, mktempdir())
         ctx = Context(; env)
         download_source(ctx)
+        # metaprogram around Pkg internal API differences for
+        # injecting extension information into the manifest
         if @isdefined fixups_from_projectfile!
             if applicable(fixups_from_projectfile!, ctx)
                 fixups_from_projectfile!(ctx)
             elseif applicable(fixups_from_projectfile!, env)
                 fixups_from_projectfile!(env)
             else
-                error("Pkg too new, don't know how to call fixups_from_projectfile!")
+                error("Pkg: don't know how to call fixups_from_projectfile!")
             end
         elseif @isdefined fixup_ext!
-            fixup_ext!(env)
+            if applicable(fixup_ext!, env)
+                fixup_ext!(env)
+            elseif applicable(fixup_ext!, env, values(manifest))
+                fixup_ext!(env, values(manifest))
+            else
+                error("Pkg: don't know how to call fixup_ext!")
+            end
         else
             error("Pkg too old to support generating manifests with extensions")
         end

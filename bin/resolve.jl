@@ -1,4 +1,4 @@
-#!/usr/bin/env julia +1.12
+#!/usr/bin/env julia +1.11
 
 push!(empty!(LOAD_PATH), @__DIR__)
 

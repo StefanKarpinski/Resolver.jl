@@ -88,6 +88,7 @@ import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, w
 import Pkg.Versions: VersionSpec, semver_spec
 import Resolver: DepsProvider, PkgData, resolve
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
+import TOML
 
 ## options: target Julia version
 
@@ -406,10 +407,9 @@ else # generate a manifest
     # create manifest and record project hash
     manifest = Manifest(; julia_version, deps)
     env.manifest = manifest
+    record_project_hash(env)
     if julia_version < v"1.6.2"
         manifest.manifest_format = v"1"
-    else
-        record_project_hash(env)
     end
     if julia_version ≥ v"1.9"
         # getting extension info requires downloading packages
@@ -441,9 +441,37 @@ else # generate a manifest
         pop!(DEPOT_PATH)
     end
     # output the manifest
-    if output == :print_manifest
-        write_manifest(stdout, manifest)
-    elseif output == :write_manifest
-        write_manifest(env)
+    if manifest.manifest_format ≥ v"2"
+        if output == :print_manifest
+            write_manifest(stdout, manifest)
+        elseif output == :write_manifest
+            write_manifest(env)
+        else
+            error("internal error: unexpected output format: $output")
+        end
+    else # avoid warning and include comment with Julia version
+        if output == :print_manifest
+            io = stdout
+        elseif output == :write_manifest
+            io = open(env.manifest_file, write=true)
+        else
+            error("internal error: unexpected output format: $output")
+        end
+        header = """
+        # This file is machine-generated - editing it directly is not advised
+        #
+        # julia_version = "$julia_version"
+        # manifest_format = "$(manifest.manifest_format)"
+        # project_hash = "$(env.manifest.other["project_hash"])"
+        #
+
+        """
+        print(io, header)
+        raw_manifest = Pkg.Types.destructure(manifest)
+        TOML.print(io, raw_manifest, sorted=true) do x
+            (typeof(x) in [String, Nothing, UUID, SHA1, VersionNumber]) && return string(x)
+            error("unhandled type `$(typeof(x))`")
+        end
+        io !== stdout && close(io)
     end
 end

@@ -34,11 +34,13 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --min-minor[=<pkgs>]    minimize major.minor (maximize patch)
   --min-major[=<pkgs>]    minimize major (maximize minor.patch)
 
-Wherever <pkgs> appears you can specify a comma separated list of:
+Wherever <pkgs> appears you can specify a comma-separated list of:
 
   * Package uuids for any packages
   * Package names from any the [deps], [weakdeps] or [extras] sections
     of the specified environment's project file
+  * Any package name that is associated with a unique UUID across the
+    registries that are currently installed
   * @deps for packages in the [deps] section of Project.toml
   * @weakdeps for packages in the [weakdeps] section of Project.toml
   * @alldeps for packages in both the [deps] and [weakdeps] sections

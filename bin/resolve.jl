@@ -375,10 +375,14 @@ handle_opts(:manifest, false) do val
     # create manifest and record project hash
     manifest = Manifest(; julia_version, deps)
     env.manifest = manifest
-    record_project_hash(env)
+    if julia_version ≥ v"1.6.2"
+        record_project_hash(env)
+    else
+        manifest.manifest_format = v"1"
+    end
     if julia_version ≥ v"1.9"
         # getting extension info requires downloading packages
-        # this half-installs packages, so don't pollute the main depot
+        # this half-installs packages, so don't pollute the real depot
         push!(DEPOT_PATH, mktempdir())
         ctx = Context(; env)
         download_source(ctx)

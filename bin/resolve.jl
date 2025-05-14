@@ -1,4 +1,4 @@
-#!/usr/bin/env julia
+#!/usr/bin/env julia +1.12
 
 push!(empty!(LOAD_PATH), @__DIR__)
 
@@ -10,6 +10,7 @@ USAGE[] = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
   --help -h               print this help message
+
   --print-manifest        print the new manifest to stdout
   --print-versions        print the resolved versions to stdout
 

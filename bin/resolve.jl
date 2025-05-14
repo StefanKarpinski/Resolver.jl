@@ -78,8 +78,10 @@ import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 ## options: target Julia version
 
 const julia_versions = handle_opts(:julia, VersionSpec("1")) do val::String
-    ver = semver_spec(val, throw=false)
-    @something ver usage("Invalid semver version spec: --julia=$val")
+    try VersionSpec(split(val, r"\s*,\s*"))
+    catch
+        usage("Invalid semver version spec: --julia=$val")
+    end
 end
 
 ## load project & manifest

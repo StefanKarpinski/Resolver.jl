@@ -10,21 +10,28 @@ USAGE[] = """
 usage: $PROGRAM_FILE [options] [<project path>]
 
   --help -h               print this help message
-  --manifest[=<file>]     write new manifest to file
-  --julia=<versions>      versions to resolve for (default: any)
-  --additional=<pkgs>     additional packages to require
+  --print-manifest        print the new manifest to stdout
+  --print-versions        print the resolved versions to stdout
+
+  --julia=<versions>      Julia versions to resolve for (default: 1+)
+                          use registry compat syntax, not semver
+
+  --allow-pre[=<pkgs>]    allow prerelease versions
+  --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
+
   --fix[=<pkgs>]          prefer current full version number
   --fix-minor[=<pkgs>]    prefer current major.minor version
   --fix-major[=<pkgs>]    prefer current major version
   --unfix=[<pkgs>]        undo (override) previous fix options
+
   --max[=<pkgs>]          maximize version number
   --max-minor[=<pkgs>]    maximize major.minor (minimize patch)
   --max-major[=<pkgs>]    maximize major (minimize minor.patch)
+
   --min[=<pkgs>]          minimize version number
   --min-minor[=<pkgs>]    minimize major.minor (maximize patch)
   --min-major[=<pkgs>]    minimize major (maximize minor.patch)
-  --prereleases[=<pkgs>]  allow prerelease versions
 
 Wherever <pkgs> appears you can specify a comma separated list of:
 
@@ -35,14 +42,20 @@ Wherever <pkgs> appears you can specify a comma separated list of:
 """
 
 parse_opts!(ARGS, split("""
-    manifest julia additional prioritize
+    print-manifest print-versions
+    julia allow-pre extra-deps prioritize
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
-    prereleases
 """))
 
 length(ARGS) ≤ 1 || usage("At most one project can be specified.")
+
+output = handle_opts(
+    opt::Symbol -> opt,
+    r"^print_(manifest|versions)$",
+    :write_manifest,
+)
 
 function expand_project(path::AbstractString)
     isdir(path) && for name in Base.project_names
@@ -80,7 +93,7 @@ import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 const julia_versions = handle_opts(:julia, VersionSpec("1")) do val::String
     try VersionSpec(split(val, r"\s*,\s*"))
     catch
-        usage("Invalid semver version spec: --julia=$val")
+        usage("Invalid compat version spec: --julia=$val")
     end
 end
 
@@ -136,7 +149,7 @@ end
 
 global const reqs = copy(project_deps)
 
-handle_opts(:additional) do val::String
+handle_opts(:extra_deps) do val::String
     union!(reqs, parse_packages(val))
 end
 
@@ -176,9 +189,9 @@ const FIX_MINOR = Dict(ZERO_UUID => false)
 const FIX_MAJOR = Dict(ZERO_UUID => false)
 const ORDER_MAP = Dict(ZERO_UUID => :max)
 
-handle_opts(r"^((un)?fix|max|min|prereleases)") do opt, val
+handle_opts(r"^(allow_pre|(un)?fix|max|min)") do opt, val
     pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
-    if opt == :prereleases
+    if opt == :allow_pre
         for uuid in pkgs
             allow_pre[uuid] = true
         end
@@ -359,8 +372,25 @@ for (i, uuid) in enumerate(pkgs)
     end
 end
 
-handle_opts(:manifest, false) do val
-    manifest_file = something(val, env.manifest_file)
+if output == :print_versions
+    # just print packages and versions
+    width = maximum(textwidth(info.name) for info in values(info_map))
+    for (i, uuid) in enumerate(pkgs)
+        if uuid == JULIA_UUID
+            name = "julia"
+            version = julia_version
+        else
+            name = info_map[uuid].name
+            version = something(info_map[uuid].version, julia_version)
+        end
+        try println(uuid, " ", rpad(name, width), " ", version)
+        catch err
+            # no stack trace for SIGPIPE
+            err isa Base.IOError && err.code == Base.UV_EPIPE && exit(2)
+            rethrow() # some other error
+        end
+    end
+else # generate a manifest
     deps = Dict{UUID,PackageEntry}(
         uuid => PackageEntry(;
             uuid,
@@ -375,10 +405,10 @@ handle_opts(:manifest, false) do val
     # create manifest and record project hash
     manifest = Manifest(; julia_version, deps)
     env.manifest = manifest
-    if julia_version ≥ v"1.6.2"
-        record_project_hash(env)
-    else
+    if julia_version < v"1.6.2"
         manifest.manifest_format = v"1"
+    else
+        record_project_hash(env)
     end
     if julia_version ≥ v"1.9"
         # getting extension info requires downloading packages
@@ -401,29 +431,10 @@ handle_opts(:manifest, false) do val
         end
         pop!(DEPOT_PATH)
     end
-    # now output the manifest
-    if manifest_file == "-"
+    # output the manifest
+    if output == :print_manifest
         write_manifest(stdout, manifest)
-    else
-        write_manifest(manifest, manifest_file)
-    end
-    return true
-end || begin
-    # just print packages and versions
-    width = maximum(textwidth(info.name) for info in values(info_map))
-    for (i, uuid) in enumerate(pkgs)
-        if uuid == JULIA_UUID
-            name = "julia"
-            version = julia_version
-        else
-            name = info_map[uuid].name
-            version = something(info_map[uuid].version, julia_version)
-        end
-        try println(uuid, " ", rpad(name, width), " ", version)
-        catch err
-            # no stack trace for SIGPIPE
-            err isa Base.IOError && err.code == Base.UV_EPIPE && exit(2)
-            rethrow() # some other error
-        end
+    elseif output == :write_manifest
+        write_manifest(env)
     end
 end

@@ -143,7 +143,7 @@ function resolve(
     by   :: Function = identity, # ordering
 ) where {P,V}
     # generate solutions
-    sols = resolve_core(sat, reqs; max)
+    sols = resolve_core(sat, reqs; max, by)
 
     # sort packages
     pkgs = collect(reqs)
@@ -178,7 +178,7 @@ function resolve(
     by   :: Function = identity, # package ordering
 ) where {P}
     info = pkg_info(deps, reqs)
-    resolve(info, reqs; max)
+    resolve(info, reqs; max, by)
 end
 
 function resolve(
@@ -188,7 +188,7 @@ function resolve(
     by   :: Function = identity, # package ordering
 ) where {P}
     info = pkg_info(data, reqs)
-    resolve(info, reqs; max)
+    resolve(info, reqs; max, by)
 end
 
 function resolve(
@@ -198,7 +198,7 @@ function resolve(
     by   :: Function = identity, # package ordering
 ) where {P,V}
     sat = SAT(info)
-    try resolve(sat, reqs; max)
+    try resolve(sat, reqs; max, by)
     finally
         finalize(sat)
     end

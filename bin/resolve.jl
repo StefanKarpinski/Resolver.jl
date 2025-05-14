@@ -374,25 +374,27 @@ handle_opts(:manifest, false) do val
     manifest = Manifest(; julia_version, deps)
     env.manifest = manifest
     record_project_hash(env)
-    # getting extension info requires downloading packages
-    # this half-installs packages, so don't pollute the main depot
-    push!(DEPOT_PATH, mktempdir())
-    ctx = Context(; env)
-    download_source(ctx)
-    if @isdefined fixups_from_projectfile!
-        if applicable(fixups_from_projectfile!, ctx)
-            fixups_from_projectfile!(ctx)
-        elseif applicable(fixups_from_projectfile!, env)
-            fixups_from_projectfile!(env)
+    if julia_version ≥ v"1.9"
+        # getting extension info requires downloading packages
+        # this half-installs packages, so don't pollute the main depot
+        push!(DEPOT_PATH, mktempdir())
+        ctx = Context(; env)
+        download_source(ctx)
+        if @isdefined fixups_from_projectfile!
+            if applicable(fixups_from_projectfile!, ctx)
+                fixups_from_projectfile!(ctx)
+            elseif applicable(fixups_from_projectfile!, env)
+                fixups_from_projectfile!(env)
+            else
+                error("Pkg too new, don't know how to call fixups_from_projectfile!")
+            end
+        elseif @isdefined fixup_ext!
+            fixup_ext!(env)
         else
-            error("Pkg too new, don't know how to call fixups_from_projectfile!")
+            error("Pkg too old to support generating manifests with extensions")
         end
-    elseif @isdefined fixup_ext!
-        fixup_ext!(env)
-    else
-        error("Pkg too old to support generating manifests with extensions")
+        pop!(DEPOT_PATH)
     end
-    pop!(DEPOT_PATH)
     # now output the manifest
     if manifest_file == "-"
         write_manifest(stdout, manifest)

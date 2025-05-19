@@ -90,7 +90,7 @@ end
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
-import Resolver: DepsProvider, PkgData, resolve
+import Resolver: Resolver, DepsProvider, PkgData, resolve
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
 
@@ -324,19 +324,23 @@ end
 
 ## do an actual resolve
 
-const rp = registry_provider(
+reg = registry_provider(
     packages;
     julia_versions,
     project_compat,
     sort_versions,
     allow_pre,
 )
-intersect!(reqs, rp.packages)
-pkgs, vers = resolve(rp, reqs; max=1, by=sort_packages_by)
+pkg_info = Resolver.pkg_info(reg, reqs)
+pkgs, vers = resolve(pkg_info, reqs; max=1, by=sort_packages_by)
+
+# error if unsatisfiable
 for uuid in reqs
     i = findfirst(==(uuid), pkgs)
     isnothing(vers[i]) && error("Unsatisfiable")
 end
+
+## output results
 
 const julia_version = vers[findfirst(==(JULIA_UUID), pkgs)]
 const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
@@ -436,7 +440,11 @@ if output == :print_versions
             name = info_map[uuid].name
             version = something(info_map[uuid].version, julia_version)
         end
-        try println(uuid, " ", rpad(name, width), " ", version)
+        optimal = uuid in keys(stdlibs) ||
+            version == first(pkg_info[uuid].versions)
+        try print(uuid, " ", rpad(name, width), " ", version)
+            optimal || print(" ⊼")
+            println()
         catch err
             # no stack trace for SIGPIPE
             err isa Base.IOError && err.code == Base.UV_EPIPE && exit(2)

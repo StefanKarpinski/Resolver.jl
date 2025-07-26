@@ -29,7 +29,7 @@ function SAT(
     for p in names
         vars[p] = N
         n_p = length(info[p].versions)
-        # 1 varible for package
+        # 1 variable for package
         # n_p variables for versions
         N += 1 + n_p
     end
@@ -112,14 +112,23 @@ function finalize(sat::SAT)
     PicoSAT.reset(pico)
 end
 
-sat_add(sat::SAT) = PicoSAT.add(sat.pico, 0)
-sat_add(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    PicoSAT.add(sat.pico, sat.vars[p] + i)
+sat_new_variable(sat::SAT) = PicoSAT.inc_max_var(sat.pico)
 
-sat_assume(sat::SAT{P}, p::P, i::Integer=0) where {P} =
-    PicoSAT.assume(sat.pico, sat.vars[p] + i)
-sat_assume(sat::SAT{P}, px::SetOrVec{P}) where {P} =
-    foreach(p -> sat_assume(sat, p), px)
+sat_add_var(sat::SAT, v::Integer) = PicoSAT.add(sat.pico, v)
+sat_assume_var(sat::SAT, v::Integer) = PicoSAT.assume(sat.pico, v)
+
+sat_add(sat::SAT) = sat_add_var(sat, 0)
+sat_add(sat::SAT{P}, p::P, i::Integer=0; not::Bool=false) where {P} =
+    sat_add_var(sat, (-1)^not*(sat.vars[p] + i))
+
+sat_assume(sat::SAT{P}, p::P, i::Integer=0; not::Bool=false) where {P} =
+    sat_assume_var(sat, (-1)^not*(sat.vars[p] + i))
+sat_assume(sat::SAT{P}, v::SetOrVec{P}) where {P} =
+    foreach(p -> sat_assume(sat, p), v)
+sat_assume(sat::SAT{P}, d::Dict{P,<:Integer}) where {P} =
+    for (p, i) in d
+        sat_assume(sat, p, i)
+    end
 
 is_satisfiable(sat::SAT) =
     PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
@@ -164,11 +173,14 @@ function solution(sat::SAT{P,V}) where {P,V}
     return sol
 end
 
+sat_push(sat::SAT) = PicoSAT.push(sat.pico)
+sat_pop(sat::SAT) = PicoSAT.pop(sat.pico)
+
 function with_temp_clauses(body::Function, sat::SAT)
-    PicoSAT.push(sat.pico)
+    sat_push(sat)
     try body()
     finally
-        PicoSAT.pop(sat.pico)
+        sat_pop(sat)
     end
 end
 

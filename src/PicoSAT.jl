@@ -32,6 +32,8 @@ var_count(p::Ptr{Cvoid}) =
     ccall((:picosat_variables, lib), Cint, (Ptr{Cvoid},), p)
 clause_count(p::Ptr{Cvoid}) =
     ccall((:picosat_added_original_clauses, lib), Cint, (Ptr{Cvoid},), p)
+inc_max_var(p::Ptr{Cvoid}) =
+    ccall((:picosat_inc_max_var, lib), Cint, (Ptr{Cvoid},), p)
 
 # for debugging by exporting CNF files
 function print(p::Ptr{Cvoid}, path::AbstractString)

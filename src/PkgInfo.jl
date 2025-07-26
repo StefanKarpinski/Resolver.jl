@@ -29,6 +29,30 @@ function pkg_data(
     return data
 end
 
+function validate_pkg_data_consistency(data::AbstractDict{P,<:PkgData{P}}, reqs::SetOrVec{P}) where {P}
+    available_packages = keys(data)
+
+    # Check that all required packages exist
+    for p in reqs
+        if p ∉ available_packages
+            throw(ArgumentError("Required package $p is not available in the package data"))
+        end
+    end
+
+    # Check that all dependencies exist
+    for (p, data_p) in data
+        for deps_pv in values(data_p.depends)
+            for q in deps_pv
+                if q ∉ available_packages
+                    throw(ArgumentError("Package $p depends on $q, but $q is not available in the package data"))
+                end
+            end
+        end
+
+        # Note: Compatibility constraints on unknown packages are allowed
+    end
+end
+
 function pkg_info(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
@@ -44,6 +68,7 @@ function pkg_info(
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,
 ) where {P,V}
+    validate_pkg_data_consistency(data, reqs)
     # compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
     for (p, data_p) in data
@@ -51,7 +76,8 @@ function pkg_info(
         for (v, comp_pv) in data_p.compat
             # don't combine loops--it changes what continue does
             for (q, comp_pvq) in comp_pv
-                (q == p || q in interacts_p) && continue
+                # continue if q is unreachable (weak dep) or already processed
+                (q == p || q ∉ keys(data) || q in interacts_p) && continue
                 interacts_q = interacts[q]
                 for w in data[q].versions
                     w in comp_pvq && continue

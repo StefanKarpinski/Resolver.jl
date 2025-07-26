@@ -5,7 +5,7 @@ using ProgressMeter
 const V = [p => v for (p, info_p) in info for v=1:length(info_p.versions)]
 sort!(V, by=popularity)
 
-# total depenency graph
+# total dependency graph
 const n = length(V)
 const D = spzeros(Bool, n, n)
 for (j, (p, v)) in enumerate(V)

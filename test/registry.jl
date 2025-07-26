@@ -7,7 +7,7 @@ import Pkg.Registry: RegistryInstance, init_package_info!
 import Pkg.Types: stdlibs
 import Pkg.Versions: VersionSpec
 
-const EXCLUDES = push!(Set(first.(values(stdlibs()))), "julia")
+const EXCLUDES = Set(first.(values(stdlibs())))
 const REG_PATH =
     let p = joinpath(depots1(), "registries", "General.toml")
         isfile(p) ? p : splitext(p)[1]
@@ -16,6 +16,7 @@ const REG_PATH =
 function provider(
     reg_path :: AbstractString = REG_PATH;
     excludes :: AbstractSet{<:AbstractString} = EXCLUDES,
+    julia_versions :: AbstractVector{VersionNumber} = [VERSION,]
 )
     reg_inst = RegistryInstance(reg_path)
     reg_dict = Dict(p.name => p
@@ -24,6 +25,10 @@ function provider(
     DepsProvider(keys(reg_dict)) do pkg :: AbstractString
         info = init_package_info!(reg_dict[pkg])
         vers = sort!(collect(keys(info.version_info)), rev=true)
+        # The list of avaiable versions for julia in the General registry is not correct
+        if pkg == "julia"
+            vers = julia_versions
+        end
         deps = Dict(v => String[] for v in vers)
         comp = Dict(v => Dict{String,VersionSpec}() for v in vers)
         # scan versions and populate deps & compat data
@@ -36,7 +41,7 @@ function provider(
             end
         end
         foreach(sort!, values(deps))
-        # scrub out excluded deps (stdlibs, julia itself)
+        # scrub out excluded deps
         for d in values(deps)
             setdiff!(d, excludes)
         end

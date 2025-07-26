@@ -156,4 +156,26 @@ end
     @test vers isa Matrix{Union{Nothing,VersionNumber}}
     @test isempty(pkgs)
     @test isempty(vers)
+
+    # Specifying julia version(s)
+    ## Ok julia version(s)
+    rp = registry.provider(; julia_versions=[v"1.6.1", v"1.6.0"])
+    pkgs, vers = resolve(rp, ["JSON"])
+    idx = findfirst(==("julia"), pkgs)
+    @test all(==(v"1.6.1"), vers[idx, :])
+    @test !isempty(vers)
+    ## JSON does not support julia pre-v0.7
+    rp = registry.provider(; julia_versions=[v"0.3.1",])
+    pkgs, vers = resolve(rp, ["JSON"])
+    @test isempty(vers)
+    ## JSON does not support julia v2
+    rp = registry.provider(; julia_versions=[v"2.0.0",])
+    pkgs, vers = resolve(rp, ["JSON"])
+    @test pkgs == ["JSON"]
+    @test isempty(vers)
+    ## One compatible, one incompatible julia version
+    rp = registry.provider(; julia_versions=[v"2.0.0", v"1.6.1"])
+    pkgs, vers = resolve(rp, ["JSON"])
+    idx = findfirst(==("julia"), pkgs)
+    @test all(==(v"1.6.1"), vers[idx, :])
 end

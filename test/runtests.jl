@@ -137,6 +137,31 @@ end
     end
 end
 
+using Resolver: PkgData
+@testset "consistency validation" begin
+    # Test missing dependency
+    data = Dict(
+        :PkgA => PkgData([:v1], Dict(:v1 => [:MissingDep, :PkgB]), Dict{Symbol,Dict{Symbol,Any}}()),
+        :PkgB => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}())
+    )
+    @test_throws ArgumentError("Package PkgA depends on MissingDep, but MissingDep is not available in the package data") resolve(data, [:PkgA])
+
+    # Test that compatibility constraints with missing packages are allowed
+    data = Dict(
+        :PkgA => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict(:v1 => Dict(:MissingCompat => Any[]))),
+        :PkgB => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}())
+    )
+    pkgs, vers = resolve(data, [:PkgA])
+    @test :PkgA in pkgs
+
+    # Test missing required package
+    data = Dict(
+        :PkgA => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}()),
+        :PkgB => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}())
+    )
+    @test_throws ArgumentError("Required package MissingReq is not available in the package data") resolve(data, [:MissingReq])
+end
+
 @testset "registry resolve" begin
     rp = registry.provider()
     test_resolver(rp, ["JSON"])

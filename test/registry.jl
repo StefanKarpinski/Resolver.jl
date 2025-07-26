@@ -34,6 +34,10 @@ function provider(
             for (r, c) in info.compat
                 v in r && mergewith!(∩, comp[v], c)
             end
+            hasfield(typeof(info), :weak_compat) &&
+            for (r, c) in info.weak_compat
+                v in r && mergewith!(∩, comp[v], c)
+            end
         end
         foreach(sort!, values(deps))
         # scrub out excluded deps (stdlibs, julia itself)

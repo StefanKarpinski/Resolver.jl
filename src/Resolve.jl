@@ -1,13 +1,13 @@
-RESOLVE_MAX_SOLUTIONS::Int = 8
+DEFAULT_MAX_SOLUTIONS::Int = 8
 
 # find the first `max` optimal solutions in lexicographical ordering
 function resolve_core(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
 ) where {P}
-    # solution search data strutures
+    # solution search data structures
     sol = Dict{P,Int}() # current solution
     sols = typeof(sol)[] # all solutions
 
@@ -139,11 +139,11 @@ end
 function resolve(
     sat  :: SAT{P,V},
     reqs :: SetOrVec{P} = keys(sat.info);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
 ) where {P,V}
     # generate solutions
-    sols = resolve_core(sat, reqs; max)
+    sols = resolve_core(sat, reqs; max, by)
 
     # sort packages
     pkgs = collect(reqs)
@@ -174,33 +174,31 @@ end
 function resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by   :: Function = identity, # ordering
-    filter :: Bool = true,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
+    by   :: Function = identity, # package ordering
 ) where {P}
-    info = pkg_info(deps, reqs; filter)
-    resolve(info, reqs; max)
+    info = pkg_info(deps, reqs)
+    resolve(info, reqs; max, by)
 end
 
 function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by   :: Function = identity, # ordering
-    filter :: Bool = true,
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
+    by   :: Function = identity, # package ordering
 ) where {P}
-    info = pkg_info(data, reqs; filter)
-    resolve(info, reqs; max)
+    info = pkg_info(data, reqs)
+    resolve(info, reqs; max, by)
 end
 
 function resolve(
     info :: Dict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
-    max  :: Integer = RESOLVE_MAX_SOLUTIONS,
-    by   :: Function = identity, # ordering
+    max  :: Integer = DEFAULT_MAX_SOLUTIONS,
+    by   :: Function = identity, # package ordering
 ) where {P,V}
     sat = SAT(info)
-    try resolve(sat, reqs; max)
+    try resolve(sat, reqs; max, by)
     finally
         finalize(sat)
     end

@@ -113,7 +113,7 @@ function is_valid_solution(
     pkgs :: AbstractVector{P},
     vers :: AbstractVector{<:Union{V,Nothing}},
 ) where {P,V}
-    # check satisfiaction of dependencies
+    # check satisfaction of dependencies
     for (i, v) in enumerate(vers)
         v === nothing && continue
         data_p = data[pkgs[i]]
@@ -147,7 +147,7 @@ function make_solution_partial_order!(
     reqs :: AbstractVector{P},
     pkgs :: AbstractVector{P}, # may be expanded
 ) where {P,V}
-    # verion dependencies (may expand pkgs)
+    # version dependencies (may expand pkgs)
     deps = Dict{Tuple{Int,V},Vector{Int}}()
     i = 0
     while (i += 1) ≤ length(pkgs)

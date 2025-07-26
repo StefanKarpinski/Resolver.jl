@@ -148,7 +148,7 @@ for mask = 0x0:0xff
     end
 end
 
-# functions for generiting test data
+# functions for generating test data
 
 using ..Resolver: PkgData
 

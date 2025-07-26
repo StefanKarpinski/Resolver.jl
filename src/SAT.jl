@@ -29,7 +29,7 @@ function SAT(
     for p in names
         vars[p] = N
         n_p = length(info[p].versions)
-        # 1 varible for package
+        # 1 variable for package
         # n_p variables for versions
         N += 1 + n_p
     end

@@ -4,7 +4,7 @@ function filter_pkg_info!(
 ) where {P,V}
     mark_reachable!(info, reqs)
     mark_necessary!(info)
-    drop_unmarked!(info)
+    drop_unmarked!(info, reqs)
 end
 
 """
@@ -187,6 +187,7 @@ end
 
 function drop_unmarked!(
     info′ :: Dict{P, <: PkgInfo{P}},
+    reqs  :: SetOrVec{P} = keys(info′),
     info  :: Dict{P, <: PkgInfo{P}} = info′,
 ) where {P}
     # info[p].conflicts[:, end] bits definitive (row flags)
@@ -226,8 +227,8 @@ function drop_unmarked!(
         # active version masks
         I = X[1:end-1, end]
         K = X[end, 1:end-1]
-        # delete if no active versions
-        if !any(I)
+        # delete non-required if no active versions
+        if !any(I) && p ∉ reqs
             delete!(info′, p)
             continue
         end
@@ -296,7 +297,7 @@ function drop_excluded!(
             end
         end
     end
-    drop_unmarked!(info)
+    drop_unmarked!(info, P[])
 end
 
 function check_info_structure(

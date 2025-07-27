@@ -138,6 +138,16 @@ end
 end
 
 using Resolver: PkgData
+
+@testset "required packages with no version" begin
+    data = Dict(
+           :PkgA => PkgData(Symbol[], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}()),
+           :PkgB => PkgData(Symbol[:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}()),
+       )
+    pkgs, vers = resolve(data, [:PkgA, :PkgB])
+    @test vers == [nothing; :v1;;]
+end
+
 @testset "consistency validation" begin
     # Test missing dependency
     data = Dict(

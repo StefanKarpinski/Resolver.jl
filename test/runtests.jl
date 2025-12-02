@@ -192,15 +192,31 @@ end
     # `julia-downgrade-compat` action to resolve a project
     # depending on Compat with "4.0" compatibility requirement.
 
-    julia = Base.julia_cmd()
-    project = joinpath(dirname(@__DIR__), "bin")
+    julia = Base.julia_cmd()[1]
+    project = pkgdir(Resolver, "bin")
     script = joinpath(project, "resolve.jl")
-    dir = joinpath(@__DIR__, "ProjectWithYankedDependency")
     julia_version = string(Int(VERSION.major), ".", VERSION.minor)
 
+    # Since Pkg.test runs the tests in a temporary directory, we write the
+    # Project.toml file in a temporary directory as well.
+    # dir = joinpath(@__DIR__, "ProjectWithYankedDependency") TODO
+    dir = mktempdir()
+    open(joinpath(dir, "Project.toml"), "w") do io
+        write(io, """
+[deps]
+Compat = "34da2185-b29b-5c13-b0c7-acf172513d20"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[compat]
+Compat = "4"
+""")
+    end
+
     run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
-    run(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
-    run(`$julia --project=$dir -e 'using Pkg, UUIDs;
+    @test_nowarn run(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
+    @test_nowarn run(`$julia --project=$dir -e '
+        using Pkg, UUIDs
         deps = Pkg.dependencies()
         pkg = deps[UUID("34da2185-b29b-5c13-b0c7-acf172513d20")]
         compat_version = pkg.version

@@ -182,3 +182,27 @@ end
     @test isempty(pkgs)
     @test isempty(vers)
 end
+
+@testset "yanked packages" begin
+    # Compat.jl v4.0.0 is yanked from the General registry, see
+    # https://github.com/JuliaRegistries/General/blob/1cb12c7cf0c4ce32b24daa8373c18541d787bae2/C/Compat/Versions.toml#L198
+    # This leads to issues with Resolver.jl used from
+    # https://github.com/julia-actions/julia-downgrade-compat
+    # To test this, we use the same commands as the
+    # `julia-downgrade-compat` action to resolve a project
+    # depending on Compat with "4.0" compatibility requirement.
+
+    julia = Base.julia_cmd()
+    project = joinpath(dirname(@__DIR__), "bin")
+    script = joinpath(project, "resolve.jl")
+    dir = joinpath(@__DIR__, "ProjectWithYankedDependency")
+    julia_version = string(Int(VERSION.major), ".", VERSION.minor)
+
+    run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
+    run(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
+    run(`$julia --project=$dir -e 'using Pkg, UUIDs;
+        deps = Pkg.dependencies()
+        pkg = deps[UUID("34da2185-b29b-5c13-b0c7-acf172513d20")]
+        compat_version = pkg.version
+        exit(compat_version == v"4.0.0" ? 1 : 0)'`)
+end

@@ -28,6 +28,8 @@ jobs:
         include:
           - os: macos-latest
             arch: aarch64
+          - os: macos-15-intel
+            arch: x64
     steps:
       - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2

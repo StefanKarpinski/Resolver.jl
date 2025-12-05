@@ -24,7 +24,7 @@ jobs:
         arch:
           - x64
           - x86
-        # macos-14and newer (Apple M series) only support aarch64 architecture
+        # macos-14 and newer (Apple M series) only support aarch64 architecture
         include:
           - os: macos-latest
             arch: aarch64

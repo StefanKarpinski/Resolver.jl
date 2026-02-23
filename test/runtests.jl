@@ -182,3 +182,43 @@ end
     @test isempty(pkgs)
     @test isempty(vers)
 end
+
+@testset "yanked packages" begin
+    # Compat.jl v4.0.0 is yanked from the General registry, see
+    # https://github.com/JuliaRegistries/General/blob/1cb12c7cf0c4ce32b24daa8373c18541d787bae2/C/Compat/Versions.toml#L198
+    # This leads to issues with Resolver.jl used from
+    # https://github.com/julia-actions/julia-downgrade-compat
+    # To test this, we use the same commands as the
+    # `julia-downgrade-compat` action to resolve a project
+    # depending on Compat with "4.0" compatibility requirement.
+
+    julia = Base.julia_cmd()[1]
+    project = pkgdir(Resolver, "bin")
+    script = joinpath(project, "resolve.jl")
+    julia_version = string(Int(VERSION.major), ".", VERSION.minor)
+
+    # Since Pkg.test runs the tests in a temporary directory, we write the
+    # Project.toml file in a temporary directory as well.
+    # dir = joinpath(@__DIR__, "ProjectWithYankedDependency") TODO
+    dir = mktempdir()
+    open(joinpath(dir, "Project.toml"), "w") do io
+        write(io, """
+[deps]
+Compat = "34da2185-b29b-5c13-b0c7-acf172513d20"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[compat]
+Compat = "4"
+""")
+    end
+
+    run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
+    @test_nowarn run(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
+    @test_nowarn run(`$julia --project=$dir -e '
+        using Pkg, UUIDs
+        deps = Pkg.dependencies()
+        pkg = deps[UUID("34da2185-b29b-5c13-b0c7-acf172513d20")]
+        compat_version = pkg.version
+        exit(compat_version == v"4.0.0" ? 1 : 0)'`)
+end

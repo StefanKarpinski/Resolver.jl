@@ -5,7 +5,7 @@ export registry_provider
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
 import JSON
-import Pkg.Registry: JULIA_UUID, PkgEntry, init_package_info!, reachable_registries
+import Pkg.Registry: JULIA_UUID, PkgEntry, init_package_info!, isyanked, reachable_registries
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData
 
@@ -51,6 +51,11 @@ function registry_provider(
         if !get(allow_pre, uuid, allow_pre[UUID(0)])
             filter!(v->isempty(v.prerelease), vers)
         end
+        return vers
+    end
+
+    function filter_yanked!(info, vers::Vector{VersionNumber})
+        filter!(v -> !isyanked(info, v), vers)
         return vers
     end
 
@@ -119,6 +124,7 @@ function registry_provider(
                 # versions from this registry, filtered
                 new_vers = collect(keys(info.version_info))
                 filter_pre!(uuid, new_vers)
+                filter_yanked!(info, new_vers)
                 if uuid in keys(project_compat)
                     filter!(in(project_compat[uuid]), new_vers)
                 end

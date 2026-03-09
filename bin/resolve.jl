@@ -334,14 +334,6 @@ reg = registry_provider(
 pkg_info = Resolver.pkg_info(reg, reqs)
 pkgs, vers = resolve(pkg_info, reqs; max=1, by=sort_packages_by)
 
-# error if unsatisfiable
-for uuid in reqs
-    i = findfirst(==(uuid), pkgs)
-    isnothing(vers[i]) && error("Unsatisfiable")
-end
-
-## output results
-
 const julia_version = vers[findfirst(==(JULIA_UUID), pkgs)]
 const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
     for (v, this_stdlibs) in STDLIBS_BY_VERSION
@@ -350,6 +342,19 @@ const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
     end
     last_stdlibs
 end
+
+# error if unsatisfiable
+vers_in_reqs = map(uuid -> vers[findfirst(==(uuid), pkgs)], reqs)
+if any(isnothing, vers_in_reqs)
+    buf = IOBuffer()
+    for (uuid, pkgvers) in zip(reqs, vers_in_reqs)
+        pkgname = uuid in keys(packages) ? first(packages[uuid]).name : stdlibs[uuid].name
+        println(buf, "\t$uuid $pkgname => $pkgvers")
+    end
+    error("Unsatisfiable:\n$(String(take!(buf)))")
+end
+
+## output results
 
 struct ManifestEntry
     name :: String

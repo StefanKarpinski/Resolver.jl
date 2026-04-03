@@ -153,6 +153,43 @@ for (uuid, entries) in packages, entry in entries
 end
 foreach(sort!, values(package_names))
 
+## load workspace sub-project dependencies
+
+if hasfield(typeof(env), :workspace) && !isempty(env.workspace)
+    # collect all resolvable UUIDs: registries + stdlibs, excluding root project
+    let known = Set{UUID}(keys(packages))
+        push!(known, JULIA_UUID)
+        for (_, this_stdlibs) in STDLIBS_BY_VERSION
+            union!(known, keys(this_stdlibs))
+        end
+        union!(known, keys(UNREGISTERED_STDLIBS))
+        root_uuid = env.project.uuid
+        root_uuid !== nothing && delete!(known, root_uuid)
+        for (_, ws_proj) in env.workspace
+            # add name → UUID mappings for reference
+            merge!(project_names, ws_proj.deps, ws_proj.weakdeps, ws_proj.extras)
+            # add resolvable deps
+            for uuid in values(ws_proj.deps)
+                uuid in known && uuid ∉ project_deps && push!(project_deps, uuid)
+            end
+            # add resolvable weakdeps
+            for uuid in values(ws_proj.weakdeps)
+                uuid in known && uuid ∉ project_weakdeps && push!(project_weakdeps, uuid)
+            end
+            # intersect compat constraints
+            for (name, comp) in ws_proj.compat
+                haskey(project_names, name) || continue
+                uuid = project_names[name]
+                if haskey(project_compat, uuid)
+                    project_compat[uuid] = intersect(project_compat[uuid], comp.val)
+                else
+                    project_compat[uuid] = comp.val
+                end
+            end
+        end
+    end
+end
+
 ## options: parsing packages specs
 
 function parse_packages(str::AbstractString)

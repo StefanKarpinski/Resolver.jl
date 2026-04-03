@@ -500,6 +500,27 @@ else # generate a manifest
         )
         for (uuid, info) in info_map
     )
+    # add root project as fixed entry for workspace manifests
+    let root_uuid = env.project.uuid
+        if root_uuid !== nothing && hasfield(typeof(env), :workspace) && !isempty(env.workspace)
+            root_deps = Dict{String,UUID}()
+            for (name, uuid) in env.project.deps
+                uuid in keys(deps) && (root_deps[name] = uuid)
+            end
+            root_weakdeps = Dict{String,UUID}()
+            for (name, uuid) in env.project.weakdeps
+                uuid in keys(deps) && (root_weakdeps[name] = uuid)
+            end
+            deps[root_uuid] = PackageEntry(;
+                uuid = root_uuid,
+                name = env.project.name,
+                version = env.project.version,
+                path = ".",
+                deps = root_deps,
+                weakdeps = root_weakdeps,
+            )
+        end
+    end
     # create manifest and record project hash
     manifest = Manifest(; julia_version, deps)
     env.manifest = manifest

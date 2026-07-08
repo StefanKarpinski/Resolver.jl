@@ -214,8 +214,13 @@ Compat = "4"
     end
 
     run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
-    @test_nowarn run(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
-    @test_nowarn run(`$julia --project=$dir -e '
+    # Use `success`, not `@test_nowarn`: resolving legitimately prints Pkg's
+    # "Installed ..." progress to stderr, which `@test_nowarn` would flag as a
+    # warning on a clean depot. We only care that resolution succeeds and does
+    # not select the yanked Compat v4.0.0 (the second command exits nonzero if
+    # it does).
+    @test success(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
+    @test success(`$julia --project=$dir -e '
         using Pkg, UUIDs
         deps = Pkg.dependencies()
         pkg = deps[UUID("34da2185-b29b-5c13-b0c7-acf172513d20")]

@@ -24,12 +24,17 @@ jobs:
         arch:
           - x64
           - x86
-        # macos-14 and newer (Apple M series) only support aarch64 architecture
+        # macos-14 and newer (Apple M series) only support aarch64 architecture.
+        # These entries introduce new os/arch combinations, so they must also
+        # specify `version`: matrix `include` entries do not inherit it, and a
+        # null version makes julia-actions/setup-julia fail immediately.
         include:
           - os: macos-latest
             arch: aarch64
+            version: '1'
           - os: macos-15-intel
             arch: x64
+            version: '1'
     steps:
       - uses: actions/checkout@v5
       - uses: julia-actions/setup-julia@v2

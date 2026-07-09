@@ -244,3 +244,15 @@ Compat = "4"
         @test VersionNumber(m.captures[1]) != v"4.0.0"
     end
 end
+
+@testset "bin/ tooling regression tests" begin
+    # The bin/ resolver tooling has its own integration tests (they need the
+    # General registry, so they live in bin/test/ and run in the bin/
+    # environment rather than as part of this package's offline suite). Run
+    # them here as a subprocess so CI exercises them too.
+    julia = Base.julia_cmd()[1]
+    project = pkgdir(Resolver, "bin")
+    tests = joinpath(project, "test", "runtests.jl")
+    run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
+    @test success(`$julia --project=$project $tests`)
+end

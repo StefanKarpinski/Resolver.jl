@@ -195,7 +195,12 @@ end
     julia = Base.julia_cmd()[1]
     project = pkgdir(Resolver, "bin")
     script = joinpath(project, "resolve.jl")
-    julia_version = string(Int(VERSION.major), ".", VERSION.minor)
+    # Resolve for the running Julia's release series -- but on a prerelease
+    # (e.g. nightly) that series has no registered releases to resolve against,
+    # so fall back to the LTS series (a released, ≥1.9 target that yields a
+    # modern-format manifest).
+    julia_version = isempty(VERSION.prerelease) ?
+        string(Int(VERSION.major), ".", VERSION.minor) : "1.10"
 
     # Since Pkg.test runs the tests in a temporary directory, we write the
     # Project.toml file in a temporary directory as well.
@@ -214,11 +219,28 @@ Compat = "4"
     end
 
     run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
-    @test_nowarn run(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
-    @test_nowarn run(`$julia --project=$dir -e '
-        using Pkg, UUIDs
-        deps = Pkg.dependencies()
-        pkg = deps[UUID("34da2185-b29b-5c13-b0c7-acf172513d20")]
-        compat_version = pkg.version
-        exit(compat_version == v"4.0.0" ? 1 : 0)'`)
+    # In both cases we assert `success` rather than `@test_nowarn`: resolving
+    # legitimately prints Pkg's "Installed ..." progress to stderr, which
+    # `@test_nowarn` would flag as a warning on a clean depot.
+    if isempty(VERSION.prerelease)
+        # Released Julia: exercise the full manifest-generation path, then
+        # confirm the yanked Compat v4.0.0 was not selected (the second command
+        # exits nonzero if it was).
+        @test success(`$julia --project=$project $script $dir --min=@deps --julia=$julia_version`)
+        @test success(`$julia --project=$dir -e '
+            using Pkg, UUIDs
+            deps = Pkg.dependencies()
+            pkg = deps[UUID("34da2185-b29b-5c13-b0c7-acf172513d20")]
+            compat_version = pkg.version
+            exit(compat_version == v"4.0.0" ? 1 : 0)'`)
+    else
+        # Prerelease (e.g. nightly): writing a manifest needs the host and
+        # target Julia to match, which they can't when the host has no matching
+        # registered release. Read the resolved version directly instead.
+        out = IOBuffer()
+        @test success(pipeline(`$julia --project=$project $script $dir --print-versions --min=@deps --julia=$julia_version`; stdout=out))
+        m = match(r"34da2185-b29b-5c13-b0c7-acf172513d20 +\S+ +(\S+)", String(take!(out)))
+        @test m !== nothing
+        @test VersionNumber(m.captures[1]) != v"4.0.0"
+    end
 end

@@ -1,13 +1,46 @@
 module Registries
 
-export registry_provider
+export registry_provider, package_info
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
 import JSON
-import Pkg.Registry: JULIA_UUID, PkgEntry, init_package_info!, isyanked, reachable_registries
+import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance, init_package_info!, isyanked, reachable_registries
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData
+
+## metaprogram around Pkg's `init_package_info!` signature change
+#
+# In Julia 1.14 the one-argument `init_package_info!(::PkgEntry)` was removed in
+# favor of `init_package_info!(::RegistryInstance, ::PkgEntry)`. A PkgEntry only
+# records its `registry_path`, so we map that back to the RegistryInstance that
+# owns it. `package_info(entry)` works on both old and new Pkg.
+if hasmethod(init_package_info!, Tuple{RegistryInstance, PkgEntry})
+    const REGISTRIES_BY_PATH =
+        Dict(reg.path => reg for reg in reachable_registries())
+    package_info(entry::PkgEntry) =
+        init_package_info!(REGISTRIES_BY_PATH[entry.registry_path], entry)
+else
+    package_info(entry::PkgEntry) = init_package_info!(entry)
+end
+
+## metaprogram around the Pkg 1.14 PkgInfo representation change
+#
+# Julia 1.14 changed the parsed registry data from name-keyed to uuid-keyed:
+#   deps   value: Dict{String,UUID} (<=1.13)  ->  Set{UUID}            (>=1.14)
+#   compat value: Dict{String,VersionSpec}     ->  Dict{UUID,VersionSpec}
+# These helpers read either representation and yield uuid-based data, which is
+# what we build regardless.
+
+# the dependency uuids in a deps-map value
+dep_uuids(d::AbstractDict) = values(d)   # <=1.13: name => uuid
+dep_uuids(d::AbstractSet)  = d            # >=1.14: Set{UUID}
+
+# (uuid => spec) pairs from a compat-map value; `name2uuid` resolves names on
+# the old (name-keyed) representation and is ignored on the new one
+compat_uuid_pairs(c::AbstractDict{<:AbstractString}, name2uuid::AbstractDict) =
+    (name2uuid[n] => s for (n, s) in c)
+compat_uuid_pairs(c::AbstractDict{UUID}, name2uuid::AbstractDict) = c
 
 ## download Julia versions
 
@@ -120,7 +153,7 @@ function registry_provider(
             end
         elseif uuid in keys(packages)
             for entry in packages[uuid]
-                info = init_package_info!(entry)
+                info = package_info(entry)
                 # versions from this registry, filtered
                 new_vers = collect(keys(info.version_info))
                 filter_pre!(uuid, new_vers)
@@ -135,19 +168,18 @@ function registry_provider(
                     # allow it, so we defensively do allow it
                     push!(vers, v)
                     # strong deps
-                    deps_uuids = Dict{String,UUID}()
+                    deps_uuids = Dict{String,UUID}() # name => uuid (<=1.13 only)
                     deps_v = get!(()->valtype(deps)(), deps, v)
                     for (r, d) in info.deps
                         v in r || continue
-                        merge!(deps_uuids, d)
-                        union!(deps_v, values(d))
+                        d isa AbstractDict && merge!(deps_uuids, d)
+                        union!(deps_v, dep_uuids(d))
                     end
                     # strong compat
                     comp_v = get!(()->valtype(comp)(), comp, v)
                     for (r, c) in info.compat
                         v in r || continue
-                        for (name, spec) in c
-                            u = deps_uuids[name]
+                        for (u, spec) in compat_uuid_pairs(c, deps_uuids)
                             if u in keys(comp_v)
                                 comp_v[u] = spec ∩ comp_v[u]
                             else
@@ -156,16 +188,15 @@ function registry_provider(
                         end
                     end
                     # weak deps
-                    weak_uuids = Dict{String,UUID}()
+                    weak_uuids = Dict{String,UUID}() # name => uuid (<=1.13 only)
                     for (r, d) in info.weak_deps
                         v in r || continue
-                        merge!(weak_uuids, d)
+                        d isa AbstractDict && merge!(weak_uuids, d)
                     end
                     # weak compat
                     for (r, c) in info.weak_compat
                         v in r || continue
-                        for (name, spec) in c
-                            u = weak_uuids[name]
+                        for (u, spec) in compat_uuid_pairs(c, weak_uuids)
                             if u in keys(comp_v)
                                 comp_v[u] = spec ∩ comp_v[u]
                             else

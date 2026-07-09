@@ -96,6 +96,10 @@ function registry_provider(
     filter_pre!(JULIA_UUID, julia_vers)
 
     stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
+    # For each stdlib package: the (Julia version, pinned-version spec) pairs.
+    # Recorded so we can later widen the stdlib's own `julia` compat to include
+    # the Julia versions that bundle each of its versions (see the closure).
+    stdlib_pins = Dict{UUID,Vector{Tuple{VersionNumber,VersionSpec}}}()
     for julia_ver in julia_vers
         last_stdlibs = UNREGISTERED_STDLIBS
         for (v, this_stdlibs) in STDLIBS_BY_VERSION
@@ -104,6 +108,9 @@ function registry_provider(
         end
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
+            # matches the pin the JULIA_UUID branch emits below
+            push!(get!(()->valtype(stdlib_pins)(), stdlib_pins, uuid),
+                  (julia_ver, VersionSpec(stdlib_ver)))
             deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
             # Sometimes HistoricalStdlibVersions gives the same
             # version number to stdlib entries with different deps.
@@ -215,6 +222,36 @@ function registry_provider(
                 v in vers && continue # prefer real registry data
                 push!(vers, v)
                 deps[v] = info.deps
+            end
+        end
+        # widen a stdlib package's `julia` compat to admit the Julias that bundle it
+        #
+        # For a package that is also a stdlib, the Julia <-> stdlib version
+        # coupling is expressed authoritatively by Julia's own compat pins (see
+        # the JULIA_UUID branch above, where each Julia version pins every one
+        # of its stdlibs to an exact version). A registry entry's own `julia`
+        # compat for such a package can *disagree* with a Julia that actually
+        # bundles a given version -- e.g. CompilerSupportLibraries_jll 1.1.1
+        # ships with Julia 1.10.8+, yet the General registry marks 1.1.x as
+        # requiring `julia = "1.11.0-1"`. Left as-is, that bound makes the
+        # pinned stdlib version conflict with the very Julia that pins it, so
+        # anything pulling in the BLAS stack (LinearAlgebra -> OpenBLAS_jll ->
+        # CompilerSupportLibraries_jll) is unsatisfiable there.
+        #
+        # We *widen* rather than drop the bound: each version keeps its registry
+        # `julia` compat and additionally admits every Julia that bundles it.
+        # This is important because the same version can be a bundled stdlib for
+        # one Julia yet a resolvable dependency for another; for the latter the
+        # registry bound must still govern, so dropping it outright would wrongly
+        # make the version installable on Julias it isn't compatible with.
+        if uuid in keys(stdlib_pins)
+            for (julia_ver, ver_spec) in stdlib_pins[uuid]
+                for v in vers
+                    v in ver_spec || continue # julia_ver bundles this version
+                    comp_v = get!(()->valtype(comp)(), comp, v)
+                    comp_v[JULIA_UUID] =
+                        get(comp_v, JULIA_UUID, VersionSpec("*")) ∪ VersionSpec(julia_ver)
+                end
             end
         end
         # insert dependency on julia itself

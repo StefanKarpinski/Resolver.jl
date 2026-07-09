@@ -359,6 +359,23 @@ struct ManifestEntry
     weakdeps :: Dict{String,UUID}
 end
 
+# On Julia >= 1.14 the registry parser yields a package's dependencies as a
+# `Set{UUID}` rather than a `Dict{String,UUID}`; the manifest still needs them
+# keyed by name, so reconstruct the mapping from a uuid -> name table covering
+# registered packages, every stdlib, and julia itself.
+const uuid_to_name = Dict{UUID,String}(JULIA_UUID => "julia")
+for (u, entries) in packages, entry in entries
+    uuid_to_name[u] = entry.name
+end
+for (_v, stdlib_set) in STDLIBS_BY_VERSION, (u, info) in stdlib_set
+    uuid_to_name[u] = info.name
+end
+for (u, info) in UNREGISTERED_STDLIBS
+    uuid_to_name[u] = info.name
+end
+name_uuid_dict(d::AbstractDict) = d # <=1.13: already name => uuid
+name_uuid_dict(d) = Dict{String,UUID}(uuid_to_name[u] => u for u in d) # >=1.14
+
 const info_map = Dict{UUID,ManifestEntry}()
 
 for (i, uuid) in enumerate(pkgs)
@@ -388,13 +405,13 @@ for (i, uuid) in enumerate(pkgs)
         version = vers[i]
         infos = Set{ManifestEntry}()
         for entry in packages[uuid]
-            info = init_package_info!(entry)
+            info = package_info(entry)
             haskey(info.version_info, version) || continue
             tree = info.version_info[version].git_tree_sha1
             deps = Dict{String,UUID}()
             for (r, d) in info.deps
                 version in r || continue
-                merge!(deps, d)
+                merge!(deps, name_uuid_dict(d))
             end
             if get(deps, "julia", nothing) == JULIA_UUID
                 delete!(deps, "julia")
@@ -402,7 +419,7 @@ for (i, uuid) in enumerate(pkgs)
             weakdeps = Dict{String,UUID}()
             for (r, d) in info.weak_deps
                 version in r || continue
-                merge!(weakdeps, d)
+                merge!(weakdeps, name_uuid_dict(d))
             end
             push!(infos, ManifestEntry(
                 entry.name,

@@ -517,24 +517,40 @@ else # generate a manifest
         )
         for (uuid, info) in info_map
     )
-    # add root project as fixed entry for workspace manifests
-    let root_uuid = env.project.uuid
-        if root_uuid !== nothing && hasfield(typeof(env), :workspace) && !isempty(env.workspace)
-            root_deps = Dict{String,UUID}()
-            for (name, uuid) in env.project.deps
-                uuid in keys(deps) && (root_deps[name] = uuid)
-            end
-            root_weakdeps = Dict{String,UUID}()
-            for (name, uuid) in env.project.weakdeps
-                uuid in keys(deps) && (root_weakdeps[name] = uuid)
-            end
-            deps[root_uuid] = PackageEntry(;
-                uuid = root_uuid,
-                name = env.project.name,
-                version = env.project.version,
-                path = ".",
-                deps = root_deps,
-                weakdeps = root_weakdeps,
+    # add workspace projects as fixed path entries
+    #
+    # A workspace shares one manifest across the root project and its member
+    # projects (Julia >= 1.12). Pkg records every workspace project that is a
+    # *package* (i.e. has a uuid) as a `path` entry in that manifest -- the root
+    # as `path = "."` and each member relative to the root -- so mirror that.
+    # Bare sub-environments (test/docs/benchmarks with no uuid) contribute their
+    # dependencies to resolution but are not themselves manifest entries.
+    if hasfield(typeof(env), :workspace) && !isempty(env.workspace)
+        # `realpath` both ends: EnvCache stores workspace member paths resolved
+        # of symlinks, so the base must be resolved the same way or `relpath`
+        # would climb through the difference (e.g. /var vs /private/var on macOS,
+        # or 8.3 short names on Windows) instead of yielding a clean relative path
+        root_dir = realpath(dirname(PROJ))
+        # the root project plus every member project, as (project-file, project)
+        ws_projects = vcat([(PROJ, env.project)],
+                           [(file, proj) for (file, proj) in env.workspace])
+        # uuids allowed in a manifest entry's deps: everything resolved, plus the
+        # workspace packages themselves (so inter-project deps are preserved)
+        ws_uuids = Set{UUID}(proj.uuid for (_, proj) in ws_projects if proj.uuid !== nothing)
+        manifest_uuids = union(Set{UUID}(keys(deps)), ws_uuids)
+        for (proj_file, proj) in ws_projects
+            proj.uuid === nothing && continue # bare sub-environment, not a package
+            entry_deps = Dict{String,UUID}(
+                name => uuid for (name, uuid) in proj.deps if uuid in manifest_uuids)
+            entry_weakdeps = Dict{String,UUID}(
+                name => uuid for (name, uuid) in proj.weakdeps if uuid in manifest_uuids)
+            deps[proj.uuid] = PackageEntry(;
+                uuid = proj.uuid,
+                name = proj.name,
+                version = proj.version,
+                path = relpath(realpath(dirname(proj_file)), root_dir),
+                deps = entry_deps,
+                weakdeps = entry_weakdeps,
             )
         end
     end

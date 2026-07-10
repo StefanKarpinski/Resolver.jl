@@ -215,4 +215,96 @@ end
         @test haskey(m["deps"], "JSON")
         @test sum(haskey(only(e), "path") for e in values(m["deps"])) == 1
     end
+
+    @testset "registry package depending on a workspace package" begin
+        # Conda (registry) depends on JSON; the workspace shadows JSON with a
+        # local dev copy. The local copy is fixed: resolution must use its
+        # local version and deps -- never the registry's JSON -- and
+        # dependents' compat must be enforced against the fixed version,
+        # exactly as Pkg does. Conda is used because its compat on JSON is a
+        # bounded range: it admits 1.x but can never admit 99.x.
+        function make_shadow_ws(json_version)
+            ws = mktempdir()
+            mkdir(joinpath(ws, "json"))
+            write(joinpath(ws, "Project.toml"), """
+                name = "WorkspaceRoot"
+                uuid = "11111111-1111-1111-1111-111111111111"
+                version = "0.1.0"
+
+                [deps]
+                Conda = "8f4d0f93-b110-5947-807f-2305c1781a2d"
+
+                [workspace]
+                projects = ["json"]
+                """)
+            write(joinpath(ws, "json", "Project.toml"), """
+                name = "JSON"
+                uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+                version = "$json_version"
+
+                [deps]
+                Example = "7876af07-990d-54b4-ab0e-23690620f79a"
+                """)
+            return ws
+        end
+
+        # (a) local version admitted by Conda's compat: resolves against the
+        # fixed local copy; the registry JSON's dependency tree stays out
+        ws = make_shadow_ws("1.99.99")
+        ok, out, err = resolve_workspace_manifest(ws; flags = `--print-versions`)
+        ok || print(stderr, err)
+        @test ok
+        @test occursin(r"(?m)^682c06a0-de6a-54ab-a142-c8b1cf79cde6 JSON\s+1\.99\.99$", out)
+        @test !occursin("Parsers", out)
+
+        ok, manifest, err = resolve_workspace_manifest(ws)
+        ok || print(stderr, err)
+        @test ok
+        m = TOML.parse(manifest)
+        json = only(m["deps"]["JSON"])
+        @test json["path"] == "json"
+        @test json["version"] == "1.99.99"
+        @test json["deps"] == ["Example"]
+        conda = only(m["deps"]["Conda"])
+        @test haskey(conda, "git-tree-sha1")
+        @test "JSON" in conda["deps"]
+        @test haskey(m["deps"], "Example")
+        @test !haskey(m["deps"], "Parsers")
+
+        # (b) local version excluded by Conda's compat: unsatisfiable, as Pkg
+        ws = make_shadow_ws("99.0.0")
+        ok, out, err = resolve_workspace_manifest(ws)
+        @test !ok
+        @test occursin("Unsatisfiable", err)
+    end
+
+    @testset "compat excluding a workspace package's local version" begin
+        # compat naming a workspace package must admit its fixed local
+        # version, matching Pkg's enforcement for fixed packages
+        ws = mktempdir()
+        mkdir(joinpath(ws, "json"))
+        write(joinpath(ws, "Project.toml"), """
+            name = "WorkspaceRoot"
+            uuid = "11111111-1111-1111-1111-111111111111"
+            version = "0.1.0"
+
+            [deps]
+            JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+
+            [compat]
+            JSON = "1"
+
+            [workspace]
+            projects = ["json"]
+            """)
+        write(joinpath(ws, "json", "Project.toml"), """
+            name = "JSON"
+            uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+            version = "99.0.0"
+            """)
+
+        ok, out, err = resolve_workspace_manifest(ws)
+        @test !ok
+        @test occursin("excludes its local version", err)
+    end
 end

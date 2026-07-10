@@ -124,6 +124,13 @@ if in_workspace
     end
 end
 
+# fixed resolver nodes for the workspace packages: uuid => (name, local
+# version, resolvable dependency uuids). Passed to registry_provider so a
+# registry package that depends on a workspace package -- most importantly
+# one that shadows a registered package -- resolves against the fixed local
+# copy; also used to print versions for workspace packages.
+const workspace_pkgs = Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}()
+
 let proj = env.project
     global const project_names = merge(proj.deps, proj.weakdeps, proj.extras)
     project_names["julia"] = JULIA_UUID
@@ -182,13 +189,35 @@ if in_workspace
         end
         union!(known, keys(UNREGISTERED_STDLIBS))
         setdiff!(known, workspace_uuids)
+        # record the fixed node for every workspace package: local version
+        # plus the local deps that are resolvable or workspace-internal
+        let ws_projs = Any[env.project]
+            for (_, ws_proj) in env.workspace
+                push!(ws_projs, ws_proj)
+            end
+            for proj in ws_projs
+                proj.uuid === nothing && continue
+                node_deps = UUID[u for u in values(proj.deps)
+                                 if u in known || u in workspace_uuids]
+                sort!(node_deps)
+                workspace_pkgs[proj.uuid] = (proj.name,
+                    something(proj.version, v"0.0.0"), node_deps)
+            end
+        end
         # the root's deps/weakdeps/compat were collected above without knowing
         # about the workspace; drop any that refer to workspace packages (they
         # are satisfied by the workspace's path entries, not by resolution)
         filter!(∉(workspace_uuids), project_deps)
         filter!(∉(workspace_uuids), project_weakdeps)
+        # compat on a workspace package must still admit its fixed local
+        # version, as Pkg enforces for fixed packages -- but it must not
+        # constrain a same-uuid registry package, so drop it after checking
         for uuid in workspace_uuids
-            delete!(project_compat, uuid)
+            spec = pop!(project_compat, uuid, nothing)
+            spec === nothing && continue
+            name, v, _ = workspace_pkgs[uuid]
+            v in spec || error(
+                "compat with workspace package $name = \"$spec\" excludes its local version $v")
         end
         for (_, ws_proj) in env.workspace
             # add name → UUID mappings for reference (if two workspace projects
@@ -204,13 +233,19 @@ if in_workspace
             for uuid in values(ws_proj.weakdeps)
                 uuid in known && uuid ∉ project_weakdeps && push!(project_weakdeps, uuid)
             end
-            # intersect compat constraints, skipping workspace packages: their
-            # compat entries describe the local copies and must not constrain
-            # a same-uuid registry package
+            # intersect compat constraints; entries naming a workspace package
+            # describe the local copy -- check they admit its fixed local
+            # version (as Pkg does) but don't let them constrain a same-uuid
+            # registry package
             for (name, comp) in ws_proj.compat
                 haskey(project_names, name) || continue
                 uuid = project_names[name]
-                uuid in workspace_uuids && continue
+                if uuid in workspace_uuids
+                    _, v, _ = workspace_pkgs[uuid]
+                    v in comp.val || error(
+                        "compat with workspace package $name = \"$(comp.val)\" excludes its local version $v")
+                    continue
+                end
                 if haskey(project_compat, uuid)
                     project_compat[uuid] = intersect(project_compat[uuid], comp.val)
                 else
@@ -398,6 +433,7 @@ reg = registry_provider(
     project_compat,
     sort_versions,
     allow_pre,
+    workspace_pkgs,
 )
 pkg_info = Resolver.pkg_info(reg, reqs)
 pkgs, vers = resolve(pkg_info, reqs; max=1, by=sort_packages_by)
@@ -448,6 +484,9 @@ const info_map = Dict{UUID,ManifestEntry}()
 
 for (i, uuid) in enumerate(pkgs)
     uuid === JULIA_UUID && continue
+    # workspace packages become path entries in the manifest (written in the
+    # manifest block below); they have no registry or stdlib info to record
+    uuid in workspace_uuids && continue
     if uuid in keys(stdlibs)
         info = stdlibs[uuid]
         deps = Dict{String,UUID}()
@@ -517,10 +556,17 @@ end
 if output == :print_versions
     # just print packages and versions
     width = maximum(textwidth(info.name) for info in values(info_map))
+    for uuid in pkgs
+        uuid in workspace_uuids || continue
+        global width = max(width, textwidth(workspace_pkgs[uuid][1]))
+    end
     for (i, uuid) in enumerate(pkgs)
         if uuid == JULIA_UUID
             name = "julia"
             version = julia_version
+        elseif uuid in workspace_uuids
+            # workspace packages are fixed at their local version
+            name, version, _ = workspace_pkgs[uuid]
         else
             name = info_map[uuid].name
             version = something(info_map[uuid].version, julia_version)

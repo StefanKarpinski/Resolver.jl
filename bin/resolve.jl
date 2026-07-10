@@ -107,6 +107,23 @@ end
 
 const env = EnvCache(PROJ)
 
+# Julia 1.12+ resolves all projects in a workspace into one shared manifest;
+# older Pkg has no `workspace` field on EnvCache
+const in_workspace = hasfield(typeof(env), :workspace) && !isempty(env.workspace)
+
+# uuids of all workspace projects that are packages (the root and any member
+# with a uuid); these are provided by the workspace itself as path entries in
+# the manifest and must never be resolved from the registries -- not even
+# when one of them shadows a registered package (a local dev copy is fixed
+# at its local version, exactly as Pkg treats it)
+const workspace_uuids = Set{UUID}()
+if in_workspace
+    env.project.uuid !== nothing && push!(workspace_uuids, env.project.uuid)
+    for (_, ws_proj) in env.workspace
+        ws_proj.uuid !== nothing && push!(workspace_uuids, ws_proj.uuid)
+    end
+end
+
 let proj = env.project
     global const project_names = merge(proj.deps, proj.weakdeps, proj.extras)
     project_names["julia"] = JULIA_UUID
@@ -155,18 +172,29 @@ foreach(sort!, values(package_names))
 
 ## load workspace sub-project dependencies
 
-if hasfield(typeof(env), :workspace) && !isempty(env.workspace)
-    # collect all resolvable UUIDs: registries + stdlibs, excluding root project
+if in_workspace
+    # collect all resolvable UUIDs: registries + stdlibs, excluding the
+    # workspace's own packages
     let known = Set{UUID}(keys(packages))
         push!(known, JULIA_UUID)
         for (_, this_stdlibs) in STDLIBS_BY_VERSION
             union!(known, keys(this_stdlibs))
         end
         union!(known, keys(UNREGISTERED_STDLIBS))
-        root_uuid = env.project.uuid
-        root_uuid !== nothing && delete!(known, root_uuid)
+        setdiff!(known, workspace_uuids)
+        # the root's deps/weakdeps/compat were collected above without knowing
+        # about the workspace; drop any that refer to workspace packages (they
+        # are satisfied by the workspace's path entries, not by resolution)
+        filter!(∉(workspace_uuids), project_deps)
+        filter!(∉(workspace_uuids), project_weakdeps)
+        for uuid in workspace_uuids
+            delete!(project_compat, uuid)
+        end
         for (_, ws_proj) in env.workspace
-            # add name → UUID mappings for reference
+            # add name → UUID mappings for reference (if two workspace projects
+            # map the same name to different uuids, the last one wins and any
+            # compat on that name is misattributed; Pkg-side collisions like
+            # that are pathological, so we don't try harder)
             merge!(project_names, ws_proj.deps, ws_proj.weakdeps, ws_proj.extras)
             # add resolvable deps
             for uuid in values(ws_proj.deps)
@@ -176,10 +204,13 @@ if hasfield(typeof(env), :workspace) && !isempty(env.workspace)
             for uuid in values(ws_proj.weakdeps)
                 uuid in known && uuid ∉ project_weakdeps && push!(project_weakdeps, uuid)
             end
-            # intersect compat constraints
+            # intersect compat constraints, skipping workspace packages: their
+            # compat entries describe the local copies and must not constrain
+            # a same-uuid registry package
             for (name, comp) in ws_proj.compat
                 haskey(project_names, name) || continue
                 uuid = project_names[name]
+                uuid in workspace_uuids && continue
                 if haskey(project_compat, uuid)
                     project_compat[uuid] = intersect(project_compat[uuid], comp.val)
                 else
@@ -525,7 +556,7 @@ else # generate a manifest
     # as `path = "."` and each member relative to the root -- so mirror that.
     # Bare sub-environments (test/docs/benchmarks with no uuid) contribute their
     # dependencies to resolution but are not themselves manifest entries.
-    if hasfield(typeof(env), :workspace) && !isempty(env.workspace)
+    if in_workspace
         # `realpath` both ends: EnvCache stores workspace member paths resolved
         # of symlinks, so the base must be resolved the same way or `relpath`
         # would climb through the difference (e.g. /var vs /private/var on macOS,
@@ -536,8 +567,7 @@ else # generate a manifest
                            [(file, proj) for (file, proj) in env.workspace])
         # uuids allowed in a manifest entry's deps: everything resolved, plus the
         # workspace packages themselves (so inter-project deps are preserved)
-        ws_uuids = Set{UUID}(proj.uuid for (_, proj) in ws_projects if proj.uuid !== nothing)
-        manifest_uuids = union(Set{UUID}(keys(deps)), ws_uuids)
+        manifest_uuids = union(Set{UUID}(keys(deps)), workspace_uuids)
         for (proj_file, proj) in ws_projects
             proj.uuid === nothing && continue # bare sub-environment, not a package
             entry_deps = Dict{String,UUID}(

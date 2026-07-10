@@ -15,19 +15,20 @@ using Test
 using Resolver
 import TOML
 
-# Run bin/resolve.jl on a workspace, return (success, manifest string).
-function resolve_workspace_manifest(ws::AbstractString)
+# Run bin/resolve.jl on a workspace; return (success, stdout, stderr strings).
+function resolve_workspace_manifest(ws::AbstractString; flags::Cmd = `--print-manifest`)
     julia = Base.julia_cmd()[1]
     project = pkgdir(Resolver, "bin")
     script = joinpath(project, "resolve.jl")
     julia_version = string(Int(VERSION.major), ".", VERSION.minor)
     run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
     out = IOBuffer()
+    err = IOBuffer()
     ok = success(pipeline(
-        `$julia --project=$project $script $ws --print-manifest --julia=$julia_version`;
-        stdout = out,
+        `$julia --project=$project $script $ws $flags --julia=$julia_version`;
+        stdout = out, stderr = err,
     ))
-    return ok, String(take!(out))
+    return ok, String(take!(out)), String(take!(err))
 end
 
 @testset "workspaces" begin
@@ -73,7 +74,8 @@ end
             WorkspaceRoot = "11111111-1111-1111-1111-111111111111"
             """)
 
-        ok, manifest = resolve_workspace_manifest(ws)
+        ok, manifest, err = resolve_workspace_manifest(ws)
+        ok || print(stderr, err)
         @test ok
         m = TOML.parse(manifest)
 
@@ -133,7 +135,8 @@ end
             Example = "7876af07-990d-54b4-ab0e-23690620f79a"
             """)
 
-        ok, manifest = resolve_workspace_manifest(ws)
+        ok, manifest, err = resolve_workspace_manifest(ws)
+        ok || print(stderr, err)
         @test ok
         m = TOML.parse(manifest)
 
@@ -145,5 +148,71 @@ end
         @test json["version"] == "99.0.0"
         @test json["deps"] == ["Example"]
         @test sort(collect(keys(m["deps"]))) == ["Example", "JSON", "WorkspaceRoot"]
+    end
+
+    @testset "bare workspace projects" begin
+        # (a) a bare sub-environment member (test/docs style: deps but no
+        # name/uuid): its deps are folded into resolution, but it is not
+        # itself a manifest entry -- only the root gets a path entry
+        ws = mktempdir()
+        mkdir(joinpath(ws, "test"))
+        write(joinpath(ws, "Project.toml"), """
+            name = "WorkspaceRoot"
+            uuid = "11111111-1111-1111-1111-111111111111"
+            version = "0.1.0"
+
+            [deps]
+            Example = "7876af07-990d-54b4-ab0e-23690620f79a"
+
+            [workspace]
+            projects = ["test"]
+            """)
+        write(joinpath(ws, "test", "Project.toml"), """
+            [deps]
+            JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+            WorkspaceRoot = "11111111-1111-1111-1111-111111111111"
+            """)
+
+        ok, manifest, err = resolve_workspace_manifest(ws)
+        ok || print(stderr, err)
+        @test ok
+        m = TOML.parse(manifest)
+        root = only(m["deps"]["WorkspaceRoot"])
+        @test root["path"] == "."
+        @test haskey(only(m["deps"]["JSON"]), "git-tree-sha1")
+        @test haskey(m["deps"], "Example")
+        # exactly one path entry: the root (the bare member has none)
+        @test sum(haskey(only(e), "path") for e in values(m["deps"])) == 1
+
+        # (b) a bare root (no name/uuid) whose member is a package: only the
+        # member gets a path entry
+        ws = mktempdir()
+        mkdir(joinpath(ws, "member"))
+        write(joinpath(ws, "Project.toml"), """
+            [deps]
+            Example = "7876af07-990d-54b4-ab0e-23690620f79a"
+
+            [workspace]
+            projects = ["member"]
+            """)
+        write(joinpath(ws, "member", "Project.toml"), """
+            name = "WorkspaceMember"
+            uuid = "22222222-2222-2222-2222-222222222222"
+            version = "0.2.0"
+
+            [deps]
+            JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+            """)
+
+        ok, manifest, err = resolve_workspace_manifest(ws)
+        ok || print(stderr, err)
+        @test ok
+        m = TOML.parse(manifest)
+        member = only(m["deps"]["WorkspaceMember"])
+        @test member["path"] == "member"
+        @test member["deps"] == ["JSON"]
+        @test haskey(m["deps"], "Example")
+        @test haskey(m["deps"], "JSON")
+        @test sum(haskey(only(e), "path") for e in values(m["deps"])) == 1
     end
 end

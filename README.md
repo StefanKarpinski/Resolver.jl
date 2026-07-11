@@ -9,7 +9,7 @@ Resolver.jl was presented at JuliaCon 2025. For the full story, watch the talk o
 
 ## Why a new resolver?
 
-Julia's current `Pkg` resolver (a belief-propagation solver by Carlo Baldassi) works well, but it bakes in the assumption that **newer versions are always better**. That assumption runs deep enough that it's hard to support things people increasingly want:
+Julia's current `Pkg` resolver, a belief-propagation solver by Carlo Baldassi, is a **heuristic**: it's fast and usually works well, but it isn't guaranteed to find a valid resolution even when one exists, and it makes no guarantees about *which* resolution it returns when several are possible. It also bakes in the assumption that **newer versions are always better** — an assumption that runs deep enough to make several things people increasingly want hard to support:
 
 - **Pre-release and build versions**, which don't fit a simple "higher is better" ordering.
 - **Version fixing** — changing as little of an existing manifest as possible.
@@ -20,9 +20,14 @@ All of these need a resolver whose notion of "better" is configurable rather tha
 
 ## How it works
 
-Resolver.jl separates *what* to optimize from *how* to solve, handing the solving to PicoSAT, an actual SAT solver:
+Resolver.jl separates *what* to optimize from *how* to solve, handing the solving to PicoSAT, an actual SAT solver — which, unlike a heuristic, is guaranteed to find a solution whenever one exists:
 
-- Packages and their versions become boolean variables, and compatibility and dependency rules become SAT clauses (a package implies one of its versions, a version implies its package, versions are mutually exclusive, dependencies must be present, and conflicts are forbidden).
+- Packages and their versions become boolean variables, and compatibility and dependency rules become SAT clauses:
+    - a package implies one of its versions,
+    - a version implies its package,
+    - a package's versions are mutually exclusive,
+    - a version's dependencies must be present, and
+    - conflicting versions cannot both be chosen.
 - Before solving, the problem is shrunk by **reachability analysis** (keeping only versions that could appear in a solution) and **redundancy elimination** (dropping versions that are strictly dominated by others).
 - Solutions are optimized **lexicographically, one package at a time**, against a caller-supplied preference order — so the resolver can enumerate multiple **Pareto-optimal** resolutions, where none is strictly better than another.
 - Because the preference order is supplied per package, different strategies — newest, oldest/downgrade, prefer-installed, keep-current — can be mixed **within a single resolve**.
@@ -33,4 +38,7 @@ The core resolver in [`src/`](src/) is generic: it knows nothing about Julia ver
 
 Experimental and research-stage. Resolver.jl is a standalone package rather than a part of `Pkg`, but the core resolver is complete, and `bin/resolve.jl` resolves real projects against the General registry today — it already backs [`julia-downgrade-compat`](https://github.com/julia-actions/julia-downgrade-compat), which uses it to compute minimum-version manifests in CI.
 
-The main open problem is giving good, actionable feedback when a resolve turns out to be **unsatisfiable**. Ideas welcome.
+A major in-progress goal is providing much better diagnostics when a manifest is **unresolvable** (unsatisfiable). The rich theory behind SAT problems helps here: rather than a bare failure, the resolver can compute
+
+- **MUSes (minimal unsatisfiable subsets)** — smallest sets of requirements that already conflict on their own, explaining *why* resolution failed; and
+- **MCSes (minimal correction sets)** — smallest sets of requirements whose removal would make the manifest resolvable, pointing at *what to change* to fix it.

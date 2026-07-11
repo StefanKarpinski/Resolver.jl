@@ -79,6 +79,8 @@ function registry_provider(
     project_compat :: Dict{UUID,VersionSpec} = Dict{UUID,VersionSpec}(),
     sort_versions  :: Function = sort_versions_default,
     allow_pre      :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
+    workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
+                      Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
 )
     function filter_pre!(uuid::UUID, vers::Vector{VersionNumber})
         if !get(allow_pre, uuid, allow_pre[UUID(0)])
@@ -138,6 +140,20 @@ function registry_provider(
     end
 
     return DepsProvider(keys(packages)) do uuid::UUID
+        if uuid in keys(workspace_pkgs)
+            # a workspace package is fixed at its local version: exactly one
+            # version, with the local project's deps plus the implicit
+            # dependency on julia itself. The registry is never consulted --
+            # even when the uuid shadows a registered package the local copy
+            # wins, and dependents' compat is enforced against the fixed
+            # version by ordinary compat propagation, just as Pkg treats
+            # fixed path dependencies.
+            _, v, ws_deps = workspace_pkgs[uuid]
+            deps_v = copy(ws_deps)
+            JULIA_UUID in deps_v || push!(deps_v, JULIA_UUID)
+            comp_v = Dict{UUID,VersionSpec}(JULIA_UUID => VersionSpec("*"))
+            return PkgData([v], Dict(v => deps_v), Dict(v => comp_v))
+        end
         vers = Set{VersionNumber}()
         deps = Dict{VersionNumber,Vector{UUID}}()
         comp = Dict{VersionNumber,Dict{UUID,VersionSpec}}()

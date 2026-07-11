@@ -107,6 +107,30 @@ end
 
 const env = EnvCache(PROJ)
 
+# Julia 1.12+ resolves all projects in a workspace into one shared manifest;
+# older Pkg has no `workspace` field on EnvCache
+const in_workspace = hasfield(typeof(env), :workspace) && !isempty(env.workspace)
+
+# uuids of all workspace projects that are packages (the root and any member
+# with a uuid); these are provided by the workspace itself as path entries in
+# the manifest and must never be resolved from the registries -- not even
+# when one of them shadows a registered package (a local dev copy is fixed
+# at its local version, exactly as Pkg treats it)
+const workspace_uuids = Set{UUID}()
+if in_workspace
+    env.project.uuid !== nothing && push!(workspace_uuids, env.project.uuid)
+    for (_, ws_proj) in env.workspace
+        ws_proj.uuid !== nothing && push!(workspace_uuids, ws_proj.uuid)
+    end
+end
+
+# fixed resolver nodes for the workspace packages: uuid => (name, local
+# version, resolvable dependency uuids). Passed to registry_provider so a
+# registry package that depends on a workspace package -- most importantly
+# one that shadows a registered package -- resolves against the fixed local
+# copy; also used to print versions for workspace packages.
+const workspace_pkgs = Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}()
+
 let proj = env.project
     global const project_names = merge(proj.deps, proj.weakdeps, proj.extras)
     project_names["julia"] = JULIA_UUID
@@ -152,6 +176,85 @@ for (uuid, entries) in packages, entry in entries
     uuid in uuids || push!(uuids, uuid)
 end
 foreach(sort!, values(package_names))
+
+## load workspace sub-project dependencies
+
+if in_workspace
+    # collect all resolvable UUIDs: registries + stdlibs, excluding the
+    # workspace's own packages
+    let known = Set{UUID}(keys(packages))
+        push!(known, JULIA_UUID)
+        for (_, this_stdlibs) in STDLIBS_BY_VERSION
+            union!(known, keys(this_stdlibs))
+        end
+        union!(known, keys(UNREGISTERED_STDLIBS))
+        setdiff!(known, workspace_uuids)
+        # record the fixed node for every workspace package: local version
+        # plus the local deps that are resolvable or workspace-internal
+        let ws_projs = Any[env.project]
+            for (_, ws_proj) in env.workspace
+                push!(ws_projs, ws_proj)
+            end
+            for proj in ws_projs
+                proj.uuid === nothing && continue
+                node_deps = UUID[u for u in values(proj.deps)
+                                 if u in known || u in workspace_uuids]
+                sort!(node_deps)
+                workspace_pkgs[proj.uuid] = (proj.name,
+                    something(proj.version, v"0.0.0"), node_deps)
+            end
+        end
+        # the root's deps/weakdeps/compat were collected above without knowing
+        # about the workspace; drop any that refer to workspace packages (they
+        # are satisfied by the workspace's path entries, not by resolution)
+        filter!(∉(workspace_uuids), project_deps)
+        filter!(∉(workspace_uuids), project_weakdeps)
+        # compat on a workspace package must still admit its fixed local
+        # version, as Pkg enforces for fixed packages -- but it must not
+        # constrain a same-uuid registry package, so drop it after checking
+        for uuid in workspace_uuids
+            spec = pop!(project_compat, uuid, nothing)
+            spec === nothing && continue
+            name, v, _ = workspace_pkgs[uuid]
+            v in spec || error(
+                "compat with workspace package $name = \"$spec\" excludes its local version $v")
+        end
+        for (_, ws_proj) in env.workspace
+            # add name → UUID mappings for reference (if two workspace projects
+            # map the same name to different uuids, the last one wins and any
+            # compat on that name is misattributed; Pkg-side collisions like
+            # that are pathological, so we don't try harder)
+            merge!(project_names, ws_proj.deps, ws_proj.weakdeps, ws_proj.extras)
+            # add resolvable deps
+            for uuid in values(ws_proj.deps)
+                uuid in known && uuid ∉ project_deps && push!(project_deps, uuid)
+            end
+            # add resolvable weakdeps
+            for uuid in values(ws_proj.weakdeps)
+                uuid in known && uuid ∉ project_weakdeps && push!(project_weakdeps, uuid)
+            end
+            # intersect compat constraints; entries naming a workspace package
+            # describe the local copy -- check they admit its fixed local
+            # version (as Pkg does) but don't let them constrain a same-uuid
+            # registry package
+            for (name, comp) in ws_proj.compat
+                haskey(project_names, name) || continue
+                uuid = project_names[name]
+                if uuid in workspace_uuids
+                    _, v, _ = workspace_pkgs[uuid]
+                    v in comp.val || error(
+                        "compat with workspace package $name = \"$(comp.val)\" excludes its local version $v")
+                    continue
+                end
+                if haskey(project_compat, uuid)
+                    project_compat[uuid] = intersect(project_compat[uuid], comp.val)
+                else
+                    project_compat[uuid] = comp.val
+                end
+            end
+        end
+    end
+end
 
 ## options: parsing packages specs
 
@@ -330,6 +433,7 @@ reg = registry_provider(
     project_compat,
     sort_versions,
     allow_pre,
+    workspace_pkgs,
 )
 pkg_info = Resolver.pkg_info(reg, reqs)
 pkgs, vers = resolve(pkg_info, reqs; max=1, by=sort_packages_by)
@@ -380,6 +484,9 @@ const info_map = Dict{UUID,ManifestEntry}()
 
 for (i, uuid) in enumerate(pkgs)
     uuid === JULIA_UUID && continue
+    # workspace packages become path entries in the manifest (written in the
+    # manifest block below); they have no registry or stdlib info to record
+    uuid in workspace_uuids && continue
     if uuid in keys(stdlibs)
         info = stdlibs[uuid]
         deps = Dict{String,UUID}()
@@ -449,10 +556,17 @@ end
 if output == :print_versions
     # just print packages and versions
     width = maximum(textwidth(info.name) for info in values(info_map))
+    for uuid in pkgs
+        uuid in workspace_uuids || continue
+        global width = max(width, textwidth(workspace_pkgs[uuid][1]))
+    end
     for (i, uuid) in enumerate(pkgs)
         if uuid == JULIA_UUID
             name = "julia"
             version = julia_version
+        elseif uuid in workspace_uuids
+            # workspace packages are fixed at their local version
+            name, version, _ = workspace_pkgs[uuid]
         else
             name = info_map[uuid].name
             version = something(info_map[uuid].version, julia_version)
@@ -480,6 +594,42 @@ else # generate a manifest
         )
         for (uuid, info) in info_map
     )
+    # add workspace projects as fixed path entries
+    #
+    # A workspace shares one manifest across the root project and its member
+    # projects (Julia >= 1.12). Pkg records every workspace project that is a
+    # *package* (i.e. has a uuid) as a `path` entry in that manifest -- the root
+    # as `path = "."` and each member relative to the root -- so mirror that.
+    # Bare sub-environments (test/docs/benchmarks with no uuid) contribute their
+    # dependencies to resolution but are not themselves manifest entries.
+    if in_workspace
+        # `realpath` both ends: EnvCache stores workspace member paths resolved
+        # of symlinks, so the base must be resolved the same way or `relpath`
+        # would climb through the difference (e.g. /var vs /private/var on macOS,
+        # or 8.3 short names on Windows) instead of yielding a clean relative path
+        root_dir = realpath(dirname(PROJ))
+        # the root project plus every member project, as (project-file, project)
+        ws_projects = vcat([(PROJ, env.project)],
+                           [(file, proj) for (file, proj) in env.workspace])
+        # uuids allowed in a manifest entry's deps: everything resolved, plus the
+        # workspace packages themselves (so inter-project deps are preserved)
+        manifest_uuids = union(Set{UUID}(keys(deps)), workspace_uuids)
+        for (proj_file, proj) in ws_projects
+            proj.uuid === nothing && continue # bare sub-environment, not a package
+            entry_deps = Dict{String,UUID}(
+                name => uuid for (name, uuid) in proj.deps if uuid in manifest_uuids)
+            entry_weakdeps = Dict{String,UUID}(
+                name => uuid for (name, uuid) in proj.weakdeps if uuid in manifest_uuids)
+            deps[proj.uuid] = PackageEntry(;
+                uuid = proj.uuid,
+                name = proj.name,
+                version = proj.version,
+                path = relpath(realpath(dirname(proj_file)), root_dir),
+                deps = entry_deps,
+                weakdeps = entry_weakdeps,
+            )
+        end
+    end
     # create manifest and record project hash
     manifest = Manifest(; julia_version, deps)
     env.manifest = manifest

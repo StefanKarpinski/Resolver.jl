@@ -256,3 +256,5 @@ end
     run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
     @test success(`$julia --project=$project $tests`)
 end
+
+include("workspaces.jl")

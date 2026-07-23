@@ -95,7 +95,7 @@ end
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
-import Resolver: Resolver, DepsProvider, PkgData, resolve
+import Resolver: Resolver, DepsProvider, PkgData, resolve, diagnose
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
 
@@ -455,6 +455,53 @@ let i = 0
     end
 end
 
+## unsatisfiable diagnosis
+
+# Explain an unsatisfiable resolve and print verified fixes. We rebuild the
+# dependency data *without* the user's compat/pins baked in and pass them to
+# `diagnose` separately, so it can attribute the conflict to them and suggest
+# relaxing a compat bound or lifting a pin (rather than only dropping a
+# requirement). Julia is targeted via --julia, not treated as a requirement.
+function diagnose_unsatisfiable()
+    diag_reg = registry_provider(
+        packages;
+        julia_versions,
+        sort_versions,
+        allow_pre,
+        workspace_pkgs,
+    )
+    diag_reqs = filter(!=(JULIA_UUID), reqs)
+    data = Resolver.pkg_data(diag_reg, diag_reqs)
+    user_compat = Dict{UUID,Vector{VersionNumber}}()
+    for (uuid, spec) in project_compat
+        (uuid == JULIA_UUID || !haskey(data, uuid)) && continue
+        user_compat[uuid] = [v for v in data[uuid].versions if v in spec]
+    end
+    dg = try
+        diagnose(data, diag_reqs; compat = user_compat, holds = pins)
+    catch err
+        err isa ArgumentError || rethrow()
+        println(stderr, "Unsatisfiable (no detailed diagnosis: ", err.msg, ")")
+        return
+    end
+    # the diagnosis is keyed by UUID; substitute package names for readability
+    names = Dict{String,String}(string(JULIA_UUID) => "julia")
+    for (u, es) in packages, e in es
+        names[string(u)] = e.name
+    end
+    for (_v, this_stdlibs) in STDLIBS_BY_VERSION, (u, info) in this_stdlibs
+        names[string(u)] = info.name
+    end
+    for (u, info) in UNREGISTERED_STDLIBS
+        names[string(u)] = info.name
+    end
+    uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    report = replace(sprint(show, MIME("text/plain"), dg),
+                     uuid_re => m -> get(names, m, m))
+    println(stderr, "Unresolvable. Diagnosis:\n")
+    println(stderr, report)
+end
+
 ## do an actual resolve
 
 # pins constrain resolution exactly like user compat restricting a package to a
@@ -477,10 +524,10 @@ reg = registry_provider(
 pkg_info = Resolver.pkg_info(reg, reqs)
 pkgs, vers = resolve(pkg_info, reqs; max=1, by=sort_packages_by)
 
-# error if unsatisfiable
-for uuid in reqs
-    i = findfirst(==(uuid), pkgs)
-    isnothing(vers[i]) && error("Unsatisfiable")
+# if any requirement is unsatisfiable, explain why and how to fix it, then exit
+if any(isnothing(vers[findfirst(==(u), pkgs)]) for u in reqs)
+    diagnose_unsatisfiable()
+    exit(1)
 end
 
 ## output results

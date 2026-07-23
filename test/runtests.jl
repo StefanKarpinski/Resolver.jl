@@ -257,6 +257,36 @@ end
     @test success(`$julia --project=$project $tests`)
 end
 
+@testset "unsat diagnostics (cli)" begin
+    # bin/resolve.jl auto-diagnoses an unsatisfiable resolve. BulkSMS (HTTP 0.x)
+    # and AnthropicClient (HTTP 1.x) require disjoint majors of HTTP, so they
+    # cannot be co-installed.
+    julia = Base.julia_cmd()[1]
+    project = pkgdir(Resolver, "bin")
+    script = joinpath(project, "resolve.jl")
+    dir = mktempdir()
+    write(joinpath(dir, "Project.toml"), "[deps]\n")
+    run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
+
+    err = IOBuffer()
+    ok = success(pipeline(`$julia --project=$project $script $dir --extra-deps=BulkSMS,AnthropicClient --julia=1.11`; stderr = err))
+    report = String(take!(err))
+    @test !ok                                     # unsatisfiable → nonzero exit
+    @test occursin("cannot be satisfied", report)
+    @test occursin("BulkSMS", report)
+    @test occursin("AnthropicClient", report)
+    @test occursin("Verified fixes:", report)
+    @test occursin("drop requirement", report)
+
+    # a --pin surfaces an "unpin" fix
+    err2 = IOBuffer()
+    ok2 = success(pipeline(`$julia --project=$project $script $dir --extra-deps=AnthropicClient --pin=HTTP@0.6.10 --julia=1.11`; stderr = err2))
+    report2 = String(take!(err2))
+    @test !ok2
+    @test occursin("HTTP is pinned at 0.6.10", report2)
+    @test occursin("unpin HTTP", report2)
+end
+
 include("diagnose.jl")
 
 include("workspaces.jl")

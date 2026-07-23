@@ -6,10 +6,55 @@ function resolve_core(
     reqs :: SetOrVec{P} = keys(sat.info);
     max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
+    restore :: Bool = true, # restore the SAT instance's state before returning
 ) where {P}
     # solution search data structures
     sol = Dict{P,Int}() # current solution
     sols = typeof(sol)[] # all solutions
+
+    # optimize each package in `opts` to its best feasible version wrt
+    # quality, pinning each optimized version as it goes (in priority order)
+    function optimize_opts!(opts::Set{P})
+        for p in sort!(collect(opts); by)
+            # sol[p] == 1 is already optimal: the improvement clause
+            # below would be empty, forcing a guaranteed-UNSAT solve
+            if sol[p] > 1
+                optimize_solution!(sat, sol) do
+                    # some strictly better version
+                    for i = 1:sol[p]-1
+                        sat_add(sat, p, i)
+                    end
+                    sat_add(sat)
+                end
+            end
+            # fix optimized version
+            sat_add(sat, p, sol[p])
+            sat_add(sat)
+        end
+    end
+
+    # next optimization set: new dependencies of the versions chosen in `opts`
+    function next_opts(opts::Set{P}, rest::Set{P})
+        opts′ = empty(opts)
+        for p in opts
+            p in keys(sol) || continue
+            info_p = sat.info[p]
+            i = sol[p]
+            for (j, q) in enumerate(info_p.depends)
+                info_p.conflicts[i, j] || continue
+                q ∈ rest && push!(opts′, q)
+            end
+        end
+        return opts′
+    end
+
+    # record `sol` as a solution, minus unreachable packages
+    function save_solution!(rest::Set{P})
+        for p in rest
+            delete!(sol, p)
+        end
+        push!(sols, copy(sol))
+    end
 
     function find_sat_solutions(
         opts :: Set{P}, # packages to optimize next
@@ -20,46 +65,13 @@ function resolve_core(
             @assert opts ⊆ keys(sol)
 
             with_temp_clauses(sat) do
-                # optimize wrt quality
-                for p in sort!(collect(opts); by)
-                    # sol[p] == 1 is already optimal: the improvement clause
-                    # below would be empty, forcing a guaranteed-UNSAT solve
-                    if sol[p] > 1
-                        optimize_solution!(sat, sol) do
-                            # some strictly better version
-                            for i = 1:sol[p]-1
-                                sat_add(sat, p, i)
-                            end
-                            sat_add(sat)
-                        end
-                    end
-                    # fix optimized version
-                    sat_add(sat, p, sol[p])
-                    sat_add(sat)
-                end
-
-                # next optimization set: new dependencies
-                opts′ = empty(opts)
-                for p in opts
-                    p in keys(sol) || continue
-                    info_p = sat.info[p]
-                    i = sol[p]
-                    for (j, q) in enumerate(info_p.depends)
-                        info_p.conflicts[i, j] || continue
-                        q ∈ rest && push!(opts′, q)
-                    end
-                end
-
+                optimize_opts!(opts)
+                opts′ = next_opts(opts, rest)
                 if !isempty(opts′) # recursive search
                     rest′ = setdiff(rest, opts′)
                     find_sat_solutions(opts′, rest′)
                 else # nothing left to optimize
-                    for p in rest
-                        # delete unreachable packages
-                        delete!(sol, p)
-                    end
-                    # save optimal solution
-                    push!(sols, copy(sol))
+                    save_solution!(rest)
                 end
             end
             # max if we've hit max number of solutions
@@ -75,6 +87,29 @@ function resolve_core(
             end
             sat_add(sat)
         end
+    end
+
+    # specialized descent for max == 1: the enumeration machinery above needs
+    # nested temp scopes and a re-solve per dependency layer so it can rewind
+    # and search for further solutions; when only the first solution is wanted
+    # neither is necessary. With restore = false it runs outside any temp
+    # scope, which lets picosat keep its learned clauses for the whole search
+    # and is substantially faster on large instances.
+    function find_first_solution(
+        opts :: Set{P}, # packages to optimize next
+        rest :: Set{P}, # other unoptimized packages
+    )
+        is_satisfiable(sat) || return
+        extract_solution!(sat, sol)
+        while true
+            @assert opts ⊆ keys(sol)
+            optimize_opts!(opts)
+            opts′ = next_opts(opts, rest)
+            isempty(opts′) && break
+            setdiff!(rest, opts′)
+            opts = opts′
+        end
+        save_solution!(rest)
     end
 
     function find_unsat_solutions(
@@ -116,7 +151,7 @@ function resolve_core(
     end
 
     # start the recursive search...
-    with_temp_clauses(sat) do
+    function search()
         opts = Set{P}(reqs)
         rest = setdiff(keys(sat.info), opts)
         if is_satisfiable(sat, reqs)
@@ -125,7 +160,11 @@ function resolve_core(
                 sat_add(sat, p)
                 sat_add(sat)
             end
-            find_sat_solutions(opts, rest)
+            if max == 1
+                find_first_solution(opts, rest)
+            else
+                find_sat_solutions(opts, rest)
+            end
         else
             # force some requirement
             for p in reqs
@@ -134,6 +173,15 @@ function resolve_core(
             sat_add(sat)
             find_unsat_solutions(opts, rest)
         end
+    end
+    if max == 1 && !restore
+        # run at the top level: keeping a picosat context open for the whole
+        # search measurably degrades solving. The instance is left constrained
+        # by the requirements and the solution's version pins, so this mode is
+        # only for single-use instances (as in the info-level resolve methods)
+        search()
+    else
+        with_temp_clauses(search, sat)
     end
 
     # return solutions
@@ -145,9 +193,10 @@ function resolve(
     reqs :: SetOrVec{P} = keys(sat.info);
     max  :: Integer = DEFAULT_MAX_SOLUTIONS,
     by   :: Function = identity, # ordering
+    restore :: Bool = true, # restore the SAT instance's state before returning
 ) where {P,V}
     # generate solutions
-    sols = resolve_core(sat, reqs; max, by)
+    sols = resolve_core(sat, reqs; max, by, restore)
 
     # sort packages
     pkgs = collect(reqs)
@@ -202,7 +251,8 @@ function resolve(
     by   :: Function = identity, # package ordering
 ) where {P,V}
     sat = SAT(info)
-    try resolve(sat, reqs; max, by)
+    # the instance is single-use, so no need to restore its state
+    try resolve(sat, reqs; max, by, restore=false)
     finally
         finalize(sat)
     end

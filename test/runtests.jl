@@ -162,6 +162,29 @@ using Resolver: PkgData
     @test_throws ArgumentError("Required package MissingReq is not available in the package data") resolve(data, [:MissingReq])
 end
 
+@testset "SAT instance reuse" begin
+    # by default resolving must not leave constraints behind on the SAT
+    # instance: A@1 conflicts with B@1, so after resolving A, resolving B
+    # on the same instance must still give B its best version
+    data = Dict(
+        :A => PkgData([1], Dict{Int,Vector{Symbol}}(), Dict(1 => Dict(:B => [2]))),
+        :B => PkgData([1, 2], Dict{Int,Vector{Symbol}}(), Dict{Int,Dict{Symbol,Vector{Int}}}()),
+    )
+    info = Resolver.pkg_info(data, [:A, :B])
+    sat = Resolver.SAT(info)
+    try
+        for max in (1, 8), reqs in ([:A], [:B], [:A], [:A, :B])
+            pkgs, vers = resolve(sat, reqs; max)
+            for (p, best) in ((:A, 1), (:B, reqs == [:B] ? 1 : 2))
+                p in reqs || continue
+                @test vers[findfirst(==(p), pkgs), 1] == best
+            end
+        end
+    finally
+        Resolver.finalize(sat)
+    end
+end
+
 @testset "registry resolve" begin
     rp = registry.provider()
     test_resolver(rp, ["JSON"])

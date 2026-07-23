@@ -23,6 +23,8 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --allow-pre[=<pkgs>]    allow prerelease versions
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
+  --pin=<pkg@version>     pin a package to an exact version (repeatable,
+                          comma-separated; leading 'v' optional)
 
   --fix[=<pkgs>]          prefer current full version number
   --fix-minor[=<pkgs>]    prefer current major.minor version
@@ -51,7 +53,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia registry allow-pre extra-deps prioritize
+    julia registry allow-pre extra-deps prioritize pin
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -303,6 +305,24 @@ handle_opts(:extra_deps) do val::String
     union!(reqs, parse_packages(val))
 end
 
+## options: pinned versions
+
+# --pin=<pkg@version>[,...] pins packages to exact versions (repeatable). Pins
+# constrain resolution (like a `Pkg.pin`) and, when a resolve is unsatisfiable,
+# are surfaced by the diagnosis as pins that could be lifted.
+const pins = Dict{UUID,VersionNumber}()
+
+handle_opts(:pin) do val::String
+    for item in split(val, ',')
+        m = match(r"^\s*(.+?)@v?(\d[^\s]*)\s*$", item)
+        isnothing(m) && usage("Invalid --pin (expected pkg@version): $item")
+        uuid = only(parse_packages(m[1]))
+        ver = tryparse(VersionNumber, m[2])
+        isnothing(ver) && usage("Invalid version in --pin: $item")
+        pins[uuid] = ver
+    end
+end
+
 ## options: sorting versions
 
 const ZERO_UUID = UUID(0)
@@ -437,10 +457,19 @@ end
 
 ## do an actual resolve
 
+# pins constrain resolution exactly like user compat restricting a package to a
+# single version, so fold them into the compat the provider applies
+const resolve_compat = copy(project_compat)
+for (uuid, ver) in pins
+    spec = VersionSpec(ver)
+    resolve_compat[uuid] = haskey(resolve_compat, uuid) ?
+        resolve_compat[uuid] ∩ spec : spec
+end
+
 reg = registry_provider(
     packages;
     julia_versions,
-    project_compat,
+    project_compat = resolve_compat,
     sort_versions,
     allow_pre,
     workspace_pkgs,

@@ -1,6 +1,6 @@
 module Resolver
 
-export resolve, Diagnosis
+export resolve, diagnose, Diagnosis
 
 include("DepsProvider.jl")
 include("PkgInfo.jl")

@@ -1,5 +1,5 @@
 using Resolver
-using Resolver: PkgData, Diagnosis
+using Resolver: PkgData, diagnose, Diagnosis
 using Test
 
 # typed empty containers for P=String, V=Int, S=Vector{Int}
@@ -339,6 +339,203 @@ end
         fixes = Resolver.enumerate_fixes(diag)
         @test Resolver.filter_dominated(fixes) == fixes
     end
+end
+
+@testset "solution pruning" begin
+    NoUserCompat = Dict{String,Vector{Int}}
+    NoHolds = Dict{String,Int}
+
+    # SAT models may set unconstrained package variables true; reported
+    # solutions must be pruned to the reachable closure of the satisfied
+    # requirements. A/B fight over C (B via D); X has a dead bound on Z.
+    data = Dict(
+        "A" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => [1]))),
+        "B" => PkgData([1], Dict(1 => ["D"]), NoComp()),
+        "C" => PkgData([1, 2], NoDeps(), NoComp()),
+        "D" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => [2]))),
+        "X" => PkgData([1], Dict(1 => ["Z"]), Dict(1 => Dict("Z" => Int[]))),
+        "Z" => PkgData([1, 2], NoDeps(), NoComp()),
+    )
+    reqs = ["A", "B", "X"]
+    d = diagnose(data, reqs)
+    # first fix: greedy keeps A, drops B and X; solution is A's closure only —
+    # no spurious D or Z
+    fix = d.fixes[1]
+    @test Set(a.pkg for a in fix.actions) == Set(["B", "X"])
+    @test Set(keys(fix.solution)) == Set(["A", "C"])
+    # every fix and upstream solution is closure-tight (checked in verifiers)
+    for fix in d.fixes
+        @test verify_fix(data, reqs, NoUserCompat(), NoHolds(), fix)
+    end
+    for cf in d.conflicts
+        @test all(verify_upstream(data, cf.reqs, u) for u in cf.upstream)
+    end
+end
+
+@testset "diagnose orchestration" begin
+    # satisfiable input: nothing to diagnose
+    sat_data = Dict("A" => PkgData([1], NoDeps(), NoComp()))
+    @test_throws ArgumentError diagnose(sat_data, ["A"])
+
+    # required package missing from data: throw, don't silently drop
+    @test_throws ArgumentError("Required package B is not available in the package data") diagnose(sat_data, ["B"])
+
+    # conflict caused solely by a stale third-party bound → upstream fix present
+    data = Dict(
+        "A" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => Int[]))),
+        "C" => PkgData([1, 2], NoDeps(), NoComp()),
+    )
+    d = diagnose(data, ["A"])
+    @test length(d.conflicts) == 1
+    ups = d.conflicts[1].upstream
+    @test !isempty(ups)
+    @test all(verify_upstream(data, d.conflicts[1].reqs, u) for u in ups)
+
+    # per-cluster probes: with a second, independent conflict present, the
+    # bound-only conflict still gets its upstream suggestion
+    data2 = Dict(
+        "A" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => Int[]))),
+        "C" => PkgData([1, 2], NoDeps(), NoComp()),
+        "X" => PkgData([1], Dict(1 => ["Z"]), Dict(1 => Dict("Z" => Int[]))),
+        "Z" => PkgData([1], NoDeps(), NoComp()),
+    )
+    d2 = diagnose(data2, ["A", "X"])
+    @test length(d2.conflicts) == 2
+    for cf in d2.conflicts
+        @test !isempty(cf.upstream)
+        @test all(verify_upstream(data2, cf.reqs, u) for u in cf.upstream)
+    end
+
+    # three-package chain: A→C∈{1}, B→D∈{3}, D@3→C∈{2,3}; C must be 1 and ≥2
+    data = Dict(
+        "A" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => [1]))),
+        "B" => PkgData([1], Dict(1 => ["D"]), Dict(1 => Dict("D" => [3]))),
+        "C" => PkgData([1, 2, 3], NoDeps(), NoComp()),
+        "D" => PkgData([1, 2, 3], Dict(3 => ["C"]), Dict(3 => Dict("C" => [2, 3]))),
+    )
+    d = diagnose(data, ["A", "B"])
+    @test length(d.conflicts) == 1
+    @test d.conflicts[1].reqs == ["A", "B"]
+    chain_bounds = Resolver.Bound[f for f in d.conflicts[1].chain if f isa Resolver.Bound]
+    @test chain_bounds == [
+        Resolver.Bound("A", [1], "C", [1]),
+        Resolver.Bound("B", [1], "D", [3]),
+        Resolver.Bound("D", [3], "C", [2, 3]),
+    ]
+    @test length(d.fixes) >= 2
+    for fix in d.fixes
+        @test verify_fix(data, ["A", "B"],
+            Dict{String,Vector{Int}}(), Dict{String,Int}(), fix)
+    end
+end
+
+@testset "diagnose property (tiny)" begin
+    for m = 1:2, n = 1:2
+        make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
+        for deps_bits = 0:2^d-1
+            deps = make_deps(deps_bits)
+            all(deps[i].bits >= deps[i+1].bits for i = 1:m-1) || continue
+            for comp_bits = 0:2^c-1
+                comp = make_comp(comp_bits)
+                fill_data!(m, n, deps, comp, data)
+                for reqs_bits = 1:2^m-1
+                    reqs = collect(make_reqs(reqs_bits))
+                    resolve_complete(data, reqs) && continue
+                    diag = diagnose(data, reqs)
+                    @test !isempty(diag.conflicts)
+                    for cf in diag.conflicts
+                        # cluster reqs are a requirement-level MUS
+                        @test !resolve_complete(data, cf.reqs)
+                        for p in cf.reqs
+                            @test resolve_complete(data, filter(!=(p), cf.reqs))
+                        end
+                    end
+                    for fix in diag.fixes
+                        @test verify_fix(data, reqs,
+                            Dict{Int,Vector{Int}}(), Dict{Int,Int}(), fix)
+                    end
+                end
+            end
+        end
+    end
+end
+
+@testset "rendering" begin
+    # format_versions run compression (V = Int)
+    @test Resolver.format_versions([1, 2, 3, 4, 5], [1, 2, 3, 5]) == "1–3, 5"
+    @test Resolver.format_versions([1, 2, 3], [1, 2, 3]) == "all versions"
+    @test Resolver.format_versions([1, 2, 3], [2]) == "2"
+    @test Resolver.format_versions([1, 2, 3], Int[]) == "no versions"
+    @test Resolver.format_versions([10, 20, 30, 40], [10, 20, 40]) == "10–20, 40"
+    # ranges read low–high (and runs ascend) even when `whole` is descending,
+    # as the registry provider produces
+    @test Resolver.format_versions([3, 2, 1], [1, 2]) == "1–2"
+    @test Resolver.format_versions([5, 4, 3, 2, 1], [1, 2, 3, 5]) == "1–3, 5"
+
+    # two-conflict example with a user compat, a bound, fixes and (per-cluster)
+    # upstream suggestions for both conflicts
+    data = Dict(
+        "A" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => [1, 2]))),
+        "C" => PkgData([1, 2, 3], NoDeps(), NoComp()),
+        "X" => PkgData([1], Dict(1 => ["Z"]), Dict(1 => Dict("Z" => Int[]))),
+        "Z" => PkgData([1, 2], NoDeps(), NoComp()),
+    )
+    d = diagnose(data, ["A", "X"]; compat = Dict("C" => [3]))
+    @test length(d.conflicts) == 2
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("Conflict 1: A cannot be satisfied.", report)
+    @test occursin("Conflict 2: X cannot be satisfied.", report)
+    @test occursin("you require A", report)
+    @test occursin("A (all versions) requires C at 1–2", report)
+    @test occursin("your compat restricts C to 3", report)
+    @test occursin("you require X", report)
+    @test occursin("X (all versions) requires Z at no versions", report)
+    @test occursin("Verified fixes:", report)
+    @test occursin("relax your compat on C", report)
+    @test occursin("drop requirement", report)
+    @test occursin("→ allows: ", report)
+    # the fix dropping every requirement allows nothing — rendered explicitly
+    @test occursin("→ allows: nothing", report)
+    @test !occursin("resolves:", report)
+    @test !occursin("would give:", report)
+    @test occursin("Upstream fixes:", report)
+    @test occursin("a release of A relaxing its compat on C", report)
+    @test occursin("a release of X relaxing its compat on Z", report)
+    # compact summary (plural)
+    @test sprint(show, d) == "Diagnosis(2 conflicts, $(length(d.fixes)) fixes)"
+
+    # `allows` lines name only conflict-relevant packages (requirements +
+    # contested dependencies), not the whole resolved closure; the complete
+    # solution is still retained on the Fix struct. Here A and B need disjoint
+    # versions of C, while Filler is an incidental dependency of A.
+    data_trim = Dict(
+        "A" => PkgData([1], Dict(1 => ["C", "Filler"]), Dict(1 => Dict("C" => [1]))),
+        "B" => PkgData([1], Dict(1 => ["C"]), Dict(1 => Dict("C" => [2]))),
+        "C" => PkgData([1, 2], NoDeps(), NoComp()),
+        "Filler" => PkgData([1], NoDeps(), NoComp()),
+    )
+    dt = diagnose(data_trim, ["A", "B"])
+    report_t = sprint(show, MIME("text/plain"), dt)
+    @test occursin("→ allows: A 1, C 1", report_t)   # drop B
+    @test occursin("→ allows: B 1, C 2", report_t)   # drop A
+    @test !occursin("Filler", report_t)              # incidental dep omitted
+    @test any(haskey(f.solution, "Filler") for f in dt.fixes)  # but kept on struct
+
+    # single-conflict example with an upstream suggestion; also the singular
+    # compact summary: one conflict, one fix (bound-only conflict)
+    data1 = Dict(
+        "A" => PkgData([1], Dict(1 => ["B"]), Dict(1 => Dict("B" => Int[]))),
+        "B" => PkgData([1], NoDeps(), NoComp()),
+    )
+    d1 = diagnose(data1, ["A"])
+    @test sprint(show, d1) == "Diagnosis(1 conflict, 1 fix)"
+    report1 = sprint(show, MIME("text/plain"), d1)
+    @test occursin("Conflict 1: A cannot be satisfied.", report1)
+    @test occursin("A (all versions) requires B at no versions", report1)
+    @test occursin("Verified fixes:", report1)
+    @test occursin("drop requirement A", report1)
+    @test occursin("Upstream fixes:", report1)
+    @test occursin("a release of A relaxing its compat on B", report1)
 end
 
 end # @testset "diagnose"

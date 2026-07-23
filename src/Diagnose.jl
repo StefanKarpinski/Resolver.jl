@@ -440,3 +440,217 @@ function filter_dominated(fixes::Vector{Fix{P,V}}) where {P,V}
             for i in eachindex(sets)]
     return fixes[keep]
 end
+
+# probe each bound in a cluster's MUS: with the cluster's requirements on, all
+# user compat/holds on, and every bound on except the probed one, is the
+# cluster satisfiable? If so, relaxing that upstream compat declaration would
+# resolve this conflict. Probing per-cluster (not globally) lets a suggestion
+# fire even while other, independent conflicts remain unfixed.
+function upstream_probes(
+    diag    :: DiagSAT{P,V},
+    cluster :: Vector{Int},
+    mus     :: Vector{Int},
+) where {P,V}
+    roots = P[diag.facts[s].pkg for s in cluster]
+    ups = UpstreamFix{P,V}[]
+    for s in mus
+        f = diag.facts[s]
+        f isa Bound || continue
+        sels = Int[cluster; compat_sels(diag); hold_sels(diag);
+                   filter(!=(s), bound_sels(diag))]
+        if sat_diag(diag, sels)
+            sol = prune_solution!(diag, diag_solution(diag), roots)
+            push!(ups, UpstreamFix{P,V}(f, sol))
+        end
+    end
+    return sort!(ups; by = u -> (u.bound.pkg, u.bound.dep))
+end
+
+# order a cluster's MUS facts into story order: requirements first (sorted),
+# then a BFS from the required packages along package links — introducing a
+# package emits its C/H facts, then its B facts (each B introduces its dep
+# target). Deterministic: the queue is processed in sorted order.
+function order_chain(diag::DiagSAT{P,V}, facts::Vector{Fact}) where {P,V}
+    reqfacts = sort!(Fact[f for f in facts if f isa Requirement]; by = fact_pkg)
+    Cby = Dict{P,UserCompat{P,V}}()
+    Hby = Dict{P,Hold{P,V}}()
+    Bby = Dict{P,Vector{Bound{P,V}}}()
+    for f in facts
+        f isa UserCompat && (Cby[f.pkg] = f)
+        f isa Hold       && (Hby[f.pkg] = f)
+        f isa Bound      && push!(get!(() -> Bound{P,V}[], Bby, f.pkg), f)
+    end
+    foreach(v -> sort!(v; by = b -> b.dep), values(Bby))
+    chain = copy(reqfacts)
+    visited = Set{P}()
+    queue = P[fact_pkg(f) for f in reqfacts]
+    while !isempty(queue)
+        sort!(queue)
+        p = popfirst!(queue)
+        p in visited && continue
+        push!(visited, p)
+        haskey(Cby, p) && push!(chain, Cby[p])
+        haskey(Hby, p) && push!(chain, Hby[p])
+        for b in get(Bby, p, Bound{P,V}[])
+            push!(chain, b)
+            push!(queue, b.dep)
+        end
+    end
+    # emit any facts not reached by the BFS (deterministically)
+    for f in sort!(Fact[f for f in facts if f ∉ chain];
+                   by = f -> (kind_rank(f), fact_pkg(f)))
+        push!(chain, f)
+    end
+    return chain
+end
+
+# rendering
+
+# compress a subset of a package's versions into runs against the full list,
+# e.g. [1,2,3,5] against 1:5 → "1–3, 5"; the whole list → "all versions"
+function format_versions(whole::AbstractVector, subset::AbstractVector)
+    isempty(subset) && return "no versions"
+    idx = sort!(Int[findfirst(==(v), whole) for v in subset])
+    length(idx) == length(whole) && return "all versions"
+    # compress consecutive-in-`whole` versions into runs, then order the runs
+    # and each run's endpoints by version value -- independent of whether
+    # `whole` is sorted ascending or descending (the registry provider sorts
+    # versions descending, which otherwise prints ranges backwards, e.g.
+    # "1.11.0–1.0.0")
+    runs = Tuple{eltype(whole),eltype(whole)}[]
+    i = 1
+    while i ≤ length(idx)
+        j = i
+        while j < length(idx) && idx[j+1] == idx[j] + 1
+            j += 1
+        end
+        a, b = whole[idx[i]], whole[idx[j]]
+        push!(runs, (min(a, b), max(a, b)))
+        i = j + 1
+    end
+    sort!(runs; by = first)
+    return join((lo == hi ? string(lo) : string(lo, "–", hi)
+                 for (lo, hi) in runs), ", ")
+end
+
+render_fact(io::IO, f::Requirement, d::Diagnosis) =
+    print(io, "you require ", f.pkg)
+render_fact(io::IO, f::UserCompat, d::Diagnosis) =
+    print(io, "your compat restricts ", f.pkg, " to ",
+          format_versions(d.versions[f.pkg], f.allowed))
+render_fact(io::IO, f::Hold, d::Diagnosis) =
+    print(io, f.pkg, " is pinned at ", f.version)
+function render_fact(io::IO, f::Bound, d::Diagnosis)
+    all_p = d.versions[f.pkg]
+    src = length(f.versions) == length(all_p) ? "(all versions)" :
+          format_versions(all_p, f.versions)
+    print(io, f.pkg, " ", src, " requires ", f.dep, " at ",
+          format_versions(d.versions[f.dep], f.allowed))
+end
+
+render_action(f::Requirement) = string("drop requirement ", f.pkg)
+render_action(f::UserCompat)  = string("relax your compat on ", f.pkg)
+render_action(f::Hold)        = string("unpin ", f.pkg)
+
+# packages worth naming in a fix's resulting solution: the requirements plus
+# the dependencies actually implicated in some conflict. A verified solution
+# lists the entire transitive closure at whatever versions it happened to pick,
+# which is mostly noise -- the contested packages are what a fix meaningfully
+# changes. The complete assignment is still available on `Fix.solution` /
+# `UpstreamFix.solution` for programmatic use (e.g. emitting a manifest).
+function relevant_pkgs(d::Diagnosis{P,V}) where {P,V}
+    rel = Set{P}(d.reqs)
+    for c in d.conflicts, f in c.chain
+        push!(rel, fact_pkg(f))
+        f isa Bound && push!(rel, f.dep)
+    end
+    return rel
+end
+
+function render_solution(d::Diagnosis{P,V}, sol::AbstractDict{P,V}) where {P,V}
+    rel = relevant_pkgs(d)
+    pkgs = collect(p for p in keys(sol) if p in rel)
+    isempty(pkgs) && return "nothing"
+    reqset = Set(d.reqs)
+    sort!(pkgs)
+    sort!(pkgs; by = p -> p ∉ reqset)   # requirements first (stable)
+    join((string(p, " ", sol[p]) for p in pkgs), ", ")
+end
+
+# compact summary
+function Base.show(io::IO, d::Diagnosis)
+    nc = length(d.conflicts)
+    nf = length(d.fixes)
+    print(io, "Diagnosis(", nc, nc == 1 ? " conflict, " : " conflicts, ",
+          nf, nf == 1 ? " fix)" : " fixes)")
+end
+
+# full report
+function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
+    for (n, c) in enumerate(d.conflicts)
+        n > 1 && println(io)
+        rs = join(c.reqs, ", ")
+        println(io, "Conflict ", n, ": ", rs,
+                length(c.reqs) == 1 ? " cannot be satisfied." :
+                " cannot be satisfied together.")
+        for f in c.chain
+            print(io, "  • ")
+            render_fact(io, f, d)
+            println(io)
+        end
+    end
+    if !isempty(d.fixes)
+        println(io)
+        println(io, "Verified fixes:")
+        for (n, fix) in enumerate(d.fixes)
+            println(io, "  ", n, ". ",
+                    join(map(render_action, fix.actions), " and "))
+            println(io, "     → allows: ", render_solution(d, fix.solution))
+        end
+    end
+    ups = [u for c in d.conflicts for u in c.upstream]
+    if !isempty(ups)
+        println(io)
+        println(io, "Upstream fixes:")
+        for u in ups
+            println(io, "  • a release of ", u.bound.pkg,
+                    " relaxing its compat on ", u.bound.dep)
+            println(io, "    → allows: ", render_solution(d, u.solution))
+        end
+    end
+end
+
+# entry point
+
+function diagnose(
+    data   :: AbstractDict{P,<:PkgData{P,V}},
+    reqs   :: SetOrVec{P};
+    compat :: AbstractDict{P} = Dict{P,Vector{V}}(),
+    holds  :: AbstractDict{P,V} = Dict{P,V}(),
+    max_fixes :: Integer = 8,
+) where {P,V}
+    diag = DiagSAT(data, reqs; compat, holds)
+    try
+        if sat_diag(diag, all_selectors(diag))
+            throw(ArgumentError(
+                "resolvable with the given constraints: nothing to diagnose"))
+        end
+        context = Int[compat_sels(diag); hold_sels(diag); bound_sels(diag)]
+        conflicts = Conflict{P,V}[]
+        for cluster in cluster_reqs(diag)
+            sels_on = Int[cluster; context]
+            mus = group_mus(diag, sels_on, full_shrink(diag, cluster))
+            chain = order_chain(diag, facts_of(diag, mus))
+            upstream = upstream_probes(diag, cluster, mus)
+            creqs = sort!(P[diag.facts[s].pkg for s in cluster])
+            push!(conflicts, Conflict{P,V}(creqs, chain, upstream))
+        end
+        sort!(conflicts; by = c -> c.reqs)
+        # fixes last: enumerate_fixes adds permanent blocking clauses
+        fixes = enumerate_fixes(diag; max_fixes)
+        versions = Dict{P,Vector{V}}(p => collect(data[p].versions) for p in keys(data))
+        return Diagnosis{P,V}(copy(diag.reqs), conflicts, fixes, versions)
+    finally
+        finalize(diag)
+    end
+end

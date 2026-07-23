@@ -17,6 +17,9 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --julia=<versions>      Julia versions to resolve for (default: 1+)
                           use registry compat syntax, not semver
 
+  --registry=<path>       resolve against the registry at <path>
+                          (default: the installed registries)
+
   --allow-pre[=<pkgs>]    allow prerelease versions
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
@@ -48,7 +51,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia allow-pre extra-deps prioritize
+    julia registry allow-pre extra-deps prioritize
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -159,11 +162,18 @@ let proj = env.project
     end
 end
 
-## load packages from installed registries
+## load packages from the registries
+
+# --registry=<path> resolves against a specific registry (e.g. a checkout of
+# General at a particular commit, for reproducibility); default is whatever
+# registries are installed in the depot
+const registries = handle_opts(:registry, nothing) do path::String
+    RegistryInstance(path)
+end |> r -> isnothing(r) ? reachable_registries() : [r]
 
 const packages = Dict{UUID,Vector{PkgEntry}}()
 
-for reg in reachable_registries()
+for reg in registries
     for (uuid, entry) in reg.pkgs
         push!(get!(()->PkgEntry[], packages, uuid), entry)
     end

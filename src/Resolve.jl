@@ -22,12 +22,16 @@ function resolve_core(
             with_temp_clauses(sat) do
                 # optimize wrt quality
                 for p in sort!(collect(opts); by)
-                    optimize_solution!(sat, sol) do
-                        # some strictly better version
-                        for i = 1:sol[p]-1
-                            sat_add(sat, p, i)
+                    # sol[p] == 1 is already optimal: the improvement clause
+                    # below would be empty, forcing a guaranteed-UNSAT solve
+                    if sol[p] > 1
+                        optimize_solution!(sat, sol) do
+                            # some strictly better version
+                            for i = 1:sol[p]-1
+                                sat_add(sat, p, i)
+                            end
+                            sat_add(sat)
                         end
-                        sat_add(sat)
                     end
                     # fix optimized version
                     sat_add(sat, p, sol[p])

@@ -20,65 +20,73 @@ function test_resolver(
     test_resolver(data, reqs)
 end
 
+const Π⁺ = 1e6 # enumeration budget for optimality testing
+
 function test_resolver(
     data :: AbstractDict{P,<:PkgData{P,V}},
-    reqs :: AbstractVector{P};
-    max  :: Integer = 0
+    reqs :: AbstractVector{P},
 ) where {P,V}
-    # call resolve
-    pkgs, vers = resolve(data, reqs; max)
+    # resolve: a single optimal solution, or nothing when unsatisfiable
+    sol = resolve(data, reqs)
 
-    # number of packages & solutions
-    M, N = size(vers)
-    # @info "$M packages, $N solutions"
-
-    # check basic structure
-    @test reqs ⊆ pkgs
-    @test allunique(pkgs)
-    @test M == length(pkgs)
-    @test all(haskey(data, p) for p in pkgs)
-    @test all(
-        isnothing(vers[i, k]) ||
-        vers[i, k] ∈ data[p].versions
-        for (i, p) in enumerate(pkgs)
-        for k = 1:N
-    )
-
-    # helper that captures data, pkgs & vers
-    is_valid_sol(vers) = is_valid_solution(data, pkgs, vers)
-
-    # check validity of returned solutions
-    for s in eachcol(vers)
-        @test is_valid_sol(s)
+    if sol === nothing
+        # verify that no valid solution covers all the requirements
+        pkgs = sort!(collect(keys(data)))
+        Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)
+        if Π ≤ Π⁺
+            ridx = indexin(collect(reqs), pkgs)
+            each_potential_solution(data, pkgs) do s
+                is_valid_solution(data, pkgs, s) || return
+                @test any(isnothing(s[i]) for i in ridx)
+            end
+        end
+        return nothing
     end
 
-    # check that solutions can't be trivially improved
-    for s in eachcol(vers)
-        each_trivial_improvement(data, pkgs, s) do t
-            @test !is_valid_sol(t)
+    # the solution covers all requirements with known packages & versions
+    @test reqs ⊆ keys(sol)
+    @test all(haskey(data, p) && sol[p] ∈ data[p].versions for p in keys(sol))
+
+    # the solution is exactly the dependency closure of the requirements
+    reach = Set{P}(reqs)
+    queue = collect(reach)
+    while !isempty(queue)
+        p = pop!(queue)
+        haskey(data[p].depends, sol[p]) || continue
+        for q in data[p].depends[sol[p]]
+            q in reach && continue
+            push!(reach, q)
+            push!(queue, q)
         end
     end
+    @test Set(keys(sol)) == reach
 
-    # generate partial order predicate for solutions
-    ≤ₛ = make_solution_partial_order!(data, reqs, pkgs)
-    # This modifies pkgs so that:
-    # - pkgs contains all packages that could be needed by any
-    #   version of any package in the original pkgs
-    # - allows any possible solution to be expressed, not just
-    #   the solutions originally presented
+    # vector form for the helpers below
+    pkgs = sort!(collect(keys(sol)))
+    vers = Union{V,Nothing}[sol[p] for p in pkgs]
 
-    # check that no solution is dominated by any other
-    for s in eachcol(vers), t in eachcol(vers)
-        s !== t && @test !(s ≤ₛ t)
+    # helper that captures data & pkgs
+    is_valid_sol(v) = is_valid_solution(data, pkgs, v)
+
+    # the returned solution is valid
+    @test is_valid_sol(vers)
+
+    # it can't be trivially improved: raising any package to a better version
+    # breaks validity
+    each_trivial_improvement(data, pkgs, vers) do t
+        @test !is_valid_sol(t)
     end
 
-    # if max solutions returned, might not be all possible
-    # so we can't check for domination of all solutions
-    max ≤ 0 || size(vers,2) < max || return pkgs, vers
+    # generate partial order predicate for solutions (may expand pkgs; vers
+    # stays as-is and is read via get(...), missing entries default per rank)
+    ≤ₛ = make_solution_partial_order!(data, reqs, pkgs)
+
+    # `sol` must be Pareto-maximal: no valid solution strictly dominates it.
+    # With the deterministic priority-order descent this pins the unique optimum.
+    strictly_dominates(s, w) = (w ≤ₛ s) && !(s ≤ₛ w)
 
     # estimate how many potential solutions there would be
     Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)
-    Π⁺ = 1e6
     if Π ≤ Π⁺
         # @info "optimality testing full data"
         info = data # type unstable but 🤷
@@ -87,24 +95,18 @@ function test_resolver(
         Π = prod(float(length(ip.versions)+1) for ip in values(info))
         if Π > Π⁺
             # @info "no optimality testing"
-            return pkgs, vers
+            return sol
         end
         # @info "optimality testing filtered info"
     end
 
-    if isempty(vers)
-        # technically, when no solutions, this is dominant
-        vers = typeof(vers)(fill(nothing, M, 1))
-    end
-
-    # generate all Π potential solutions
+    # no valid potential solution strictly dominates the returned one
     each_potential_solution(info, pkgs) do s
         is_valid_sol(s) || return
-        # each valid solution is dominated by some returned solution:
-        @test any(s ≤ₛ t for t in eachcol(vers))
+        @test !strictly_dominates(s, vers)
     end
 
-    return pkgs, vers
+    return sol
 end
 
 # checking validity of a solution

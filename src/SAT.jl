@@ -140,8 +140,10 @@ end
 
 const is_unsatisfiable = !is_satisfiable
 
-function each_solution_index(f::Function, sat::SAT)
-    is_satisfiable(sat) || return
+# iterate the current model's package => version-index assignments without
+# re-solving: only valid right after a solve that returned satisfiable, with
+# no clauses added since
+function each_model_index(f::Function, sat::SAT)
     for (p, v_p) in sat.vars
         PicoSAT.deref(sat.pico, v_p) < 0 && continue
         i = 1
@@ -157,12 +159,24 @@ function each_solution_index(f::Function, sat::SAT)
     end
 end
 
-function extract_solution!(sat::SAT{P}, sol::Dict{P,Int}) where {P}
+function each_solution_index(f::Function, sat::SAT)
+    is_satisfiable(sat) || return
+    each_model_index(f, sat)
+end
+
+# extract the current model without re-solving; see each_model_index for when
+# this is valid
+function extract_model!(sat::SAT{P}, sol::Dict{P,Int}) where {P}
     empty!(sol)
-    each_solution_index(sat) do p, i
+    each_model_index(sat) do p, i
         sol[p] = i
     end
     return sol
+end
+
+function extract_solution!(sat::SAT{P}, sol::Dict{P,Int}) where {P}
+    is_satisfiable(sat) || return empty!(sol)
+    extract_model!(sat, sol)
 end
 
 function solution(sat::SAT{P,V}) where {P,V}
@@ -202,7 +216,7 @@ function optimize_version!(
             end
             sat_add(sat)
             is_satisfiable(sat) || return false
-            extract_solution!(sat, sol)
+            extract_model!(sat, sol)
             return true
         end
         improved || break

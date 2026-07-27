@@ -10,7 +10,7 @@ module TestResolver
 using Resolver: resolve, DepsProvider, PkgData, PkgInfo, pkg_data, pkg_info
 using Test
 
-export test_resolver
+export test_resolver, ref_resolve
 
 function test_resolver(
     deps :: DepsProvider{P},
@@ -106,6 +106,54 @@ function test_resolver(
         @test !strictly_dominates(s, vers)
     end
 
+    return sol
+end
+
+# brute-force reference for the single-solution contract: enumerate all valid
+# solutions; if none covers every requirement the problem is unsatisfiable,
+# otherwise select the solution resolve specifies -- optimize versions one
+# package at a time in priority order, layer by layer through the dependency
+# graph
+function ref_resolve(
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    reqs :: AbstractVector{P};
+    by   :: Function = identity,
+) where {P,V}
+    pkgs = sort!(collect(keys(data)))
+    # all valid solutions covering the requirements, as package => version
+    # dicts of installed packages
+    cands = Dict{P,V}[]
+    each_potential_solution(data, pkgs) do s
+        is_valid_solution(data, pkgs, s) || return
+        push!(cands, Dict{P,V}(
+            pkgs[i] => s[i] for i = 1:length(pkgs) if s[i] !== nothing))
+    end
+    filter!(c -> all(haskey(c, q) for q in reqs), cands)
+    isempty(cands) && return nothing
+    # optimize versions in priority order, layer by layer: pin each package to
+    # its best version among the remaining candidates, then move on to the
+    # newly-reachable dependencies of the pinned versions
+    sol = Dict{P,V}()
+    layer = sort!(unique(reqs); by)
+    seen = Set{P}(layer)
+    while true
+        for p in layer
+            rank = Dict{V,Int}(v => r for (r, v) in enumerate(data[p].versions))
+            best = data[p].versions[minimum(rank[c[p]] for c in cands)]
+            sol[p] = best
+            filter!(c -> c[p] == best, cands)
+        end
+        next = P[]
+        for p in layer
+            haskey(data[p].depends, sol[p]) || continue
+            for q in data[p].depends[sol[p]]
+                q in seen || q in next || push!(next, q)
+            end
+        end
+        isempty(next) && break
+        layer = sort!(next; by)
+        union!(seen, layer)
+    end
     return sol
 end
 

@@ -123,6 +123,24 @@ end
     end
 end
 
+@testset "resolve: brute-force reference" begin
+    Random.seed!(rand(RandomDevice(), UInt64))
+    hi = p -> p  # default priority: lower package id first
+    lo = p -> -p # reversed priority
+    for m = 1:3, n = 1:3
+        make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
+        for _ = 1:100
+            deps = make_deps(randbits(d))
+            comp = make_comp(randbits(c))
+            fill_data!(m, n, deps, comp, data)
+            for reqs_bits = 0:2^m-1, by in (hi, lo)
+                reqs = collect(make_reqs(reqs_bits))
+                @test resolve(data, reqs; by) == ref_resolve(data, reqs; by)
+            end
+        end
+    end
+end
+
 using Resolver: PkgData
 @testset "consistency validation" begin
     # Test missing dependency

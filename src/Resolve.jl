@@ -11,6 +11,9 @@ function resolve_core(
     # check only assumes, so an unsatisfiable resolve leaves no state behind
     is_satisfiable(sat, reqs) || return nothing
     sol = Dict{P,Int}() # the solution
+    # capture the solution (it covers all the requirements) before the
+    # clauses added by the descent invalidate the solver's assignment
+    extract_solution!(sat, sol)
 
     # optimize each package in `opts` to its best feasible version wrt quality,
     # pinning each as it goes (in priority order); return the newly-reachable
@@ -41,7 +44,6 @@ function resolve_core(
             sat_add(sat, p)
             sat_add(sat)
         end
-        extract_solution!(sat, sol)
         # optimize quality in priority order, layer by layer
         opts = Set{P}(reqs)
         seen = copy(opts)

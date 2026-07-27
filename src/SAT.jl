@@ -140,8 +140,11 @@ end
 
 const is_unsatisfiable = !is_satisfiable
 
+# iterate the current solution's package => version-index assignments by
+# dereferencing the solver's assignment without re-solving: only valid right
+# after a solve that returned satisfiable, with no clauses added since --
+# ensuring that is the caller's responsibility
 function each_solution_index(f::Function, sat::SAT)
-    is_satisfiable(sat) || return
     for (p, v_p) in sat.vars
         PicoSAT.deref(sat.pico, v_p) < 0 && continue
         i = 1
@@ -157,6 +160,9 @@ function each_solution_index(f::Function, sat::SAT)
     end
 end
 
+# extract the solver's current solution; same contract as
+# each_solution_index: the last solve must have returned satisfiable,
+# with no clauses added since
 function extract_solution!(sat::SAT{P}, sol::Dict{P,Int}) where {P}
     empty!(sol)
     each_solution_index(sat) do p, i
@@ -167,6 +173,7 @@ end
 
 function solution(sat::SAT{P,V}) where {P,V}
     sol = Dict{P,V}()
+    is_satisfiable(sat) || return sol
     each_solution_index(sat) do p, i
         sol[p] = sat.info[p].versions[i]
     end

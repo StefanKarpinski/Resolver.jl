@@ -275,7 +275,7 @@ end
         ws = make_shadow_ws("99.0.0")
         ok, out, err = resolve_workspace_manifest(ws)
         @test !ok
-        @test occursin("Unsatisfiable", err)
+        @test occursin("Unresolvable", err)   # resolve.jl now prints a diagnosis
     end
 
     @testset "compat excluding a workspace package's local version" begin

@@ -273,7 +273,6 @@ function sat_mice(
     while true
         mus = sat_mus(sat, reqs)
         isempty(mus) && break
-        println(mus)
         push!(mice, mus)
         setdiff!(reqs, mus)
     end
@@ -289,7 +288,6 @@ function sat_humus(
     while true
         mus = sat_mus(sat, reqs)
         isempty(mus) && break
-        println(mus)
         union!(humus, mus)
         setdiff!(reqs, mus)
     end

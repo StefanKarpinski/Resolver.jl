@@ -1,6 +1,6 @@
 module Resolver
 
-export resolve
+export resolve, diagnose, Diagnosis
 
 include("DepsProvider.jl")
 include("PkgInfo.jl")
@@ -9,5 +9,6 @@ include("FilterPkgs.jl")
 include("PicoSAT.jl")
 include("SAT.jl")
 include("Resolve.jl")
+include("Diagnose.jl")
 
 end # module

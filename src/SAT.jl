@@ -184,18 +184,28 @@ function with_temp_clauses(body::Function, sat::SAT)
     end
 end
 
-function optimize_solution!(
-    improve :: Function,
-    sat     :: SAT{P},
-    sol     :: Dict{P,Int},
+# improve package p to its best feasible version: repeatedly demand some
+# strictly better version until that becomes unsatisfiable, keeping the last
+# good model in sol
+function optimize_version!(
+    sat :: SAT{P},
+    sol :: Dict{P,Int},
+    p   :: P,
 ) where {P}
-    done::Bool = false
-    while !done
-        with_temp_clauses(sat) do
-            improve() # callback adds SAT clauses
-            done = is_unsatisfiable(sat)
-            done || extract_solution!(sat, sol)
+    # sol[p] == 1 is already optimal: the improvement clause below would be
+    # empty, forcing a guaranteed-UNSAT solve
+    while sol[p] > 1
+        improved = with_temp_clauses(sat) do
+            # some strictly better version of p
+            for i = 1:sol[p]-1
+                sat_add(sat, p, i)
+            end
+            sat_add(sat)
+            is_satisfiable(sat) || return false
+            extract_solution!(sat, sol)
+            return true
         end
+        improved || break
     end
 end
 

@@ -17,17 +17,7 @@ function resolve_core(
     # dependencies of the chosen versions that still need optimizing
     function optimize!(opts::Set{P}, seen::Set{P})
         for p in sort!(collect(opts); by)
-            # sol[p] == 1 is already optimal: the improvement clause below would
-            # be empty, forcing a guaranteed-UNSAT solve
-            if sol[p] > 1
-                optimize_solution!(sat, sol) do
-                    # some strictly better version
-                    for i = 1:sol[p]-1
-                        sat_add(sat, p, i)
-                    end
-                    sat_add(sat)
-                end
-            end
+            optimize_version!(sat, sol, p)
             # fix optimized version
             sat_add(sat, p, sol[p])
             sat_add(sat)

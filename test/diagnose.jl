@@ -7,12 +7,9 @@ const NoDeps = Dict{Int,Vector{String}}
 const NoComp = Dict{Int,Dict{String,Vector{Int}}}
 
 # does resolve find a complete solution covering all requirements?
-function resolve_complete(data, reqs)
-    pkgs, vers = resolve(data, reqs)
-    size(vers, 2) == 0 && return isempty(reqs)
-    ridx = indexin(collect(reqs), pkgs)
-    any(all(!isnothing(vers[i, k]) for i in ridx) for k in axes(vers, 2))
-end
+# (the single-solution API returns nothing iff the reqs are not jointly
+# satisfiable, and any returned solution covers all requirements)
+resolve_complete(data, reqs) = resolve(data, reqs) !== nothing
 
 # build a diagnostic instance, run body, free it
 function with_diag(body, data, reqs; kw...)

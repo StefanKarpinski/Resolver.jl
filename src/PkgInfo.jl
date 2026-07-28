@@ -93,17 +93,25 @@ function pkg_info(
         end
     end
 
-    # compute interactions between packages
+    # compute interactions between packages, keeping each version's
+    # masks around for the bit-setting pass below
+    MasksT = Dict{P, Vector{UInt64}}
+    vmasks = Dict{P, Vector{Tuple{V, MasksT}}}()
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
     for (p, data_p) in data
         interacts_p = interacts[p]
+        vm = Tuple{V, MasksT}[]
         for (v, comp_pv) in data_p.compat
-            for q in keys(conflict_masks(comp_pv))
+            masks = conflict_masks(comp_pv)
+            isempty(masks) && continue
+            push!(vm, (v, masks))
+            for q in keys(masks)
                 (q == p || q in interacts_p) && continue
                 push!(interacts_p, q)
                 push!(interacts[q], p)
             end
         end
+        isempty(vm) || (vmasks[p] = vm)
     end
     foreach(sort!, values(interacts))
 
@@ -145,9 +153,9 @@ function pkg_info(
             end
         end
         # set compatibility bits
-        for (v, comp_pv) in data_p.compat
+        for (v, masks) in get(vmasks, p, Tuple{V, MasksT}[])
             i = V⁻¹[v]
-            for (q, mask) in conflict_masks(comp_pv)
+            for (q, mask) in masks
                 q == p && continue
                 info_q = info[q]
                 Y = info_q.conflicts

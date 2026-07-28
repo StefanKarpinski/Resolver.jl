@@ -115,7 +115,8 @@ function read_vals(io::IO, ::Type{T}) where {T}
     for i = 1:n
         l = read_int(io)
         s = String(read(io, l))
-        v[i] = T === String ? s : parse(T, s)
+        v[i] = T === String ? s :
+               T === Symbol ? Symbol(s) : parse(T, s)
     end
     return v
 end
@@ -123,8 +124,7 @@ end
 function write_vals(io::IO, inds::Dict{<:Any,<:Integer}, v::Vector)
     write_int(io, length(v))
     for x in v
-        s = x isa String ? x : string(x)
-        write_int(io, inds[s])
+        write_int(io, inds[x])
     end
 end
 

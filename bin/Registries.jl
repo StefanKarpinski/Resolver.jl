@@ -73,6 +73,25 @@ function sort_versions_default(uuid::UUID, vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)
 end
 
+# share one object among equal-valued entries; there are only a few
+# distinct values per package, so scanning them beats comparing all pairs
+function dedup_values!(d::AbstractDict, vers::Vector)
+    distinct = valtype(d)[]
+    for v in vers
+        x = d[v]
+        shared = false
+        for y in distinct
+            if y == x
+                d[v] = y
+                shared = true
+                break
+            end
+        end
+        shared || push!(distinct, x)
+    end
+    return d
+end
+
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
     julia_versions :: VersionSpec = VersionSpec("1"),
@@ -286,11 +305,8 @@ function registry_provider(
         # sort versions
         vers = sort_versions(uuid, vers) :: Vector{VersionNumber}
         # deduplicate data structures to save some memory
-        for i = 1:length(vers)-1, j = i+1:length(vers)
-            v, w = vers[i], vers[j]
-            deps[v] == deps[w] && (deps[v] = deps[w])
-            comp[v] == comp[w] && (comp[v] = comp[w])
-        end
+        dedup_values!(deps, vers)
+        dedup_values!(comp, vers)
         # return resolver PkgData structure
         PkgData(vers, deps, comp)
     end

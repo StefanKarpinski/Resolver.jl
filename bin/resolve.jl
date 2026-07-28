@@ -17,9 +17,14 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --julia=<versions>      Julia versions to resolve for (default: 1+)
                           use registry compat syntax, not semver
 
+  --registry=<path>       resolve against the registry at <path>
+                          (default: the installed registries)
+
   --allow-pre[=<pkgs>]    allow prerelease versions
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
+  --pin=<pkg@version>     pin a package to an exact version (repeatable,
+                          comma-separated; leading 'v' optional)
 
   --fix[=<pkgs>]          prefer current full version number
   --fix-minor[=<pkgs>]    prefer current major.minor version
@@ -48,7 +53,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia allow-pre extra-deps prioritize
+    julia registry allow-pre extra-deps prioritize pin
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -90,7 +95,7 @@ end
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
-import Resolver: Resolver, DepsProvider, PkgData, resolve
+import Resolver: Resolver, DepsProvider, PkgData, resolve, diagnose
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
 
@@ -159,11 +164,18 @@ let proj = env.project
     end
 end
 
-## load packages from installed registries
+## load packages from the registries
+
+# --registry=<path> resolves against a specific registry (e.g. a checkout of
+# General at a particular commit, for reproducibility); default is whatever
+# registries are installed in the depot
+const registries = handle_opts(:registry, nothing) do path::String
+    RegistryInstance(path)
+end |> r -> isnothing(r) ? reachable_registries() : [r]
 
 const packages = Dict{UUID,Vector{PkgEntry}}()
 
-for reg in reachable_registries()
+for reg in registries
     for (uuid, entry) in reg.pkgs
         push!(get!(()->PkgEntry[], packages, uuid), entry)
     end
@@ -291,6 +303,24 @@ global const reqs = copy(project_deps)
 
 handle_opts(:extra_deps) do val::String
     union!(reqs, parse_packages(val))
+end
+
+## options: pinned versions
+
+# --pin=<pkg@version>[,...] pins packages to exact versions (repeatable). Pins
+# constrain resolution (like a `Pkg.pin`) and, when a resolve is unsatisfiable,
+# are surfaced by the diagnosis as pins that could be lifted.
+const pins = Dict{UUID,VersionNumber}()
+
+handle_opts(:pin) do val::String
+    for item in split(val, ',')
+        m = match(r"^\s*(.+?)@v?(\d[^\s]*)\s*$", item)
+        isnothing(m) && usage("Invalid --pin (expected pkg@version): $item")
+        uuid = only(parse_packages(m[1]))
+        ver = tryparse(VersionNumber, m[2])
+        isnothing(ver) && usage("Invalid version in --pin: $item")
+        pins[uuid] = ver
+    end
 end
 
 ## options: sorting versions
@@ -425,19 +455,80 @@ let i = 0
     end
 end
 
+## unsatisfiable diagnosis
+
+# Explain an unsatisfiable resolve and print verified fixes. We rebuild the
+# dependency data *without* the user's compat/pins baked in and pass them to
+# `diagnose` separately, so it can attribute the conflict to them and suggest
+# relaxing a compat bound or lifting a pin (rather than only dropping a
+# requirement). Julia is targeted via --julia, not treated as a requirement.
+function diagnose_unsatisfiable()
+    diag_reg = registry_provider(
+        packages;
+        julia_versions,
+        sort_versions,
+        allow_pre,
+        workspace_pkgs,
+    )
+    diag_reqs = filter(!=(JULIA_UUID), reqs)
+    data = Resolver.pkg_data(diag_reg, diag_reqs)
+    user_compat = Dict{UUID,Vector{VersionNumber}}()
+    for (uuid, spec) in project_compat
+        (uuid == JULIA_UUID || !haskey(data, uuid)) && continue
+        user_compat[uuid] = [v for v in data[uuid].versions if v in spec]
+    end
+    dg = try
+        diagnose(data, diag_reqs; compat = user_compat, holds = pins)
+    catch err
+        err isa ArgumentError || rethrow()
+        println(stderr, "Unsatisfiable (no detailed diagnosis: ", err.msg, ")")
+        return
+    end
+    # the diagnosis is keyed by UUID; substitute package names for readability
+    names = Dict{String,String}(string(JULIA_UUID) => "julia")
+    for (u, es) in packages, e in es
+        names[string(u)] = e.name
+    end
+    for (_v, this_stdlibs) in STDLIBS_BY_VERSION, (u, info) in this_stdlibs
+        names[string(u)] = info.name
+    end
+    for (u, info) in UNREGISTERED_STDLIBS
+        names[string(u)] = info.name
+    end
+    uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    report = replace(sprint(show, MIME("text/plain"), dg),
+                     uuid_re => m -> get(names, m, m))
+    println(stderr, "Unresolvable. Diagnosis:\n")
+    println(stderr, report)
+end
+
 ## do an actual resolve
+
+# pins constrain resolution exactly like user compat restricting a package to a
+# single version, so fold them into the compat the provider applies
+const resolve_compat = copy(project_compat)
+for (uuid, ver) in pins
+    spec = VersionSpec(ver)
+    resolve_compat[uuid] = haskey(resolve_compat, uuid) ?
+        resolve_compat[uuid] ∩ spec : spec
+end
 
 reg = registry_provider(
     packages;
     julia_versions,
-    project_compat,
+    project_compat = resolve_compat,
     sort_versions,
     allow_pre,
     workspace_pkgs,
 )
 pkg_info = Resolver.pkg_info(reg, reqs)
 sol = resolve(pkg_info, reqs; by=sort_packages_by)
-sol === nothing && error("Unsatisfiable")
+
+# if unsatisfiable, explain why and how to fix it, then exit nonzero
+if sol === nothing
+    diagnose_unsatisfiable()
+    exit(1)
+end
 
 ## output results
 

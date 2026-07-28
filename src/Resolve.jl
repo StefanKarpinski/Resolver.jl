@@ -71,6 +71,27 @@ function resolve_core(
     return sol
 end
 
+"""
+    resolve(data, reqs; by = identity) -> Union{Dict{P,V}, Nothing}
+
+Resolve the requirements `reqs` against the package universe described by
+`data`, returning the optimal solution as a dict mapping each needed package
+to its chosen version, or `nothing` when the requirements are not jointly
+satisfiable. The solution covers every requirement and is exactly the
+dependency closure of the requirements under its own chosen versions.
+
+The returned solution is the *layered solution*: requirements are optimized
+first, in the priority order induced by `by` (each package maximized to its
+best feasible version given the choices already made), then the dependencies
+of the chosen versions, layer by layer along the dependency graph. See the
+manual's Theory section for the precise semantics and the guarantees it
+carries.
+
+`data` may be a `DepsProvider`, a dict of `PkgData`, a dict of `PkgInfo`, or
+a `SAT` instance. The `SAT` method also accepts `restore::Bool = true`: when
+true the instance's clauses are restored before returning so the instance
+can be reused; `restore = false` is faster for single-use instances.
+"""
 function resolve(
     sat  :: SAT{P,V},
     reqs :: SetOrVec{P} = keys(sat.info);

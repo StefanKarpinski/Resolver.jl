@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+Resolver = "ecd60e94-5748-11e9-04dc-1fe0f95e4121"
+
+[compat]
+Documenter = "1"

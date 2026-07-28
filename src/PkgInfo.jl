@@ -132,7 +132,26 @@ function pkg_info(
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()
     for (p, data_p) in data
-        D = sort!(reduce(union!, values(data_p.depends), init=P[]))
+        # union the version's dependency sets; they are shared objects
+        # (provider deduplication), so skip repeats by identity first
+        empty!(objs)
+        for dv in values(data_p.depends)
+            repeat = false
+            for o in objs
+                if o === dv
+                    repeat = true
+                    break
+                end
+            end
+            repeat || push!(objs, dv)
+        end
+        D = P[]
+        for dv in objs
+            for q in dv
+                push!(D, q)
+            end
+        end
+        D = sort!(unique!(D))
         T = Dict{P,Int}(p => 0 for p in interacts[p])
         n = length(D)
         for q in interacts[p]

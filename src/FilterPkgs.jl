@@ -189,10 +189,9 @@ function mark_necessary!(
     end
     # some work buffers
     A = UInt64[]        # active version mask
-    C = UInt64[]        # domination candidates mask
-    J = Int[]           # active versions vector
+    D = UInt64[]        # per-version domination candidate masks
+    T = UInt64[]        # mask of versions still tracked by the sweep
     R = Int[]           # redundant indices vector
-    cols = Vector{Int}[] # per-version active constraint columns
     # initialize active column flags
     for p = 1:N
         info_p = infos[p]
@@ -235,75 +234,93 @@ function mark_necessary!(
         m > 1 || continue # unique version cannot be redundant
         n = size(X, 2) - 1
         W = col_words(X)
-        # active version mask & indices
+        # active version mask
         resize!(A, W)
         col_copy!(A, X, n + 1)
         clear_rows_above!(A, m)
-        empty!(J)
+        nact = 0
+        @inbounds for w = 1:W
+            nact += count_ones(A[w])
+        end
+        nact > 1 || continue # unique version cannot be redundant
+        # find redundant versions: i < j and X[i, k] => X[j, k] for all
+        # active k means an earlier version is strictly more compatible,
+        # therefore i will always be chosen instead of j. the candidates
+        # dominated by i are the active versions worse than i that have a
+        # constraint in every column i does. sweep the active columns
+        # once, restricting the candidates of every version with a bit in
+        # the column to the column's row set; versions whose candidate
+        # set empties drop out of the sweep. a version dominated only by
+        # dominated versions is also dominated by their (transitively
+        # live) dominators, so batching over the initial active set finds
+        # exactly the sequentially dominated versions.
+        resize!(D, m * W)
+        resize!(T, W)
+        copyto!(T, A)
         @inbounds for w = 1:W
             c = A[w]
             while !iszero(c)
-                push!(J, ((w - 1) << 6) + trailing_zeros(c) + 1)
+                i = ((w - 1) << 6) + trailing_zeros(c) + 1
                 c &= c - 1
+                # candidates of i: active versions worse than i
+                o = (i - 1) * W
+                for w′ = 1:W
+                    D[o + w′] = A[w′]
+                end
+                wt = i >> 6
+                for w′ = 1:min(wt, W)
+                    D[o + w′] = 0
+                end
+                r = i & 63
+                if r != 0 && wt < W
+                    D[o + wt + 1] &= ~((UInt64(1) << r) - 1)
+                end
+                live = UInt64(0)
+                for w′ = 1:W
+                    live |= D[o + w′]
+                end
+                iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
             end
-        end
-        length(J) > 1 || continue # unique version cannot be redundant
-        # collect every active version's active constraint columns in one
-        # sweep over the columns, each of which is a contiguous bit span
-        while length(cols) < m
-            push!(cols, Int[])
-        end
-        for j in J
-            empty!(cols[j])
         end
         for k = 1:n
             X[m+1, k] || continue # inactive column
             base = (k - 1) * W
             @inbounds for w = 1:W
-                c = X.chunks[base + w] & A[w]
+                c = X.chunks[base + w] & T[w]
                 while !iszero(c)
                     i = ((w - 1) << 6) + trailing_zeros(c) + 1
-                    push!(cols[i], k)
                     c &= c - 1
+                    o = (i - 1) * W
+                    live = UInt64(0)
+                    for w′ = 1:W
+                        live |= (D[o + w′] &= X.chunks[base + w′])
+                    end
+                    iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
                 end
             end
         end
-        # find redundant versions: i < j and X[i, k] => X[j, k] for all
-        # active k means an earlier version is strictly more compatible,
-        # therefore i will always be chosen instead of j. the candidates
-        # dominated by i are the active versions worse than i that have a
-        # constraint in every column i does — the word-parallel
-        # intersection of i's constraint columns
-        empty!(R)
-        resize!(C, W)
-        for i in J
-            getbit(A, i) || continue # dominated versions can't dominate
-            copyto!(C, A)
-            clear_rows_upto!(C, i)
-            live = false
-            @inbounds for w = 1:W
-                live |= !iszero(C[w])
-            end
-            live || continue
-            ok = true
-            for k in cols[i]
-                col_and!(C, X, k) && continue
-                ok = false
-                break
-            end
-            ok || continue
-            # remove dominated versions from the active set & record them
-            @inbounds for w = 1:W
-                c = C[w]
-                while !iszero(c)
-                    push!(R, ((w - 1) << 6) + trailing_zeros(c) + 1)
-                    c &= c - 1
+        # union of all candidate sets = the dominated versions
+        fill!(T, UInt64(0)) # reuse as the union accumulator
+        @inbounds for w = 1:W
+            c = A[w]
+            while !iszero(c)
+                i = ((w - 1) << 6) + trailing_zeros(c) + 1
+                c &= c - 1
+                o = (i - 1) * W
+                for w′ = 1:W
+                    T[w′] |= D[o + w′]
                 end
-                A[w] &= ~C[w]
+            end
+        end
+        empty!(R)
+        @inbounds for w = 1:W
+            c = T[w]
+            while !iszero(c)
+                push!(R, ((w - 1) << 6) + trailing_zeros(c) + 1)
+                c &= c - 1
             end
         end
         isempty(R) && continue
-        sort!(R)
         # deactivate redundant versions
         X[R, end] .= false
         for (q, b, c) in partners[p]

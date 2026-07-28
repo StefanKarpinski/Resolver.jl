@@ -258,39 +258,91 @@ instances, both priority orders (~19,500 instance/order pairs):
 
 ## 8. Implementation notes (this branch)
 
-- `resolve_core` pins by front-necessity: scan, in priority order, the
-  intersection of the supports of *certified front members* (any package
-  outside it is certifiably avoidable); the necessity test runs the §5
-  oracle. Certified front members are cached and reused as avoidability
-  certificates; the cache is filtered on each pin (keep members agreeing
-  with the pin) and reseeded by the certifying chain-top.
-- Cheap positive fast paths, all sound for front-necessity since
-  raw-forced ⟹ front-forced: requirements; dependencies of pinned
-  versions (maintained as a set outside the solver, replacing the
-  top-level-propagation trick, which pins-as-assumptions would defeat);
-  top-level forcings from the requirement units.
-- Version selection: optimize in model space first (the existing
-  improvement loop, pins assumed per solve) to a lower bound `r₀`, then
-  certify by climbing the pruned optimum; by C6, the first certified rank
-  is the answer, and probes advance only on UNSAT.
-- Dominance queries open a temporary clause scope (containment + bound +
-  strictness clauses) and never assume pins.
-- The dependency structure is consulted only by the closure oracle
-  (pruning, prune-checks, dep-forced fast path) — a checking device, not
-  a search structure. Tightness is inherently a dependency notion; it
-  cannot be recovered from the SAT abstraction (and eager SAT encodings
-  of it blow up; lazily it is ASP's unfounded-set problem).
-- The brute-force reference in the test harness implements §2 verbatim on
-  raw data: enumerate tight solutions, form the front, run the descent.
-  The reference no longer involves `pkg_info` at all.
+Implementation experience refined §5's architecture substantially; the
+proofs carry over, but three engineering discoveries reshaped the code:
 
-## 9. Open questions
+- **Candidates are constructed, not searched for.** Enumerating arbitrary
+  models and pruning them drowns in junk variants (exponentially many
+  models share one tight core). Instead, the dependency-layered greedy
+  runs under per-query assumptions (`pins ∧ ¬p` for witnesses,
+  `pins ∧ p@rank` for version certification, unconstrained for the seed)
+  and lands directly on one high-quality candidate. A junk-free greedy
+  answer is provably Pareto-maximal *within its query space* — an
+  in-space dominator would have to agree with every greedy pin before its
+  earliest strict improvement, contradicting that pin's optimality (the
+  Theorem A argument, one level down). For the seed and for version
+  certification the space is upward-closed under domination (for the
+  latter because better ranks are probe-exhausted and pin improvements
+  contradict Theorem A), so junk-free greedy answers there are front
+  members outright, with **zero** certification solves. For `¬p`
+  witnesses, dominators may legitimately contain `p`, so one dominator
+  query remains — and its answer provably contains `p` and agrees with
+  the pins, so its whole dominance cone is excluded and the search
+  continues.
+- **Queries range over *supported* models.** One clause per package —
+  present implies some chosen version depends on it (requirements
+  exempt) — restricts every query to ASP-style supported models. No
+  tight solution is lost (every non-root member of a tight solution is
+  depended upon), and junk shrinks from arbitrary true-variables to
+  dependency cycles, which the pruning/blocking fallbacks still handle.
+  Without this, cone- and core-blocking clauses are evaded by junk
+  variants and every loop in the resolver storms.
+- **Core blocking.** A model agreeing with a tight core on the core's
+  support has exactly that core (the closure cannot escape a
+  dependency-closed set), so one small clause per processed core
+  disposes of its entire junk-variant family.
 
-- Registry-scale cost: climb lengths, dominator-query cost, cone-block
-  frequency. (Benchmarks tracked on this branch.)
-- Proof-hardening: Theorems A–C are believed complete as stated; a
-  mechanized or adversarially-reviewed pass would be prudent before this
-  replaces the dependency-layered descent.
+Other notes: pins are solver assumptions, never clauses (dominance
+queries must see all tight solutions); certified front members are cached
+— they answer avoidability for free, restrict the candidate scan to the
+intersection of their supports, and certify a pin outright when one
+already sits at the optimized rank (the common case: the previous pin's
+certificate usually certifies the next pin too); version optimization
+probes "any strict improvement" first (one unsatisfiable solve in the
+already-optimal common case) and bisects otherwise; requirements and
+dependencies of pinned versions are maintained as a forced-set outside
+the solver. The brute-force reference in the test harness implements §2
+verbatim on raw data — it no longer involves `pkg_info` at all.
+
+**A sharpened requirement for reductions.** The `pkg_info` reachability
+filter cannot be used in front of this resolver at all: beyond §6's
+necessity distortion, it drops front members outright (its reach logic
+assumes worse versions only matter under conflict pressure, but under ⊵ a
+worse version is front-relevant whenever it unlocks quality elsewhere —
+the counterexample's `f₁` is erased). The admissible contract is: **every
+front member must survive the reduction as a model.** Under that
+contract the whole pipeline remains sound — witnesses are front members
+and survive; a surviving tight solution with no surviving dominator has
+no dominator at all, since its maximal dominators are front members.
+Data-level entry points therefore build the unreduced problem today.
+
+## 9. Performance status and open questions
+
+Registry benchmarks (General registry, unreduced instances, warm):
+
+| requirements | packages/versions | resolve |
+|---|---|---|
+| JSON | 10 / 247 | ~4 ms |
+| DataFrames | 56 / 1,383 | ~85 ms |
+| DataFrames + JSON | 58 / 1,405 | ~85 ms |
+| DifferentialEquations | 761 / 26,287 | intractable today |
+
+The DifferentialEquations wall is instance size: every greedy pass costs
+hundreds of solves at ~15 ms each on a 26k-version instance, and each
+semantically-avoidable candidate needs a witness greedy plus a dominator
+query, re-certified when pins invalidate its witness. The decisive lever
+is a **front-preserving reduction** (§8): shrink the instance the way
+`pkg_info` does today, but under the every-front-member-survives
+contract. Designing one is the main open problem. Secondary levers:
+witness reuse across pins, localized (neighborhood-scoped) witness
+construction, and issue #33's activation literals.
+
+Other open items:
+
+- Proof-hardening: Theorems A–C and the §8 greedy-maximality arguments
+  are believed complete as stated; a mechanized or adversarially-reviewed
+  pass would be prudent before this replaces the dependency-layered
+  descent.
 - Whether requirements should outrank higher-priority dependencies is a
   policy choice orthogonal to this document: it can be recovered by
   putting requirements first in the priority order.

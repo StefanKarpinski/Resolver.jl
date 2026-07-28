@@ -235,10 +235,10 @@ layered solution.**
 
 ## Iterating the filter
 
-The filter runs reachability once and redundancy elimination once, in
-that order. It is natural to ask whether iterating the two passes would
-prune more — and the answer illuminates what each pass can and cannot
-see.
+It is natural to ask whether a single reachability pass followed by a
+single redundancy pass leaves anything on the table — whether iterating
+the two would prune more. The answer illuminates what each pass can and
+cannot see.
 
 Reachability alone is a closure operation:
 
@@ -291,13 +291,17 @@ above.)
 
 None of this threatens correctness. By Theorem 4, *any* number of
 additional passes preserves the layered answer, so iterating the filter
-to a mutual fixpoint would be perfectly legal. It just isn't worth it:
-in deliberately conflict-dense random instances a second pass prunes
-anything at all in only about 0.007% of cases with version-independent
-dependencies and about 1% with version-varying ones — and what it prunes
-is marginal — while real registry problems are far sparser. Essentially
-all of the reduction is captured by running reachability once and
-redundancy elimination once, in that order.
+to a mutual fixpoint is perfectly legal — and since the passes are
+cheap, that is what the implementation does: redundancy elimination
+first (it needs no reachability marks, and on registry-scale problems
+it does most of the shrinking), then reachability and redundancy
+alternating until neither deletes anything. The returns diminish fast:
+a further round prunes anything at all in only about 0.007% of
+deliberately conflict-dense random instances with version-independent
+dependencies and about 1% with version-varying ones, and what it prunes
+is marginal. Essentially all of the reduction is captured by one
+reachability pass and one redundancy pass; the remaining rounds just
+collect the stragglers because they cost next to nothing.
 
 !!! warning "Formalization boundary"
     Theorems 2, 3, 5, and 6 are proved against the rule set as stated

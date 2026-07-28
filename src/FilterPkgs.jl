@@ -2,9 +2,25 @@ function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
-    mark_reachable!(info, reqs)
+    # redundancy elimination first — it needs no reachability marks and
+    # does most of the shrinking — then alternate reachability and
+    # redundancy until neither deletes anything: each deleted version can
+    # expose more of both kinds of pruning, and every round preserves the
+    # resolved answer (see the theory docs on iterating the filter).
+    # requirement packages always survive filtering, so the requirements
+    # remain valid across rounds. rounds strictly shrink the total
+    # version count, so the loop terminates
     mark_necessary!(info)
     drop_unmarked!(info)
+    while true
+        total = sum(length(i.versions) for i in values(info); init = 0)
+        mark_reachable!(info, reqs)
+        mark_necessary!(info)
+        drop_unmarked!(info)
+        sum(length(i.versions) for i in values(info); init = 0) < total ||
+            break
+    end
+    return info
 end
 
 """

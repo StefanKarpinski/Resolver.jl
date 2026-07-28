@@ -69,43 +69,112 @@ function pkg_info(
     filter :: Bool = true,
 ) where {P,V}
     validate_pkg_data_consistency(data, reqs)
-    # compute interactions between packages
+    # conflict masks per distinct compat entry: for each partner q with a
+    # conflicting version, the bitmask of conflicting versions of q
+    MasksT = Dict{P, Vector{UInt64}}
+    function compute_masks(comp_pv)
+        masks = MasksT()
+        for (q, comp_pvq) in comp_pv
+            haskey(data, q) || continue # unreachable (weak dep)
+            vers = data[q].versions
+            mask = zeros(UInt64, (length(vers) + 63) >> 6)
+            found = false
+            for (j, w) in enumerate(vers)
+                w in comp_pvq && continue
+                mask[((j - 1) >> 6) + 1] |= UInt64(1) << ((j - 1) & 63)
+                found = true
+            end
+            found && (masks[q] = mask)
+        end
+        return masks
+    end
+
+    # compute interactions between packages, keeping each version's
+    # masks around for the bit-setting pass below. data providers share
+    # compat dicts across a package's versions, so each package has only
+    # a handful of distinct entries — a linear identity scan finds them
+    # far more cheaply than hashing every version's dict
+    vmasks = Dict{P, Vector{Tuple{V, MasksT}}}()
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
+    objs = Vector{Any}()
+    mvals = Vector{MasksT}()
     for (p, data_p) in data
         interacts_p = interacts[p]
+        vm = Tuple{V, MasksT}[]
+        empty!(objs)
+        empty!(mvals)
         for (v, comp_pv) in data_p.compat
-            # don't combine loops--it changes what continue does
-            for (q, comp_pvq) in comp_pv
-                # continue if q is unreachable (weak dep) or already processed
-                (q == p || q ∉ keys(data) || q in interacts_p) && continue
-                interacts_q = interacts[q]
-                for w in data[q].versions
-                    w in comp_pvq && continue
-                    push!(interacts_p, q)
-                    push!(interacts_q, p)
+            idx = 0
+            for ci = 1:length(objs)
+                if objs[ci] === comp_pv
+                    idx = ci
                     break
                 end
             end
+            if idx == 0
+                push!(objs, comp_pv)
+                push!(mvals, compute_masks(comp_pv))
+                idx = length(objs)
+            end
+            masks = mvals[idx]
+            isempty(masks) && continue
+            push!(vm, (v, masks))
+            for q in keys(masks)
+                (q == p || q in interacts_p) && continue
+                push!(interacts_p, q)
+                push!(interacts[q], p)
+            end
         end
+        isempty(vm) || (vmasks[p] = vm)
     end
     foreach(sort!, values(interacts))
 
     # construct dict of PkgInfo structs
     info = Dict{P,PkgInfo{P,V}}()
     for (p, data_p) in data
-        D = sort!(reduce(union!, values(data_p.depends), init=P[]))
+        # union the version's dependency sets; they are shared objects
+        # (provider deduplication), so skip repeats by identity first
+        empty!(objs)
+        for dv in values(data_p.depends)
+            repeat = false
+            for o in objs
+                if o === dv
+                    repeat = true
+                    break
+                end
+            end
+            repeat || push!(objs, dv)
+        end
+        D = P[]
+        for dv in objs
+            for q in dv
+                push!(D, q)
+            end
+        end
+        D = sort!(unique!(D))
         T = Dict{P,Int}(p => 0 for p in interacts[p])
         n = length(D)
         for q in interacts[p]
             T[q] = n
             n += length(data[q].versions)
         end
-        # conflicts matrix (m + 1) × (n + 1)
+        # conflicts matrix: n+1 columns of padded_rows(m) bits each — rows
+        # 1:m are versions, row m+1 holds column-active flags, the rest is
+        # word-alignment padding (always zero); column n+1 holds the
+        # version-active flags
         m = length(data_p.versions)
-        X = falses(m + 1, n + 1)
-        # mark all versions as active
+        X = falses(padded_rows(m), n + 1)
+        # mark all versions & columns as active; the column flags live at
+        # a fixed bit of each column's chunk span, so set them directly
+        # rather than through one strided BitArray write per column
         X[1:m, end] .= true
-        X[end, 1:n] .= true
+        W = col_words(X)
+        wf = (m >> 6) + 1
+        bf = UInt64(1) << (m & 63)
+        ch = X.chunks
+        @inbounds for j = 1:n
+            ch[(j - 1) * W + wf] |= bf
+        end
         # add the PkgInfo struct to dict
         info[p] = PkgInfo{P,V}(data_p.versions, D, T, X)
     end
@@ -125,18 +194,33 @@ function pkg_info(
             end
         end
         # set compatibility bits
-        for (v, comp_pv) in data_p.compat
+        for (v, masks) in get(vmasks, p, Tuple{V, MasksT}[])
             i = V⁻¹[v]
-            for (q, comp_pvq) in comp_pv
-                haskey(info_p.interacts, q) || continue
+            for (q, mask) in masks
+                q == p && continue
                 info_q = info[q]
                 Y = info_q.conflicts
                 b = info_p.interacts[q]
                 c = info_q.interacts[p]
-                for (j, w) in enumerate(info_q.versions)
-                    w in comp_pvq && continue
-                    X[i, b + j] = true
-                    Y[j, c + i] = true
+                # partner-side column is contiguous: blit the mask
+                ybase = (c + i - 1) * col_words(Y)
+                @inbounds for w = 1:length(mask)
+                    Y.chunks[ybase + w] |= mask[w]
+                end
+                # own-side row: one bit per conflicting partner version,
+                # written straight into the chunks (the row bit sits at a
+                # fixed offset of each column's span)
+                Wx = col_words(X)
+                wx = ((i - 1) >> 6) + 1
+                bx = UInt64(1) << ((i - 1) & 63)
+                xch = X.chunks
+                @inbounds for w = 1:length(mask)
+                    z = mask[w]
+                    while !iszero(z)
+                        j = ((w - 1) << 6) + trailing_zeros(z) + 1
+                        xch[(b + j - 1) * Wx + wx] |= bx
+                        z &= z - 1
+                    end
                 end
             end
         end

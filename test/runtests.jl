@@ -166,6 +166,36 @@ using Resolver: PkgData
     @test_throws ArgumentError("Required package MissingReq is not available in the package data") resolve(data, [:MissingReq])
 end
 
+using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file
+@testset "pkg info files" begin
+    # roundtrip with String package names & integer versions
+    sdata = Dict(
+        "A" => PkgData([2, 1], Dict(2 => ["B"], 1 => ["B"]),
+                       Dict(2 => Dict("B" => [1]))),
+        "B" => PkgData([2, 1], Dict{Int,Vector{String}}(),
+                       Dict{Int,Dict{String,Vector{Int}}}()),
+    )
+    for filter in (false, true)
+        info = pkg_info(sdata, ["A"]; filter)
+        path = save_pkg_info_file(info)
+        @test load_pkg_info_file(path) == info
+        rm(path)
+    end
+    # roundtrip with Symbol package names & Symbol versions
+    ydata = Dict(
+        :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]),
+                      Dict(:v2 => Dict(:B => [:v1]))),
+        :B => PkgData([:v2, :v1], Dict{Symbol,Vector{Symbol}}(),
+                      Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()),
+    )
+    for filter in (false, true)
+        info = pkg_info(ydata, [:A]; filter)
+        path = save_pkg_info_file(info)
+        @test load_pkg_info_file(path) == info
+        rm(path)
+    end
+end
+
 @testset "registry resolve" begin
     rp = registry.provider()
     test_resolver(rp, ["JSON"])

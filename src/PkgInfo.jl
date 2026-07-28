@@ -164,9 +164,17 @@ function pkg_info(
         # version-active flags
         m = length(data_p.versions)
         X = falses(padded_rows(m), n + 1)
-        # mark all versions & columns as active
+        # mark all versions & columns as active; the column flags live at
+        # a fixed bit of each column's chunk span, so set them directly
+        # rather than through one strided BitArray write per column
         X[1:m, end] .= true
-        X[m+1, 1:n] .= true
+        W = col_words(X)
+        wf = (m >> 6) + 1
+        bf = UInt64(1) << (m & 63)
+        ch = X.chunks
+        @inbounds for j = 1:n
+            ch[(j - 1) * W + wf] |= bf
+        end
         # add the PkgInfo struct to dict
         info[p] = PkgInfo{P,V}(data_p.versions, D, T, X)
     end
@@ -199,11 +207,18 @@ function pkg_info(
                 @inbounds for w = 1:length(mask)
                     Y.chunks[ybase + w] |= mask[w]
                 end
-                # own-side row: one bit per conflicting partner version
+                # own-side row: one bit per conflicting partner version,
+                # written straight into the chunks (the row bit sits at a
+                # fixed offset of each column's span)
+                Wx = col_words(X)
+                wx = ((i - 1) >> 6) + 1
+                bx = UInt64(1) << ((i - 1) & 63)
+                xch = X.chunks
                 @inbounds for w = 1:length(mask)
                     z = mask[w]
                     while !iszero(z)
-                        X[i, b + ((w - 1) << 6) + trailing_zeros(z) + 1] = true
+                        j = ((w - 1) << 6) + trailing_zeros(z) + 1
+                        xch[(b + j - 1) * Wx + wx] |= bx
                         z &= z - 1
                     end
                 end

@@ -258,4 +258,6 @@ end
     @test success(`$julia --project=$project $tests`)
 end
 
+include("diagnose.jl")
+
 include("workspaces.jl")

@@ -217,15 +217,17 @@ function mark_necessary!(
             end
         end
     end
-    # cheapest packages first; stable sort breaks ties by name
-    order = sort!(collect(1:N), by = p -> length(partners[p]))
+    # process every package once, cheapest first (stable sort breaks ties
+    # by name); packages woken by a partner's deletions are appended to
+    # the queue unless already pending
+    queue = sort!(collect(1:N), by = p -> length(partners[p]))
     inwork = trues(N)
-    nwork = N
-    for p in Iterators.cycle(order)
-        nwork == 0 && break
+    head = 1
+    while head ≤ length(queue)
+        p = queue[head]
+        head += 1
         inwork[p] || continue
         inwork[p] = false
-        nwork -= 1
         # get conflicts & dimensions
         info_p = infos[p]
         X = info_p.conflicts
@@ -308,7 +310,7 @@ function mark_necessary!(
             infos[q].conflicts[nvers[q] + 1, c .+ R] .= false
             if !inwork[q] # can create new redundancies
                 inwork[q] = true
-                nwork += 1
+                push!(queue, q)
             end
         end
     end

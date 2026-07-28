@@ -25,6 +25,25 @@ _compat_names(c::AbstractDict{<:AbstractString}, reg) = c
 _compat_names(c::AbstractDict{Base.UUID}, reg) =
     Dict(reg.pkgs[u].name => s for (u, s) in c if haskey(reg.pkgs, u))
 
+# share one object among equal-valued entries; there are only a few
+# distinct values per package, so scanning them beats comparing all pairs
+function dedup_values!(d::AbstractDict, vers::Vector)
+    distinct = valtype(d)[]
+    for v in vers
+        x = d[v]
+        shared = false
+        for y in distinct
+            if y == x
+                d[v] = y
+                shared = true
+                break
+            end
+        end
+        shared || push!(distinct, x)
+    end
+    return d
+end
+
 function provider(
     reg_path :: AbstractString = REG_PATH;
     excludes :: AbstractSet{<:AbstractString} = EXCLUDES,
@@ -64,11 +83,8 @@ function provider(
             delete!(c, x)
         end
         # deduplicate data structures to save some memory
-        for i = 1:length(vers)-1, j = i+1:length(vers)
-            v, w = vers[i], vers[j]
-            deps[v] == deps[w] && (deps[v] = deps[w])
-            comp[v] == comp[w] && (comp[v] = comp[w])
-        end
+        dedup_values!(deps, vers)
+        dedup_values!(comp, vers)
         # return resolver PkgData structure
         PkgData(vers, deps, comp)
     end

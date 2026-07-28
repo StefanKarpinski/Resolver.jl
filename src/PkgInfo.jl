@@ -100,12 +100,15 @@ function pkg_info(
             T[q] = n
             n += length(data[q].versions)
         end
-        # conflicts matrix (m + 1) × (n + 1)
+        # conflicts matrix: n+1 columns of padded_rows(m) bits each — rows
+        # 1:m are versions, row m+1 holds column-active flags, the rest is
+        # word-alignment padding (always zero); column n+1 holds the
+        # version-active flags
         m = length(data_p.versions)
-        X = falses(m + 1, n + 1)
-        # mark all versions as active
+        X = falses(padded_rows(m), n + 1)
+        # mark all versions & columns as active
         X[1:m, end] .= true
-        X[end, 1:n] .= true
+        X[m+1, 1:n] .= true
         # add the PkgInfo struct to dict
         info[p] = PkgInfo{P,V}(data_p.versions, D, T, X)
     end

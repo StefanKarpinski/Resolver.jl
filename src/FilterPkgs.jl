@@ -39,14 +39,12 @@ function find_reachable(
         get(reach, p, 0) > i && return false
         get(queue, p, 0) > i && return false
         info_p = info[p]
-        n = length(info_p.versions)
-        for j = i+1:n
-            info_p.conflicts[j, end] || continue # inactive
-            queue[p] = j
-            return true
-        end
-        # we're out of versions (i.e. saturated; see below)
-        queue[p] = n+1
+        m = length(info_p.versions)
+        X = info_p.conflicts
+        # first active version after i (the flag column is the active set)
+        j = col_min_from(X, size(X, 2), i + 1, m)
+        # j == 0: we're out of versions (i.e. saturated; see below)
+        queue[p] = j == 0 ? m + 1 : j
         return true
     end
 
@@ -95,14 +93,19 @@ function find_reachable(
                     next(p, j)
                 end
             end
-            # find all p@j's conflicts
-            for (q, b) in info_p.interacts
-                for k = 1:min(get(reach, q, 0), length(info[q].versions))
-                    info_p.conflicts[j, b+k] || continue
-                    # p@j conflicts with q@k
-                    next(p, j)
-                    next(q, k)
-                end
+            # find p@j's conflicts with reached versions of each partner:
+            # conflicts are stored symmetrically, so scan the partner-side
+            # column Y[k, c+j] == X[j, b+k], which is contiguous
+            for q in keys(info_p.interacts)
+                r = min(get(reach, q, 0), length(info[q].versions))
+                r > 0 || continue
+                info_q = info[q]
+                k = col_max_upto(info_q.conflicts, info_q.interacts[p] + j, r)
+                k == 0 && continue
+                # p@j conflicts with q@k (the highest such k; pushing past
+                # it subsumes pushing past any lower conflicting version)
+                next(p, j)
+                next(q, k)
             end
         end
         # update the reach map
@@ -118,7 +121,7 @@ function mark_reachable!(
 ) where {P,V}
     reach = find_reachable(info, reqs)
     for (p, info_p) in info
-        r = get(reach, p, 0)
+        r = min(get(reach, p, 0), length(info_p.versions))
         info_p.conflicts[1:r, end] .= true
         info_p.conflicts[r+1:end, end] .= false
     end
@@ -130,65 +133,121 @@ function mark_necessary!(
 ) where {P,V}
     work = copy(keys(info))
     names = sort!(collect(work))
+    # some work buffers
+    A = UInt64[]        # active version mask
+    C = UInt64[]        # domination candidates mask
+    J = Int[]           # active versions vector
+    R = Int[]           # redundant indices vector
+    cols = Vector{Int}[] # per-version active constraint columns
     # initialize active column flags
     for (p, info_p) in info
         X = info_p.conflicts
-        m = size(X, 1)-1
-        n = size(X, 2)-1
+        m = length(info_p.versions)
+        n = size(X, 2) - 1
+        resize!(A, col_words(X))
+        col_copy!(A, X, n + 1)
+        clear_rows_above!(A, m)
         for j = 1:n
             # we don't have to look at columns that have no
             # conflicts for any active versions of package
-            X[end, j] = any(X[i, j] for i = 1:m if X[i, end])
+            X[m+1, j] = col_intersects(X, j, A)
         end
         # conflict columns for inactive partner versions are also
         # irrelevant: no model over the active versions can include
         # the partner, so the conflict cannot constrain anything
         for (q, b) in info_p.interacts
             Y = info[q].conflicts
-            for k = 1:size(Y, 1)-1
-                X[end, b+k] &= Y[k, end]
+            for k = 1:length(info[q].versions)
+                X[m+1, b+k] &= Y[k, end]
             end
         end
     end
-    # some work vectors
-    J = Int[] # active versions vector
-    K = Int[] # active conflicts vector
-    R = Int[] # redundant indices vector
     sort!(names, by = p -> length(info[p].interacts))
     for p in Iterators.cycle(names)
         isempty(work) && break
         p in work || continue
         delete!(work, p)
         # get conflicts & dimensions
-        X = info[p].conflicts
-        m = size(X, 1) - 1
+        info_p = info[p]
+        X = info_p.conflicts
+        m = length(info_p.versions)
         m > 1 || continue # unique version cannot be redundant
         n = size(X, 2) - 1
-        # active indices
-        append!(empty!(J), (j for j = 1:m if X[j, end]))
+        W = col_words(X)
+        # active version mask & indices
+        resize!(A, W)
+        col_copy!(A, X, n + 1)
+        clear_rows_above!(A, m)
+        empty!(J)
+        @inbounds for w = 1:W
+            c = A[w]
+            while !iszero(c)
+                push!(J, ((w - 1) << 6) + trailing_zeros(c) + 1)
+                c &= c - 1
+            end
+        end
         length(J) > 1 || continue # unique version cannot be redundant
-        append!(empty!(K), (k for k = 1:n if X[end, k]))
-        # find redundant versions
-        empty!(R)
+        # collect every active version's active constraint columns in one
+        # sweep over the columns, each of which is a contiguous bit span
+        while length(cols) < m
+            push!(cols, Int[])
+        end
         for j in J
-            # don't combine loops--it changes what break & continue do
-            for i in J
-                i < j || break
-                i ∈ R && continue
-                all(!X[i, k] | X[j, k] for k in K) || continue
-                # an earlier version is strictly more compatible
-                # i.e. i < j and X[i, k] => X[j, k] for all k
-                # therefore i will always be chosen instead of j
-                push!(R, j)
+            empty!(cols[j])
+        end
+        for k = 1:n
+            X[m+1, k] || continue # inactive column
+            base = (k - 1) * W
+            @inbounds for w = 1:W
+                c = X.chunks[base + w] & A[w]
+                while !iszero(c)
+                    i = ((w - 1) << 6) + trailing_zeros(c) + 1
+                    push!(cols[i], k)
+                    c &= c - 1
+                end
+            end
+        end
+        # find redundant versions: i < j and X[i, k] => X[j, k] for all
+        # active k means an earlier version is strictly more compatible,
+        # therefore i will always be chosen instead of j. the candidates
+        # dominated by i are the active versions worse than i that have a
+        # constraint in every column i does — the word-parallel
+        # intersection of i's constraint columns
+        empty!(R)
+        resize!(C, W)
+        for i in J
+            getbit(A, i) || continue # dominated versions can't dominate
+            copyto!(C, A)
+            clear_rows_upto!(C, i)
+            live = false
+            @inbounds for w = 1:W
+                live |= !iszero(C[w])
+            end
+            live || continue
+            ok = true
+            for k in cols[i]
+                col_and!(C, X, k) && continue
+                ok = false
                 break
+            end
+            ok || continue
+            # remove dominated versions from the active set & record them
+            @inbounds for w = 1:W
+                c = C[w]
+                while !iszero(c)
+                    push!(R, ((w - 1) << 6) + trailing_zeros(c) + 1)
+                    c &= c - 1
+                end
+                A[w] &= ~C[w]
             end
         end
         isempty(R) && continue
+        sort!(R)
         # deactivate redundant versions
         X[R, end] .= false
-        for q in keys(info[p].interacts)
+        for q in keys(info_p.interacts)
             b = info[q].interacts[p]
-            info[q].conflicts[end, b .+ R] .= false
+            info[q].conflicts[length(info[q].versions) + 1, b .+ R] .= false
             push!(work, q) # can create new redundancies
         end
     end
@@ -198,25 +257,26 @@ function drop_unmarked!(
     info′ :: Dict{P, <: PkgInfo{P}},
     info  :: Dict{P, <: PkgInfo{P}} = info′,
 ) where {P}
-    # info[p].conflicts[:, end] bits definitive (row flags)
-    # info[p].conflicts[end, :] bits made to match (column flags)
+    # info[p].conflicts version-flag column bits definitive
+    # info[p].conflicts column-flag row bits made to match
     for (p, info_p) in info
         X = info_p.conflicts
-        X[end, :] .= false
+        m = length(info_p.versions)
+        X[m+1, :] .= false
         # dependency column is active if:
         # - some active version has that dependency
-        for i = 1:size(X,1)-1
+        for i = 1:m
             X[i, end] || continue # skip inactive versions
             for (k, q) in enumerate(info_p.depends)
-                X[end, k] |= X[i, k]
+                X[m+1, k] |= X[i, k]
             end
         end
         # conflict column is active if:
         # - the conflicting version is active
         for (q, b) in info_p.interacts
             Y = info[q].conflicts
-            for j = 1:size(Y,1)-1
-                X[end, b + j] = Y[j, end]
+            for j = 1:length(info[q].versions)
+                X[m+1, b + j] = Y[j, end]
             end
         end
     end
@@ -232,9 +292,11 @@ function drop_unmarked!(
         D = info_p.depends
         T = info_p.interacts
         X = info_p.conflicts
-        # active version masks
-        I = X[1:end-1, end]
-        K = X[end, 1:end-1]
+        m = length(V)
+        n = size(X, 2) - 1
+        # active version & column masks
+        I = X[1:m, end]
+        K = X[m+1, 1:n]
         # delete if no active versions
         if !any(I)
             delete!(info′, p)
@@ -263,9 +325,20 @@ function drop_unmarked!(
                 b′ += n′
             end
         end
-        X′ = X[[I; true], [K; true]]
-        @assert size(X′, 1) == length(V′) + 1
-        @assert size(X′, 2) == b′ + 1
+        m′ = length(V′)
+        X′ = falses(padded_rows(m′), b′ + 1)
+        rows = findall(I)
+        j′ = 0
+        for j = 1:n
+            K[j] || continue
+            j′ += 1
+            for (i′, i) in enumerate(rows)
+                X′[i′, j′] = X[i, j]
+            end
+        end
+        @assert j′ == b′
+        X′[1:m′, end] .= true  # kept versions are active
+        X′[m′+1, 1:b′] .= true # kept columns are active
         # assign new struct into info′
         info′[p] = PkgInfo(V′, D′, T′, X′)
     end
@@ -293,7 +366,7 @@ function drop_excluded!(
             X = info_p.conflicts
             for (k, q) in enumerate(info_p.depends)
                 Y = info[q].conflicts
-                any(Y[i, end] for i=1:size(Y,1)-1) && continue
+                any(Y[i, end] for i = 1:length(info[q].versions)) && continue
                 # no active versions of q, delete p@i that depend on it
                 for i = 1:length(info_p.versions)
                     info_p.conflicts[i, end] || continue

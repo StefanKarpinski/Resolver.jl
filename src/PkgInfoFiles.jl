@@ -42,7 +42,7 @@ function load_pkg_info_file(
             versions  = read_vals(io, V)
             depends   = read_vals(io, pv)
             interacts = read_vals(io, pv)
-            conflicts = read_bits(io, length(versions) + 1)
+            conflicts = read_bits(io, padded_rows(length(versions)))
             interacts = Dict{P, Int}(q => 0 for q in interacts)
             info[p] = PkgInfo(versions, depends, interacts, conflicts)
         end
@@ -60,7 +60,7 @@ end
 
 ## bespoke de/serialization functions ##
 
-const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v1\0"
+const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v2\0"
 
 function write_magic(io::IO)
     write(io, magic)

@@ -233,6 +233,72 @@ reach-filtered problem), so by Theorem 4 again the fully filtered problem
 has the same layered answer. **The implementation's answer is the raw
 layered solution.**
 
+## Iterating the filter
+
+The filter runs reachability once and redundancy elimination once, in
+that order. It is natural to ask whether iterating the two passes would
+prune more — and the answer illuminates what each pass can and cannot
+see.
+
+Reachability alone is a closure operation:
+
+!!! note "Proposition (reachability is idempotent)"
+    Re-running reachability on its own output keeps everything.
+
+    *Proof.* The reach set is a least fixpoint, built by a derivation
+    whose steps mention only versions that end up kept: requirements'
+    first versions, first versions of kept dependencies, and
+    conflict/saturation extensions among reachable versions. Reachability
+    deletes only version *suffixes* and whole packages, none of which
+    appear in any derivation step, so the entire derivation replays on
+    the filtered problem and re-derives every kept version. ∎
+
+The composite filter, however, is **not** idempotent: redundancy
+elimination can invalidate reachability's reasons. A minimal example:
+
+!!! note "Example (redundancy changes reachability)"
+    Take requirements ``\{p, q, r\}`` with two versions of each of ``p``,
+    ``q``, ``r``, one version of ``s``, the single dependency
+    ``p@1 \to \{s\}`` (``p@2`` depends on nothing), and conflicts
+    ``q@1 \otimes r@1``, ``q@2 \otimes r@1``, ``q@2 \otimes p@1``.
+
+    Reachability: ``q@1 \otimes r@1`` extends both packages, making
+    ``q@2`` reachable; then ``q@2 \otimes p@1`` extends ``p``, so ``p@2``
+    is kept — that conflict is ``p@2``'s *only* justification.
+    Redundancy: ``q@2``'s constraints strictly contain ``q@1``'s, so
+    ``q@2`` is deleted. But the now-orphaned ``p@2`` survives: domination
+    by ``p@1`` fails because ``p@1``'s dependency on ``s`` has no
+    counterpart in ``p@2``. Re-running reachability on the filtered
+    problem would drop ``p@2``, whose reason to exist is gone.
+
+The general shape is: a deleted version was another package's only
+reason to degrade, and the orphaned version escapes the domination test.
+Two things can shield an orphan. One is a dependency-set difference
+between it and its better sibling, as above — version-varying dependency
+sets again, the same dividing line as the
+[fragment lemma](front.md#Why-the-filter-cannot-serve-the-front).
+The other is saturation: saturation pushes are dependency-driven and
+invisible to the domination test, and deleting versions can unsaturate a
+package on a re-run, vaporizing the pushes that justified its
+dependents' worse versions.
+
+(A note on the domination test: it ignores conflicts whose partner
+version was itself dropped by reachability — such conflicts constrain no
+model over the kept versions, so ignoring them is licensed by exactly
+the swap argument of Theorem 6. Counting them would spuriously block
+domination and orphan far more versions than the two genuine mechanisms
+above.)
+
+None of this threatens correctness. By Theorem 4, *any* number of
+additional passes preserves the layered answer, so iterating the filter
+to a mutual fixpoint would be perfectly legal. It just isn't worth it:
+in deliberately conflict-dense random instances a second pass prunes
+anything at all in only about 0.007% of cases with version-independent
+dependencies and about 1% with version-varying ones — and what it prunes
+is marginal — while real registry problems are far sparser. Essentially
+all of the reduction is captured by running reachability once and
+redundancy elimination once, in that order.
+
 !!! warning "Formalization boundary"
     Theorems 2, 3, 5, and 6 are proved against the rule set as stated
     above, which is a faithful but hand-made reading of `find_reachable`

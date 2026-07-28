@@ -6,7 +6,7 @@ makedocs(
     modules = [Resolver],
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
-        canonical = "https://stefankarpinski.github.io/Resolver.jl",
+        canonical = "https://karpinski.org/Resolver.jl",
     ),
     pages = [
         "Home" => "index.md",

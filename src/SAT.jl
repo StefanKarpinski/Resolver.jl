@@ -39,6 +39,10 @@ function SAT(
     pico = PicoSAT.init() # TODO: use jl_malloc?
     try # free memory on error
         PicoSAT.adjust(pico, N)
+        # default unconstrained variables to false: models then carry
+        # fewer spuriously-true packages ("junk"), which makes solves
+        # faster and improvement steps land on better versions
+        PicoSAT.set_global_default_phase(pico, 0)
 
         # generate SAT problem
         for p in names
@@ -199,6 +203,16 @@ function optimize_version!(
     sol :: Dict{P,Int},
     p   :: P,
 ) where {P}
+    # cheap first try: after filtering, the best version is feasible more
+    # often than not, and probing it by assumption needs no temp clauses
+    # at all — one solve replaces the whole improvement loop
+    if sol[p] > 1
+        sat_assume(sat, p, 1)
+        if is_satisfiable(sat)
+            extract_solution!(sat, sol)
+            @assert sol[p] == 1
+        end
+    end
     # sol[p] == 1 is already optimal: the improvement clause below would be
     # empty, forcing a guaranteed-UNSAT solve
     while sol[p] > 1

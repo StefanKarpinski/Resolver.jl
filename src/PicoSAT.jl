@@ -18,6 +18,9 @@ add(p::Ptr{Cvoid}, v::Integer) =
     ccall((:picosat_add, lib), Cint, (Ptr{Cvoid}, Cint), p, v)
 assume(p::Ptr{Cvoid}, v::Integer) =
     ccall((:picosat_assume, lib), Cint, (Ptr{Cvoid}, Cint), p, v)
+set_global_default_phase(p::Ptr{Cvoid}, phase::Integer) =
+    ccall((:picosat_set_global_default_phase, lib), Cvoid,
+          (Ptr{Cvoid}, Cint), p, phase)
 sat(p::Ptr{Cvoid}, limit::Integer = -1) =
     ccall((:picosat_sat, lib), Cint, (Ptr{Cvoid}, Cint), p, limit)
 deref(p::Ptr{Cvoid}, v::Integer) =

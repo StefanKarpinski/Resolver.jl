@@ -24,18 +24,6 @@ function col_copy!(buf::Vector{UInt64}, X::BitMatrix, j::Int)
     return buf
 end
 
-# buf .&= column j of X; returns true if buf has any set bit left
-function col_and!(buf::Vector{UInt64}, X::BitMatrix, j::Int)
-    W = col_words(X)
-    base = (j - 1) * W
-    chunks = X.chunks
-    live = UInt64(0)
-    @inbounds for w = 1:W
-        live |= (buf[w] &= chunks[base + w])
-    end
-    return !iszero(live)
-end
-
 # does column j of X intersect the row set in buf?
 function col_intersects(X::BitMatrix, j::Int, buf::Vector{UInt64})
     W = col_words(X)
@@ -45,20 +33,6 @@ function col_intersects(X::BitMatrix, j::Int, buf::Vector{UInt64})
         iszero(chunks[base + w] & buf[w]) || return true
     end
     return false
-end
-
-# clear the bits of buf corresponding to rows 1:i
-function clear_rows_upto!(buf::Vector{UInt64}, i::Int)
-    i ≤ 0 && return buf
-    wt = i >> 6
-    @inbounds for w = 1:min(wt, length(buf))
-        buf[w] = 0
-    end
-    r = i & 63
-    if r != 0 && wt < length(buf)
-        @inbounds buf[wt + 1] &= ~((UInt64(1) << r) - 1)
-    end
-    return buf
 end
 
 # clear the bits of buf corresponding to rows above m (flag row & padding)
@@ -74,9 +48,30 @@ function clear_rows_above!(buf::Vector{UInt64}, m::Int)
     return buf
 end
 
-# is row i's bit set in buf?
-getbit(buf::Vector{UInt64}, i::Int) =
-    !iszero(buf[((i - 1) >> 6) + 1] & (UInt64(1) << ((i - 1) & 63)))
+# copy len bits from the (word-aligned) column j of X into dest,
+# starting at 0-based bit offset off
+function copy_col_bits!(dest::Vector{UInt64}, off::Int, X::BitMatrix, j::Int, len::Int)
+    W = col_words(X)
+    base = (j - 1) * W
+    src = X.chunks
+    wd = (off >> 6) + 1
+    sh = off & 63
+    s = 0
+    @inbounds while len > 0
+        s += 1
+        take = min(64, len)
+        mask = take == 64 ? ~UInt64(0) : (UInt64(1) << take) - 1
+        chunk = src[base + s] & mask
+        dest[wd] = (dest[wd] & ~(mask << sh)) | (chunk << sh)
+        hi = 64 - sh
+        if sh != 0 && take > hi
+            dest[wd + 1] = (dest[wd + 1] & ~(mask >> hi)) | (chunk >> hi)
+        end
+        len -= take
+        wd += 1
+    end
+    return dest
+end
 
 # highest set row ≤ hi in column j of X, or 0 if none
 function col_max_upto(X::BitMatrix, j::Int, hi::Int)

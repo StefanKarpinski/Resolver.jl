@@ -337,35 +337,41 @@ function drop_unmarked!(
     info′ :: Dict{P, <: PkgInfo{P}},
     info  :: Dict{P, <: PkgInfo{P}} = info′,
 ) where {P}
-    # info[p].conflicts version-flag column bits definitive
-    # info[p].conflicts column-flag row bits made to match
+    # first pass: per package, compute the kept versions and kept columns
+    # from the (definitive) version flags — all of it before any package
+    # is rebuilt, since kept columns are read off the partners' matrices
+    masks = Dict{P, Tuple{BitVector, BitVector}}()
+    A = UInt64[] # active version mask buffer
     for (p, info_p) in info
         X = info_p.conflicts
         m = length(info_p.versions)
-        X[m+1, :] .= false
-        # dependency column is active if:
-        # - some active version has that dependency
-        for i = 1:m
-            X[i, end] || continue # skip inactive versions
-            for (k, q) in enumerate(info_p.depends)
-                X[m+1, k] |= X[i, k]
-            end
+        n = size(X, 2) - 1
+        W = col_words(X)
+        # active versions
+        I = X[1:m, end]
+        resize!(A, W)
+        col_copy!(A, X, n + 1)
+        clear_rows_above!(A, m)
+        # kept columns: dependency columns some active version depends
+        # on, and conflict columns of active partner versions — a
+        # partner's column block must stay aligned with its version list,
+        # so kept partner versions keep their columns even if empty
+        K = falses(n)
+        for k = 1:length(info_p.depends)
+            K[k] = col_intersects(X, k, A)
         end
-        # conflict column is active if:
-        # - the conflicting version is active
         for (q, b) in info_p.interacts
             Y = info[q].conflicts
-            for j = 1:length(info[q].versions)
-                X[m+1, b + j] = Y[j, end]
-            end
+            copy_col_bits!(K.chunks, b, Y, size(Y, 2), length(info[q].versions))
         end
+        masks[p] = (I, K)
     end
     # save original version counts (needed if info′ === info)
     N = Dict{P,Int}(
         p => length(info_p.versions)
         for (p, info_p) in info
     )
-    # go through again and shrink each PkgInfo
+    # second pass: shrink each PkgInfo
     for (p, info_p) in info
         # abbreviate components
         V = info_p.versions
@@ -374,16 +380,18 @@ function drop_unmarked!(
         X = info_p.conflicts
         m = length(V)
         n = size(X, 2) - 1
-        # active version & column masks
-        I = X[1:m, end]
-        K = X[m+1, 1:n]
+        W = col_words(X)
+        I, K = masks[p]
+        m′ = count(I)
         # delete if no active versions
-        if !any(I)
+        if m′ == 0
             delete!(info′, p)
             continue
         end
-        # copy if everything is active
-        if all(I) && all(K)
+        # keep as is if everything is active (with the column flags
+        # normalized, as rebuilding would leave them)
+        if m′ == m && all(K)
+            X[m+1, 1:n] .= true
             if info !== info′
                 V′ = copy(V)
                 D′ = copy(D)
@@ -405,15 +413,52 @@ function drop_unmarked!(
                 b′ += n′
             end
         end
-        m′ = length(V′)
-        X′ = falses(padded_rows(m′), b′ + 1)
-        rows = findall(I)
+        R′ = padded_rows(m′)
+        W′ = R′ >> 6
+        X′ = falses(R′, b′ + 1)
+        src = X.chunks
+        dst = X′.chunks
+        # kept-version mask words for the gather below
+        resize!(A, W)
+        col_copy!(A, X, n + 1)
+        clear_rows_above!(A, m)
+        prefix = findlast(I) == m′ # kept versions are 1:m′
         j′ = 0
         for j = 1:n
             K[j] || continue
             j′ += 1
-            for (i′, i) in enumerate(rows)
-                X′[i′, j′] = X[i, j]
+            sb = (j - 1) * W
+            db = (j′ - 1) * W′
+            if prefix
+                # kept versions are a prefix: straight word copy
+                nw = (m′ + 63) >> 6
+                @inbounds for w = 1:nw
+                    dst[db + w] = src[sb + w]
+                end
+                r = m′ & 63
+                r != 0 && @inbounds (dst[db + nw] &= (UInt64(1) << r) - 1)
+            else
+                # gather the kept versions' bits
+                acc = UInt64(0)
+                na = 0
+                dw = db + 1
+                @inbounds for w = 1:W
+                    avail = A[w]
+                    iszero(avail) && continue
+                    v = src[sb + w]
+                    while !iszero(avail)
+                        acc |= ((v >> trailing_zeros(avail)) & 1) << na
+                        avail &= avail - 1
+                        na += 1
+                        if na == 64
+                            dst[dw] = acc
+                            dw += 1
+                            acc = UInt64(0)
+                            na = 0
+                        end
+                    end
+                end
+                na > 0 && @inbounds (dst[dw] = acc)
             end
         end
         @assert j′ == b′

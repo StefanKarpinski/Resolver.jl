@@ -69,22 +69,39 @@ function pkg_info(
     filter :: Bool = true,
 ) where {P,V}
     validate_pkg_data_consistency(data, reqs)
+    # conflict masks per distinct compat entry: for each partner q with a
+    # conflicting version, the bitmask of conflicting versions of q. data
+    # providers commonly share compat dicts across versions, so each
+    # distinct entry is scanned against the partners' versions only once
+    memo = IdDict{Any, Dict{P, Vector{UInt64}}}()
+    function conflict_masks(comp_pv)
+        get!(memo, comp_pv) do
+            masks = Dict{P, Vector{UInt64}}()
+            for (q, comp_pvq) in comp_pv
+                haskey(data, q) || continue # unreachable (weak dep)
+                vers = data[q].versions
+                mask = zeros(UInt64, (length(vers) + 63) >> 6)
+                found = false
+                for (j, w) in enumerate(vers)
+                    w in comp_pvq && continue
+                    mask[((j - 1) >> 6) + 1] |= UInt64(1) << ((j - 1) & 63)
+                    found = true
+                end
+                found && (masks[q] = mask)
+            end
+            masks
+        end
+    end
+
     # compute interactions between packages
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
     for (p, data_p) in data
         interacts_p = interacts[p]
         for (v, comp_pv) in data_p.compat
-            # don't combine loops--it changes what continue does
-            for (q, comp_pvq) in comp_pv
-                # continue if q is unreachable (weak dep) or already processed
-                (q == p || q ∉ keys(data) || q in interacts_p) && continue
-                interacts_q = interacts[q]
-                for w in data[q].versions
-                    w in comp_pvq && continue
-                    push!(interacts_p, q)
-                    push!(interacts_q, p)
-                    break
-                end
+            for q in keys(conflict_masks(comp_pv))
+                (q == p || q in interacts_p) && continue
+                push!(interacts_p, q)
+                push!(interacts[q], p)
             end
         end
     end
@@ -130,16 +147,24 @@ function pkg_info(
         # set compatibility bits
         for (v, comp_pv) in data_p.compat
             i = V⁻¹[v]
-            for (q, comp_pvq) in comp_pv
-                haskey(info_p.interacts, q) || continue
+            for (q, mask) in conflict_masks(comp_pv)
+                q == p && continue
                 info_q = info[q]
                 Y = info_q.conflicts
                 b = info_p.interacts[q]
                 c = info_q.interacts[p]
-                for (j, w) in enumerate(info_q.versions)
-                    w in comp_pvq && continue
-                    X[i, b + j] = true
-                    Y[j, c + i] = true
+                # partner-side column is contiguous: blit the mask
+                ybase = (c + i - 1) * col_words(Y)
+                @inbounds for w = 1:length(mask)
+                    Y.chunks[ybase + w] |= mask[w]
+                end
+                # own-side row: one bit per conflicting partner version
+                @inbounds for w = 1:length(mask)
+                    z = mask[w]
+                    while !iszero(z)
+                        X[i, b + ((w - 1) << 6) + trailing_zeros(z) + 1] = true
+                        z &= z - 1
+                    end
                 end
             end
         end

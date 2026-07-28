@@ -70,39 +70,53 @@ function pkg_info(
 ) where {P,V}
     validate_pkg_data_consistency(data, reqs)
     # conflict masks per distinct compat entry: for each partner q with a
-    # conflicting version, the bitmask of conflicting versions of q. data
-    # providers commonly share compat dicts across versions, so each
-    # distinct entry is scanned against the partners' versions only once
-    memo = IdDict{Any, Dict{P, Vector{UInt64}}}()
-    function conflict_masks(comp_pv)
-        get!(memo, comp_pv) do
-            masks = Dict{P, Vector{UInt64}}()
-            for (q, comp_pvq) in comp_pv
-                haskey(data, q) || continue # unreachable (weak dep)
-                vers = data[q].versions
-                mask = zeros(UInt64, (length(vers) + 63) >> 6)
-                found = false
-                for (j, w) in enumerate(vers)
-                    w in comp_pvq && continue
-                    mask[((j - 1) >> 6) + 1] |= UInt64(1) << ((j - 1) & 63)
-                    found = true
-                end
-                found && (masks[q] = mask)
+    # conflicting version, the bitmask of conflicting versions of q
+    MasksT = Dict{P, Vector{UInt64}}
+    function compute_masks(comp_pv)
+        masks = MasksT()
+        for (q, comp_pvq) in comp_pv
+            haskey(data, q) || continue # unreachable (weak dep)
+            vers = data[q].versions
+            mask = zeros(UInt64, (length(vers) + 63) >> 6)
+            found = false
+            for (j, w) in enumerate(vers)
+                w in comp_pvq && continue
+                mask[((j - 1) >> 6) + 1] |= UInt64(1) << ((j - 1) & 63)
+                found = true
             end
-            masks
+            found && (masks[q] = mask)
         end
+        return masks
     end
 
     # compute interactions between packages, keeping each version's
-    # masks around for the bit-setting pass below
-    MasksT = Dict{P, Vector{UInt64}}
+    # masks around for the bit-setting pass below. data providers share
+    # compat dicts across a package's versions, so each package has only
+    # a handful of distinct entries — a linear identity scan finds them
+    # far more cheaply than hashing every version's dict
     vmasks = Dict{P, Vector{Tuple{V, MasksT}}}()
     interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
+    objs = Vector{Any}()
+    mvals = Vector{MasksT}()
     for (p, data_p) in data
         interacts_p = interacts[p]
         vm = Tuple{V, MasksT}[]
+        empty!(objs)
+        empty!(mvals)
         for (v, comp_pv) in data_p.compat
-            masks = conflict_masks(comp_pv)
+            idx = 0
+            for ci = 1:length(objs)
+                if objs[ci] === comp_pv
+                    idx = ci
+                    break
+                end
+            end
+            if idx == 0
+                push!(objs, comp_pv)
+                push!(mvals, compute_masks(comp_pv))
+                idx = length(objs)
+            end
+            masks = mvals[idx]
             isempty(masks) && continue
             push!(vm, (v, masks))
             for q in keys(masks)

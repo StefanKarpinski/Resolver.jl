@@ -29,7 +29,7 @@ Resolver.jl separates *what* to optimize from *how* to solve, handing the solvin
     - a version's dependencies must be present, and
     - conflicting versions cannot both be chosen.
 - Before solving, the problem is shrunk by **reachability analysis** (keeping only versions that could appear in a solution) and **redundancy elimination** (dropping versions that are strictly dominated by others).
-- Solutions are optimized **lexicographically, one package at a time**, against a caller-supplied preference order — so the resolver can enumerate multiple **Pareto-optimal** resolutions, where none is strictly better than another.
+- The solution is optimized **lexicographically, one package at a time**, against a caller-supplied priority order — the resolver returns the unique optimal resolution that order determines (`nothing` if the requirements are unsatisfiable), and it is **Pareto-optimal**: no valid resolution is strictly better.
 - Because the preference order is supplied per package, different strategies — newest, oldest/downgrade, prefer-installed, keep-current — can be mixed **within a single resolve**.
 
 The core resolver in [`src/`](src/) is generic: it knows nothing about Julia versions or registries. The [`bin/resolve.jl`](bin/resolve.jl) command-line tool adapts it to Julia's real registries and can emit a `Manifest.toml`.

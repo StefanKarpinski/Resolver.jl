@@ -78,27 +78,18 @@ end
             deps = make_deps(0) # start with no dependencies
             comp = make_comp(0) # start with no conflicts
             reqs = make_reqs(rand(1:2^m-1)) # random requirements set
-            # iteratively pick a solution and break it until unsolvable
+            # iteratively break the solution until unsolvable
             while true
                 fill_data!(m, n, deps, comp, data)
-                pkgs, vers = test_resolver(data, reqs)
-                all(isnothing, vers) && break
-                # pick a random solution
-                k = rand(1:size(vers,2))
-                # there must be some non-nothing version
-                @test any(vers[i, k] !== nothing for i=1:size(vers,1))
-                # pick a package with non-nothing version
-                i = rand(1:size(vers,1))
-                while vers[i, k] === nothing
-                    i = rand(1:size(vers,1))
-                end
-                p = pkgs[i]
-                v = vers[i, k]
-                # pick a different package (version can be nothing)
+                sol = test_resolver(data, reqs)
+                sol === nothing && break
+                # pick a resolved package
+                p = rand(collect(keys(sol)))
+                v = sol[p]
+                # pick a different package (it may be unresolved)
                 q = rand(1:m-1)
                 q += q ≥ p
-                j = something(findfirst(==(q), pkgs), 0)
-                w = get(vers, (j, k), nothing)
+                w = get(sol, q, nothing)
                 # make resolved versions of p & q incompatible
                 if isnothing(w)
                     # add a dependency p@v => q
@@ -106,8 +97,7 @@ end
                     @assert iszero(deps.bits & b)
                     deps = typeof(deps)(deps.bits | b)
                 else
-                    # add incompatibility p@v ⊼ p@w
-                    w = vers[j, k]
+                    # add incompatibility p@v ⊼ q@w
                     b = bit(p, v, q, w)
                     @assert iszero(comp.bits & b)
                     comp = typeof(comp)(comp.bits | b)
@@ -117,23 +107,37 @@ end
     end
 end
 
-@testset "resolve: max keyword" begin
+@testset "resolve: single solution" begin
     for ex in tiny_data.examples
         data, reqs = ex.data, ex.reqs
-        pkgs, vers = test_resolver(data, reqs)
-        nsol = size(vers,2)
-        for max = 1:nsol
-            pkgs, vers = resolve(data, reqs; max)
-            @test max == size(vers,2)
+        sol = resolve(data, reqs)
+        # a package => version dict covering the requirements, or nothing
+        if sol !== nothing
+            @test sol isa Dict{Int,Int}
+            @test reqs ⊆ keys(sol)
         end
-        pkgs, vers = resolve(data, reqs; max=-1)
-        @test nsol == size(vers,2)
-        pkgs, vers = resolve(data, reqs; max=0)
-        @test nsol == size(vers,2)
-        pkgs, vers = resolve(data, reqs; max=nsol+1)
-        @test nsol == size(vers,2)
-        pkgs, vers = resolve(data, reqs; max=typemax(Int))
-        @test nsol == size(vers,2)
+        # deterministic: resolving again, and with the requirements supplied
+        # in a different order, yields the same solution
+        @test resolve(data, reqs) == sol
+        @test resolve(data, reverse(collect(reqs))) == sol
+    end
+end
+
+@testset "resolve: brute-force reference" begin
+    Random.seed!(rand(RandomDevice(), UInt64))
+    hi = p -> p  # default priority: lower package id first
+    lo = p -> -p # reversed priority
+    for m = 1:3, n = 1:3
+        make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
+        for _ = 1:100
+            deps = make_deps(randbits(d))
+            comp = make_comp(randbits(c))
+            fill_data!(m, n, deps, comp, data)
+            for reqs_bits = 0:2^m-1, by in (hi, lo)
+                reqs = collect(make_reqs(reqs_bits))
+                @test resolve(data, reqs; by) == ref_resolve(data, reqs; by)
+            end
+        end
     end
 end
 
@@ -151,8 +155,8 @@ using Resolver: PkgData
         :PkgA => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict(:v1 => Dict(:MissingCompat => Any[]))),
         :PkgB => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}())
     )
-    pkgs, vers = resolve(data, [:PkgA])
-    @test :PkgA in pkgs
+    sol = resolve(data, [:PkgA])
+    @test sol !== nothing && haskey(sol, :PkgA)
 
     # Test missing required package
     data = Dict(
@@ -171,16 +175,13 @@ end
     test_resolver(rp, ["DifferentialEquations", "JSON"])
     test_resolver(rp, ["DifferentialEquations", "JSON", "DataFrames"])
     # test some details
-    pkgs, vers = resolve(rp, ["JSON"])
-    @test pkgs isa Vector{String}
-    @test vers isa Matrix{Union{Nothing,VersionNumber}}
-    @test all(!isnothing, vers)
+    sol = resolve(rp, ["JSON"])
+    @test sol isa Dict{String,VersionNumber}
+    @test haskey(sol, "JSON")
     # test corner case (empty)
-    pkgs, vers = resolve(rp, String[])
-    @test pkgs isa Vector{String}
-    @test vers isa Matrix{Union{Nothing,VersionNumber}}
-    @test isempty(pkgs)
-    @test isempty(vers)
+    sol = resolve(rp, String[])
+    @test sol isa Dict{String,VersionNumber}
+    @test isempty(sol)
 end
 
 @testset "yanked packages" begin

@@ -37,13 +37,11 @@ make_provider(julia::VersionSpec) = registry_provider(
     allow_pre = Dict(UUID(0) => false),
 )
 
-# Does every requirement get a concrete version for the given Julia spec?
+# Is the requirement set resolvable for the given Julia spec?
 function resolves(reqs::Vector{UUID}; julia::VersionSpec)
     reg = make_provider(julia)
     info = Resolver.pkg_info(reg, reqs)
-    pkgs, vers = Resolver.resolve(info, reqs; max = 1)
-    size(vers, 2) ≥ 1 || return false
-    all(!isnothing(vers[findfirst(==(u), pkgs), 1]) for u in reqs)
+    Resolver.resolve(info, reqs) !== nothing
 end
 
 @testset "bin/Registries.jl" begin

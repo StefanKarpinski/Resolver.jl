@@ -436,17 +436,12 @@ reg = registry_provider(
     workspace_pkgs,
 )
 pkg_info = Resolver.pkg_info(reg, reqs)
-pkgs, vers = resolve(pkg_info, reqs; max=1, by=sort_packages_by)
-
-# error if unsatisfiable
-for uuid in reqs
-    i = findfirst(==(uuid), pkgs)
-    isnothing(vers[i]) && error("Unsatisfiable")
-end
+sol = resolve(pkg_info, reqs; by=sort_packages_by)
+sol === nothing && error("Unsatisfiable")
 
 ## output results
 
-const julia_version = vers[findfirst(==(JULIA_UUID), pkgs)]
+const julia_version = sol[JULIA_UUID]
 const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
     for (v, this_stdlibs) in STDLIBS_BY_VERSION
         v > Base.thispatch(julia_version) && break
@@ -482,7 +477,7 @@ name_uuid_dict(d) = Dict{String,UUID}(uuid_to_name[u] => u for u in d) # >=1.14
 
 const info_map = Dict{UUID,ManifestEntry}()
 
-for (i, uuid) in enumerate(pkgs)
+for (uuid, version) in sol
     uuid === JULIA_UUID && continue
     # workspace packages become path entries in the manifest (written in the
     # manifest block below); they have no registry or stdlib info to record
@@ -509,7 +504,6 @@ for (i, uuid) in enumerate(pkgs)
             weakdeps,
         )
     elseif uuid in keys(packages)
-        version = vers[i]
         infos = Set{ManifestEntry}()
         for entry in packages[uuid]
             info = package_info(entry)
@@ -554,13 +548,15 @@ for (i, uuid) in enumerate(pkgs)
 end
 
 if output == :print_versions
-    # just print packages and versions
+    # print packages and versions in priority order, required packages first
+    pkgs = sort!(collect(keys(sol)), by = sort_packages_by)
+    sort!(pkgs, by = !in(reqs))
     width = maximum(textwidth(info.name) for info in values(info_map))
     for uuid in pkgs
         uuid in workspace_uuids || continue
         global width = max(width, textwidth(workspace_pkgs[uuid][1]))
     end
-    for (i, uuid) in enumerate(pkgs)
+    for uuid in pkgs
         if uuid == JULIA_UUID
             name = "julia"
             version = julia_version

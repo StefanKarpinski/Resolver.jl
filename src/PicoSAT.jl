@@ -22,6 +22,8 @@ sat(p::Ptr{Cvoid}, limit::Integer = -1) =
     ccall((:picosat_sat, lib), Cint, (Ptr{Cvoid}, Cint), p, limit)
 deref(p::Ptr{Cvoid}, v::Integer) =
     ccall((:picosat_deref, lib), Cint, (Ptr{Cvoid}, Cint), p, v)
+deref_toplevel(p::Ptr{Cvoid}, v::Integer) =
+    ccall((:picosat_deref_toplevel, lib), Cint, (Ptr{Cvoid}, Cint), p, v)
 failed(p::Ptr{Cvoid}, v::Integer) =
     ccall((:picosat_failed_assumption, lib), Cint, (Ptr{Cvoid}, Cint), p, v)
 push(p::Ptr{Cvoid}) =

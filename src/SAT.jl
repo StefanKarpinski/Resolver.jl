@@ -130,6 +130,12 @@ sat_assume(sat::SAT{P}, d::Dict{P,<:Integer}) where {P} =
         sat_assume(sat, p, i)
     end
 
+# is package p already forced true by top-level unit propagation? a sound
+# but incomplete necessity check: true means every model includes p; false
+# means only that unit propagation alone doesn't force it
+sat_forced_toplevel(sat::SAT{P}, p::P) where {P} =
+    PicoSAT.deref_toplevel(sat.pico, sat.vars[p]) > 0
+
 is_satisfiable(sat::SAT) =
     PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
 
@@ -191,28 +197,46 @@ function with_temp_clauses(body::Function, sat::SAT)
     end
 end
 
-# improve package p to its best feasible version: repeatedly demand some
-# strictly better version until that becomes unsatisfiable, keeping the last
-# good model in sol
+# improve package p to its best feasible version, keeping the last good
+# model in sol: one probe for any strict improvement (the common
+# already-optimal case costs a single unsatisfiable solve), then bisection
+# on the rank -- O(log #versions) solves however far the improvement goes.
+# The `assume` callback runs before every solve so callers can install
+# per-solve assumptions (picosat clears assumptions at each solve).
 function optimize_version!(
     sat :: SAT{P},
     sol :: Dict{P,Int},
-    p   :: P,
+    p   :: P;
+    assume :: Function = () -> nothing,
 ) where {P}
-    # sol[p] == 1 is already optimal: the improvement clause below would be
-    # empty, forcing a guaranteed-UNSAT solve
-    while sol[p] > 1
-        improved = with_temp_clauses(sat) do
-            # some strictly better version of p
-            for i = 1:sol[p]-1
+    sol[p] > 1 || return
+    improved = with_temp_clauses(sat) do
+        # any strictly better version of p
+        for i = 1:sol[p]-1
+            sat_add(sat, p, i)
+        end
+        sat_add(sat)
+        assume()
+        is_satisfiable(sat) || return false
+        extract_solution!(sat, sol)
+        return true
+    end
+    improved || return
+    lo = 1
+    while lo < sol[p]
+        mid = (lo + sol[p]) >> 1
+        sat_ok = with_temp_clauses(sat) do
+            # p at rank mid or better
+            for i = 1:mid
                 sat_add(sat, p, i)
             end
             sat_add(sat)
+            assume()
             is_satisfiable(sat) || return false
             extract_solution!(sat, sol)
             return true
         end
-        improved || break
+        sat_ok || (lo = mid + 1)
     end
 end
 

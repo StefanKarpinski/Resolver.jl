@@ -71,88 +71,101 @@ function test_resolver(
     # the returned solution is valid
     @test is_valid_sol(vers)
 
-    # it can't be trivially improved: raising any package to a better version
-    # breaks validity
+    # it can't be trivially improved: raising any package to a better
+    # version breaks validity or tightness (a valid but unjustified-junk
+    # variant is not a legitimate dominator under the front semantics)
     each_trivial_improvement(data, pkgs, vers) do t
-        @test !is_valid_sol(t)
-    end
-
-    # generate partial order predicate for solutions (may expand pkgs; vers
-    # stays as-is and is read via get(...), missing entries default per rank)
-    ≤ₛ = make_solution_partial_order!(data, reqs, pkgs)
-
-    # `sol` must be Pareto-maximal: no valid solution strictly dominates it.
-    # With the deterministic priority-order descent this pins the unique optimum.
-    strictly_dominates(s, w) = (w ≤ₛ s) && !(s ≤ₛ w)
-
-    # estimate how many potential solutions there would be
-    Π = prod(init=1.0, float(length(data[p].versions)+1) for p in pkgs)
-    if Π ≤ Π⁺
-        # @info "optimality testing full data"
-        info = data # type unstable but 🤷
-    else
-        info = pkg_info(data, reqs)
-        Π = prod(float(length(ip.versions)+1) for ip in values(info))
-        if Π > Π⁺
-            # @info "no optimality testing"
-            return sol
+        if is_valid_sol(t)
+            tsol = Dict{P,V}(
+                pkgs[i] => t[i] for i = 1:length(pkgs) if t[i] !== nothing)
+            seen = Set{P}(q for q in reqs)
+            queue = P[q for q in reqs]
+            while !isempty(queue)
+                q = pop!(queue)
+                haskey(data[q].depends, tsol[q]) || continue
+                for r in data[q].depends[tsol[q]]
+                    r in seen && continue
+                    push!(seen, r)
+                    push!(queue, r)
+                end
+            end
+            @test Set(keys(tsol)) != seen
         end
-        # @info "optimality testing filtered info"
     end
 
-    # no valid potential solution strictly dominates the returned one
-    each_potential_solution(info, pkgs) do s
-        is_valid_sol(s) || return
-        @test !strictly_dominates(s, vers)
+    # optimality: the solution is exactly the one the contract specifies,
+    # checked against the brute-force reference when enumeration fits budget
+    Π = prod(init=1.0, float(length(data[p].versions)+1) for p in keys(data))
+    if Π ≤ Π⁺
+        @test sol == ref_resolve(data, reqs)
     end
 
     return sol
 end
 
-# brute-force reference for the single-solution contract: enumerate all valid
-# solutions; if none covers every requirement the problem is unsatisfiable,
-# otherwise select the solution resolve specifies -- optimize versions one
-# package at a time in priority order, layer by layer through the dependency
-# graph
+# brute-force reference for the front-necessity contract, straight from the
+# spec (docs/design/front-necessity.md): enumerate all valid closure-tight
+# solutions covering the requirements, form the Pareto front under coverage-
+# monotone version dominance, and repeatedly pin the highest-priority package
+# present in every remaining front member at the best version among them
 function ref_resolve(
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: AbstractVector{P};
     by   :: Function = identity,
 ) where {P,V}
     pkgs = sort!(collect(keys(data)))
-    # all valid solutions covering the requirements, as package => version
-    # dicts of installed packages
+    rank = Dict{P,Dict{V,Int}}(
+        p => Dict{V,Int}(v => r for (r, v) in enumerate(data[p].versions))
+        for p in pkgs)
+    # all valid closure-tight solutions covering the requirements, as
+    # package => version dicts
     cands = Dict{P,V}[]
     each_potential_solution(data, pkgs) do s
         is_valid_solution(data, pkgs, s) || return
-        push!(cands, Dict{P,V}(
-            pkgs[i] => s[i] for i = 1:length(pkgs) if s[i] !== nothing))
-    end
-    filter!(c -> all(haskey(c, q) for q in reqs), cands)
-    isempty(cands) && return nothing
-    # optimize versions in priority order, layer by layer: pin each package to
-    # its best version among the remaining candidates, then move on to the
-    # newly-reachable dependencies of the pinned versions
-    sol = Dict{P,V}()
-    layer = sort!(unique(reqs); by)
-    seen = Set{P}(layer)
-    while true
-        for p in layer
-            rank = Dict{V,Int}(v => r for (r, v) in enumerate(data[p].versions))
-            best = data[p].versions[minimum(rank[c[p]] for c in cands)]
-            sol[p] = best
-            filter!(c -> c[p] == best, cands)
-        end
-        next = P[]
-        for p in layer
-            haskey(data[p].depends, sol[p]) || continue
-            for q in data[p].depends[sol[p]]
-                q in seen || q in next || push!(next, q)
+        sol = Dict{P,V}(
+            pkgs[i] => s[i] for i = 1:length(pkgs) if s[i] !== nothing)
+        all(haskey(sol, q) for q in reqs) || return
+        # tight: exactly the dependency closure of the requirements
+        seen = Set{P}(q for q in reqs)
+        queue = P[q for q in reqs]
+        while !isempty(queue)
+            q = pop!(queue)
+            haskey(data[q].depends, sol[q]) || continue
+            for r in data[q].depends[sol[q]]
+                r in seen && continue
+                push!(seen, r)
+                push!(queue, r)
             end
         end
-        isempty(next) && break
-        layer = sort!(next; by)
-        union!(seen, layer)
+        Set(keys(sol)) == seen || return
+        push!(cands, sol)
+    end
+    isempty(cands) && return nothing
+    # coverage-monotone version dominance: t covers everything s has, at
+    # versions at least as good, strictly better somewhere
+    function dominates(t, s)
+        strict = false
+        for (q, v) in s
+            haskey(t, q) || return false
+            rt = rank[q][t[q]]
+            rs = rank[q][v]
+            rt > rs && return false
+            rt < rs && (strict = true)
+        end
+        return strict
+    end
+    front = [s for s in cands if !any(dominates(t, s) for t in cands)]
+    # forced descent over the front
+    sol = Dict{P,V}()
+    order = sort(pkgs; by)
+    while true
+        i = findfirst(p -> !haskey(sol, p) &&
+                           all(haskey(f, p) for f in front), order)
+        i === nothing && break
+        p = order[i]
+        best = data[p].versions[minimum(rank[p][f[p]] for f in front)]
+        sol[p] = best
+        filter!(f -> f[p] == best, front)
     end
     return sol
 end
@@ -191,103 +204,6 @@ function is_valid_solution(
     return true
 end
 
-# generate ≤ₛ partial order predicate on solutions
-function make_solution_partial_order!(
-    data :: AbstractDict{P,<:PkgData{P,V}},
-    reqs :: AbstractVector{P},
-    pkgs :: AbstractVector{P}, # may be expanded
-) where {P,V}
-    # version dependencies (may expand pkgs)
-    deps = Dict{Tuple{Int,V},Vector{Int}}()
-    i = 0
-    while (i += 1) ≤ length(pkgs)
-        p = pkgs[i]
-        for v in data[p].versions
-            deps[i,v] = Int[]
-            haskey(data[p].depends, v) || continue
-            for q in data[p].depends[v]
-                j = findfirst(==(q), pkgs)
-                if isnothing(j)
-                    push!(pkgs, q)
-                    j = length(pkgs)
-                end
-                push!(deps[i,v], j)
-            end
-        end
-    end
-    # After this:
-    # - pkgs contains all packages that could be needed by any
-    #   version of any package in the original pkgs
-    # - deps has dependencies for all packages and versions
-    # - allows any possible solution to be expressed, not just
-    #   the solutions originally presented
-
-    # ranking versions (higher = better)
-    ranks = Dict{Tuple{V,Int},Int}()
-    for (i, p) in enumerate(pkgs),
-        (r, v) in enumerate(data[p].versions)
-        ranks[v,i] = -r
-    end
-    # i: package index
-    # d: default rank
-    rank(v::V, i::Int, d::Int) = ranks[v,i]
-    rank(v::Nothing, i::Int, d::Int) = d # default
-    rank(s::AbstractVector{Union{V,Nothing}}, i::Int, d::Int) =
-        rank(get(s, i, nothing), i, d)
-
-    # partial order on solutions
-    function ≤ₛ(
-        s::AbstractVector{Union{V,Nothing}},
-        t::AbstractVector{Union{V,Nothing}},
-    )
-        # necessary package indices
-        done = 0 # already compared
-        need = indexin(reqs, pkgs)
-        # check necessary packages
-        while done < length(need)
-            # first compare satisfaction of needs
-            strict = false
-            for k = done+1:length(need)
-                i = need[k]
-                sᵢ = !isnothing(get(s, i, nothing))
-                tᵢ = !isnothing(get(t, i, nothing))
-                sᵢ > tᵢ && return false
-                sᵢ < tᵢ && (strict = true)
-            end
-            strict && return true
-            # then compare version quality
-            for k = done+1:length(need)
-                i = need[k]
-                # no version = worst = typemin
-                sᵢ = rank(s, i, typemin(Int))
-                tᵢ = rank(t, i, typemin(Int))
-                @assert (sᵢ == typemin(Int)) == (tᵢ == typemin(Int))
-                sᵢ > tᵢ && return false
-                sᵢ < tᵢ && (strict = true)
-            end
-            strict && return true
-            # find newly necessary packages
-            for k = done+1:length(need)
-                i = need[k]
-                v = get(s, i, nothing)
-                @assert v == get(t, i, nothing)
-                isnothing(v) || for j in deps[i,v]
-                    j ∉ need && push!(need, j)
-                end
-                done = k
-            end
-        end
-        # check unnecessary packages
-        for i = 1:length(pkgs)
-            i in need && continue
-            # no version = best = typemax
-            sᵢ = rank(s, i, typemax(Int))
-            tᵢ = rank(t, i, typemax(Int))
-            sᵢ > tᵢ && return false
-        end
-        return true
-    end
-end
 
 function each_trivial_improvement(
     body :: Function, # callback

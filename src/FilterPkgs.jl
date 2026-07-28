@@ -282,9 +282,23 @@ function mark_necessary!(
                 iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
             end
         end
+        prev = -1 # chunk base of the previous active column
         for k = 1:n
             X[m+1, k] || continue # inactive column
             base = (k - 1) * W
+            # compat bounds are ranges, so identical adjacent columns are
+            # common — and re-ANDing an identical column changes nothing
+            if prev ≥ 0
+                same = true
+                @inbounds for w = 1:W
+                    if X.chunks[base + w] != X.chunks[prev + w]
+                        same = false
+                        break
+                    end
+                end
+                same && continue
+            end
+            prev = base
             @inbounds for w = 1:W
                 c = X.chunks[base + w] & T[w]
                 while !iszero(c)

@@ -27,51 +27,85 @@ function find_reachable(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
+    # intern packages as integer indices so that the fixpoint loop below
+    # hashes no package names; all derived tables are indexed by pkg id
+    pkgs = sort!(collect(keys(info)))
+    N = length(pkgs)
+    ix = Dict{P,Int}(p => i for (i, p) in enumerate(pkgs))
+    infos = Vector{PkgInfo{P,V}}(undef, N)
+    nvers = Vector{Int}(undef, N)
+    deps = Vector{Vector{Int}}(undef, N)     # interned depends, same order
+    partners = Vector{Vector{Tuple{Int,Int}}}(undef, N)
+    for p = 1:N
+        info_p = info[pkgs[p]]
+        infos[p] = info_p
+        nvers[p] = length(info_p.versions)
+        deps[p] = Int[ix[q] for q in info_p.depends]
+        # (partner id, offset of p's version block in the partner's matrix)
+        prt = Tuple{Int,Int}[
+            (ix[q], info[q].interacts[pkgs[p]])
+            for q in keys(info_p.interacts)
+        ]
+        partners[p] = sort!(prt)
+    end
+
     # meaning (both map packages to version indices):
     #   - reach tracks fully processed reachable versions
     #   - queue tracks newly reachable versions not yet processed
-    reach = Dict{P,Int}(p => 0 for p in reqs)
-    queue = Dict{P,Int}(p => 1 for p in reqs)
+    reach = zeros(Int, N)
+    queue = zeros(Int, N)
+    stack = Int[] # packages with queued work
+    instack = falses(N)
+
+    function enqueue(p::Int, j::Int)
+        queue[p] = j
+        if !instack[p]
+            instack[p] = true
+            push!(stack, p)
+        end
+    end
 
     # add next active version of p *after* i to the queue
     # do nothing if there's already version > i in reach/queue
-    function next(p::P, i::Int)
-        get(reach, p, 0) > i && return false
-        get(queue, p, 0) > i && return false
-        info_p = info[p]
-        m = length(info_p.versions)
-        X = info_p.conflicts
+    function next(p::Int, i::Int)
+        reach[p] > i && return false
+        queue[p] > i && return false
+        m = nvers[p]
+        X = infos[p].conflicts
         # first active version after i (the flag column is the active set)
         j = col_min_from(X, size(X, 2), i + 1, m)
         # j == 0: we're out of versions (i.e. saturated; see below)
-        queue[p] = j == 0 ? m + 1 : j
+        enqueue(p, j == 0 ? m + 1 : j)
         return true
     end
 
-    rdeps = Dict{P,Dict{P,Int}}() # reverse dependency map
-    # p => q => k means
+    rdeps = [Dict{Int,Int}() for _ = 1:N] # reverse dependency map
+    # rdeps[p][q] == k means
     #   "k is latest reachable version of q that depends on p"
-    # add new reverse dependency:
-    function rdep(p::P, q::P, k::Int)
-        rdeps_p = get!(() -> valtype(rdeps)(), rdeps, p)
-        rdeps_p[q] = max(get(rdeps_p, q, 0), k)
+
+    for p in reqs
+        enqueue(ix[p], 1)
     end
 
     # notation:
     #   - p, q: packages
-    #   - info_p = info[p]
+    #   - info_p = infos[p]
     #   - indices of versions of package p: i, j
     #   - indices of versions of package q: k
-    while !isempty(queue)
+    while !isempty(stack)
         # get unprocessed package + version
-        p, i = pop!(queue)
-        info_p = info[p]
+        p = pop!(stack)
+        instack[p] = false
+        i = queue[p]
+        queue[p] = 0
+        info_p = infos[p]
+        m = nvers[p]
         # check for saturation
         #   p saturated means: conflicts can force p to be uninstallable
-        #   saturation represented by i > length(info_p.versions)
-        if i > length(info_p.versions)
+        #   saturation represented by i > nvers[p]
+        if i > m
             # p has become saturated
-            haskey(rdeps, p) && for (q, k) in rdeps[p]
+            for (q, k) in rdeps[p]
                 # q@k depends on p, therefore
                 # q@k conflicts with p being uninstallable
                 # p being saturated means that can happen
@@ -79,14 +113,16 @@ function find_reachable(
             end
         end
         # process each newly reachable version of p
-        for j = get(reach, p, 0)+1:min(i, length(info_p.versions))
+        for j = reach[p]+1:min(i, m)
             # dependencies
-            for (k, q) in enumerate(info_p.depends)
+            for (k, q) in enumerate(deps[p])
                 info_p.conflicts[j, k] || continue
-                rdep(q, p, j) # p@j depends on q
+                # p@j depends on q
+                rdeps_q = rdeps[q]
+                rdeps_q[p] = max(get(rdeps_q, p, 0), j)
                 next(q, 0) # q can be required
                 # check if q is saturated:
-                if get(reach, q, 0) > length(info[q].versions)
+                if reach[q] > nvers[q]
                     # p@j depends on q, therefore
                     # p@j conflicts with q being uninstallable
                     # q being saturated means that can happen
@@ -96,11 +132,10 @@ function find_reachable(
             # find p@j's conflicts with reached versions of each partner:
             # conflicts are stored symmetrically, so scan the partner-side
             # column Y[k, c+j] == X[j, b+k], which is contiguous
-            for q in keys(info_p.interacts)
-                r = min(get(reach, q, 0), length(info[q].versions))
+            for (q, c) in partners[p]
+                r = min(reach[q], nvers[q])
                 r > 0 || continue
-                info_q = info[q]
-                k = col_max_upto(info_q.conflicts, info_q.interacts[p] + j, r)
+                k = col_max_upto(infos[q].conflicts, c + j, r)
                 k == 0 && continue
                 # p@j conflicts with q@k (the highest such k; pushing past
                 # it subsumes pushing past any lower conflicting version)
@@ -112,7 +147,7 @@ function find_reachable(
         reach[p] = i
     end
 
-    return reach
+    return Dict{P,Int}(pkgs[p] => reach[p] for p = 1:N if reach[p] > 0)
 end
 
 function mark_reachable!(
@@ -131,8 +166,27 @@ end
 function mark_necessary!(
     info :: Dict{P, PkgInfo{P,V}},
 ) where {P,V}
-    work = copy(keys(info))
-    names = sort!(collect(work))
+    # intern packages as integer indices so that the work loop below
+    # hashes no package names (sorted so the processing order — and with
+    # it any order-dependent tie — is deterministic)
+    pkgs = sort!(collect(keys(info)))
+    N = length(pkgs)
+    ix = Dict{P,Int}(p => i for (i, p) in enumerate(pkgs))
+    infos = Vector{PkgInfo{P,V}}(undef, N)
+    nvers = Vector{Int}(undef, N)
+    partners = Vector{Vector{NTuple{3,Int}}}(undef, N)
+    for p = 1:N
+        info_p = info[pkgs[p]]
+        infos[p] = info_p
+        nvers[p] = length(info_p.versions)
+        # (partner id, partner's version block offset in p's matrix,
+        #  p's version block offset in the partner's matrix)
+        prt = NTuple{3,Int}[
+            (ix[q], b, info[q].interacts[pkgs[p]])
+            for (q, b) in info_p.interacts
+        ]
+        partners[p] = sort!(prt)
+    end
     # some work buffers
     A = UInt64[]        # active version mask
     C = UInt64[]        # domination candidates mask
@@ -140,9 +194,10 @@ function mark_necessary!(
     R = Int[]           # redundant indices vector
     cols = Vector{Int}[] # per-version active constraint columns
     # initialize active column flags
-    for (p, info_p) in info
+    for p = 1:N
+        info_p = infos[p]
         X = info_p.conflicts
-        m = length(info_p.versions)
+        m = nvers[p]
         n = size(X, 2) - 1
         resize!(A, col_words(X))
         col_copy!(A, X, n + 1)
@@ -155,22 +210,26 @@ function mark_necessary!(
         # conflict columns for inactive partner versions are also
         # irrelevant: no model over the active versions can include
         # the partner, so the conflict cannot constrain anything
-        for (q, b) in info_p.interacts
-            Y = info[q].conflicts
-            for k = 1:length(info[q].versions)
+        for (q, b, c) in partners[p]
+            Y = infos[q].conflicts
+            for k = 1:nvers[q]
                 X[m+1, b+k] &= Y[k, end]
             end
         end
     end
-    sort!(names, by = p -> length(info[p].interacts))
-    for p in Iterators.cycle(names)
-        isempty(work) && break
-        p in work || continue
-        delete!(work, p)
+    # cheapest packages first; stable sort breaks ties by name
+    order = sort!(collect(1:N), by = p -> length(partners[p]))
+    inwork = trues(N)
+    nwork = N
+    for p in Iterators.cycle(order)
+        nwork == 0 && break
+        inwork[p] || continue
+        inwork[p] = false
+        nwork -= 1
         # get conflicts & dimensions
-        info_p = info[p]
+        info_p = infos[p]
         X = info_p.conflicts
-        m = length(info_p.versions)
+        m = nvers[p]
         m > 1 || continue # unique version cannot be redundant
         n = size(X, 2) - 1
         W = col_words(X)
@@ -245,10 +304,12 @@ function mark_necessary!(
         sort!(R)
         # deactivate redundant versions
         X[R, end] .= false
-        for q in keys(info_p.interacts)
-            b = info[q].interacts[p]
-            info[q].conflicts[length(info[q].versions) + 1, b .+ R] .= false
-            push!(work, q) # can create new redundancies
+        for (q, b, c) in partners[p]
+            infos[q].conflicts[nvers[q] + 1, c .+ R] .= false
+            if !inwork[q] # can create new redundancies
+                inwork[q] = true
+                nwork += 1
+            end
         end
     end
 end

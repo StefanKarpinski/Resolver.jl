@@ -196,6 +196,36 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file
     end
 end
 
+@testset "installability filtering" begin
+    NoDeps = Dict{Int,Vector{String}}
+    NoComp = Dict{Int,Dict{String,Vector{Int}}}
+    # p@2 is preferred but its dependency on q admits no version of q, so
+    # it appears in no solution at all and gets filtered out
+    data = Dict(
+        "p" => PkgData([2, 1], Dict(2 => ["q"], 1 => ["q"]),
+                       Dict(2 => Dict("q" => Int[]))),
+        "q" => PkgData([1], NoDeps(), NoComp()),
+    )
+    @test pkg_info(data, ["p"])["p"].versions == [1]
+    @test resolve(data, ["p"]) == Dict("p" => 1, "q" => 1)
+    # deadness cascades: q@1 is uninstallable, which strands p@1, which
+    # empties the requirement — unsatisfiable, not an error
+    data = Dict(
+        "p" => PkgData([1], Dict(1 => ["q"]), NoComp()),
+        "q" => PkgData([1], Dict(1 => ["r"]), Dict(1 => Dict("r" => Int[]))),
+        "r" => PkgData([1], NoDeps(), NoComp()),
+    )
+    @test isempty(pkg_info(data, ["p"]))
+    @test resolve(data, ["p"]) === nothing
+    # a dependency-free alternative survives the same cascade
+    data = Dict(
+        "p" => PkgData([2, 1], Dict(2 => ["q"]), NoComp()),
+        "q" => PkgData([1], Dict(1 => ["r"]), Dict(1 => Dict("r" => Int[]))),
+        "r" => PkgData([1], NoDeps(), NoComp()),
+    )
+    @test resolve(data, ["p"]) == Dict("p" => 1)
+end
+
 @testset "registry resolve" begin
     rp = registry.provider()
     test_resolver(rp, ["JSON"])

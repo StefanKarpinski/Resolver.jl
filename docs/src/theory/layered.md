@@ -54,7 +54,7 @@ itself, which pins the unique answer.
 
 ## Filtering
 
-Real problems are shrunk before solving by two passes (`pkg_info` with
+Real problems are shrunk before solving by three passes (`pkg_info` with
 `filter=true`, the default):
 
 **Reachability** (`find_reachable`) computes, per package, a version
@@ -73,6 +73,20 @@ Real problems are shrunk before solving by two passes (`pkg_info` with
 ``q@j`` for which some better version ``q@i`` (``i < j``) has a *subset* of
 its constraints — every dependency and every (surviving) conflict of
 ``q@i`` is also one of ``q@j`` — iterated to a fixpoint.
+
+**Installability** (`mark_installable!`) deletes any version one of whose
+dependencies has no surviving version compatible with it, iterated to a
+fixpoint (each deletion can strand more versions). Its license is the
+strongest of the three: such a version appears in **no model at all** —
+any model containing it would have to assign that dependency *some*
+compatible version, and by induction along the deletion order no version
+belonging to a model is ever deleted (the first one deleted would need its
+dependency's model version to be gone already). Deleting it therefore
+changes nothing — not the model set of the raw problem, and on an
+already-filtered problem it composes like any deletion under Theorem 4
+below. It is also the only pass that can delete a *requirement's* every
+version, in which case the problem is unsatisfiable and `resolve` reports
+it as such.
 
 The intuition behind reachability is: *an optimal solution only settles for
 a worse version for a reason, and the reason is a conflict.* That intuition
@@ -292,10 +306,11 @@ above.)
 None of this threatens correctness. By Theorem 4, *any* number of
 additional passes preserves the layered answer, so iterating the filter
 to a mutual fixpoint is perfectly legal — and since the passes are
-cheap, that is what the implementation does: redundancy elimination
-first (it needs no reachability marks, and on registry-scale problems
-it does most of the shrinking), then reachability and redundancy
-alternating until neither deletes anything. The returns diminish fast:
+cheap, that is what the implementation does: the requirement-independent
+passes first (installability, then redundancy elimination, which needs
+no reachability marks and on registry-scale problems does most of the
+shrinking), then all three passes alternating until none deletes
+anything. The returns diminish fast:
 a further round prunes anything at all in only about 0.007% of
 deliberately conflict-dense random instances with version-independent
 dependencies and about 1% with version-varying ones, and what it prunes

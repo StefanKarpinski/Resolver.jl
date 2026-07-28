@@ -73,6 +73,30 @@ function copy_col_bits!(dest::Vector{UInt64}, off::Int, X::BitMatrix, j::Int, le
     return dest
 end
 
+# number of set bits in column j of X
+function col_count(X::BitMatrix, j::Int)
+    W = col_words(X)
+    base = (j - 1) * W
+    chunks = X.chunks
+    n = 0
+    @inbounds for w = 1:W
+        n += count_ones(chunks[base + w])
+    end
+    return n
+end
+
+# is some active row of X (per the version-flag column) clear in column j?
+function col_active_avoids(X::BitMatrix, j::Int)
+    W = col_words(X)
+    base = (j - 1) * W
+    fbase = (size(X, 2) - 1) * W
+    chunks = X.chunks
+    @inbounds for w = 1:W
+        iszero(chunks[fbase + w] & ~chunks[base + w]) || return true
+    end
+    return false
+end
+
 # highest set row ≤ hi in column j of X, or 0 if none
 function col_max_upto(X::BitMatrix, j::Int, hi::Int)
     hi ≤ 0 && return 0

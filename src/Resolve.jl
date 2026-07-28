@@ -128,6 +128,9 @@ function resolve(
     reqs :: SetOrVec{P} = keys(info);
     by   :: Function = identity, # package ordering
 ) where {P,V}
+    # filtering only deletes versions that appear in no solution, so a
+    # required package with no versions left means unsatisfiable
+    all(p -> haskey(info, p), reqs) || return nothing
     sat = SAT(info)
     # the instance is single-use, so don't bother restoring its state
     try resolve(sat, reqs; by, restore=false)

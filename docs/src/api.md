@@ -8,4 +8,5 @@ resolve
 
 ```@docs
 Resolver.find_reachable
+Resolver.mark_installable!
 ```

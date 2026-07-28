@@ -2,19 +2,23 @@ function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
-    # redundancy elimination first — it needs no reachability marks and
-    # does most of the shrinking — then alternate reachability and
-    # redundancy until neither deletes anything: each deleted version can
-    # expose more of both kinds of pruning, and every round preserves the
-    # resolved answer (see the theory docs on iterating the filter).
-    # requirement packages always survive filtering, so the requirements
-    # remain valid across rounds. rounds strictly shrink the total
-    # version count, so the loop terminates
+    # the requirement-independent passes first — installability needs no
+    # reachability marks and neither does redundancy elimination, which
+    # does most of the shrinking — then alternate all three passes until
+    # none deletes anything: each deleted version can expose more of every
+    # kind of pruning, and every round preserves the resolved answer (see
+    # the theory docs on iterating the filter). rounds strictly shrink
+    # the total version count, so the loop terminates
+    mark_installable!(info)
     mark_necessary!(info)
     drop_unmarked!(info)
     while true
         total = sum(length(i.versions) for i in values(info); init = 0)
-        mark_reachable!(info, reqs)
+        # installability can delete a required package outright (the
+        # problem is then unsatisfiable): seed reachability from the
+        # requirements that survive
+        mark_reachable!(info, [p for p in reqs if haskey(info, p)])
+        mark_installable!(info)
         mark_necessary!(info)
         drop_unmarked!(info)
         sum(length(i.versions) for i in values(info); init = 0) < total ||
@@ -177,6 +181,87 @@ function mark_reachable!(
         info_p.conflicts[r+1:end, end] .= false
     end
     return reach
+end
+
+
+"""
+    mark_installable!(info)
+
+Deactivate versions that cannot be installed at all: a version one of
+whose dependencies has no active version compatible with it appears in
+*no* solution — any solution containing it would have to assign that
+dependency some compatible version. Deactivating such versions can
+strand more versions, so iterate to a fixpoint.
+"""
+function mark_installable!(
+    info :: Dict{P, PkgInfo{P,V}},
+) where {P,V}
+    # intern packages as integer indices (sorted so the processing order
+    # is deterministic)
+    pkgs = sort!(collect(keys(info)))
+    N = length(pkgs)
+    ix = Dict{P,Int}(p => i for (i, p) in enumerate(pkgs))
+    infos = Vector{PkgInfo{P,V}}(undef, N)
+    nvers = Vector{Int}(undef, N)
+    deps = Vector{Vector{Int}}(undef, N)  # interned depends, same order
+    offs = Vector{Vector{Int}}(undef, N)  # p's block offset in the dep's
+    rdeps = [Int[] for _ = 1:N]           # matrix, or -1 if no conflicts
+    for p = 1:N
+        info_p = info[pkgs[p]]
+        infos[p] = info_p
+        nvers[p] = length(info_p.versions)
+        ds = Int[ix[q] for q in info_p.depends]
+        deps[p] = ds
+        offs[p] = Int[
+            get(info[q].interacts, pkgs[p], -1)
+            for q in info_p.depends
+        ]
+        for q in ds
+            push!(rdeps[q], p)
+        end
+    end
+    # process every package once; packages whose dependents must be
+    # rechecked because versions were deactivated are re-appended
+    queue = collect(1:N)
+    inqueue = trues(N)
+    head = 1
+    while head ≤ length(queue)
+        p = queue[head]
+        head += 1
+        inqueue[p] || continue
+        inqueue[p] = false
+        info_p = infos[p]
+        X = info_p.conflicts
+        m = nvers[p]
+        fcol = size(X, 2)
+        changed = false
+        for i = 1:m
+            X[i, fcol] || continue # already inactive
+            for (k, q) in enumerate(deps[p])
+                X[i, k] || continue # version i doesn't have this dep
+                Y = infos[q].conflicts
+                c = offs[p][k]
+                if c < 0
+                    # no conflicts with q: any active version will do
+                    col_count(Y, size(Y, 2)) > 0 && continue
+                else
+                    # some active version of q compatible with p@i?
+                    col_active_avoids(Y, c + i) && continue
+                end
+                # dependency q is uninstallable alongside p@i
+                X[i, fcol] = false
+                changed = true
+                break
+            end
+        end
+        changed || continue
+        for q in rdeps[p] # dependents may have lost their last option
+            if !inqueue[q]
+                inqueue[q] = true
+                push!(queue, q)
+            end
+        end
+    end
 end
 
 function mark_necessary!(

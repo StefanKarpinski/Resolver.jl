@@ -25,25 +25,6 @@ _compat_names(c::AbstractDict{<:AbstractString}, reg) = c
 _compat_names(c::AbstractDict{Base.UUID}, reg) =
     Dict(reg.pkgs[u].name => s for (u, s) in c if haskey(reg.pkgs, u))
 
-# share one object among equal-valued entries; there are only a few
-# distinct values per package, so scanning them beats comparing all pairs
-function dedup_values!(d::AbstractDict, vers::Vector)
-    distinct = valtype(d)[]
-    for v in vers
-        x = d[v]
-        shared = false
-        for y in distinct
-            if y == x
-                d[v] = y
-                shared = true
-                break
-            end
-        end
-        shared || push!(distinct, x)
-    end
-    return d
-end
-
 function provider(
     reg_path :: AbstractString = REG_PATH;
     excludes :: AbstractSet{<:AbstractString} = EXCLUDES,
@@ -59,32 +40,57 @@ function provider(
         info = applicable(init_package_info!, reg_inst, entry) ?
             init_package_info!(reg_inst, entry) : init_package_info!(entry)
         vers = sort!(collect(keys(info.version_info)), rev=true)
-        deps = Dict(v => String[] for v in vers)
-        comp = Dict(v => Dict{String,VersionSpec}() for v in vers)
-        # scan versions and populate deps & compat data
+        # a version's data is determined by which registry entries apply
+        # to it, so group versions by their applicable-entry sets and
+        # materialize each group's deps & compat once, shared by all of
+        # the group's versions (which also deduplicates the structures)
+        dep_entries  = collect(info.deps)
+        comp_entries = collect(info.compat)
+        weak_entries = hasfield(typeof(info), :weak_compat) ?
+            collect(info.weak_compat) : empty(comp_entries)
+        nd, nc = length(dep_entries), length(comp_entries)
+        deps = Dict{VersionNumber,Vector{String}}()
+        comp = Dict{VersionNumber,Dict{String,VersionSpec}}()
+        groups = Dict{Vector{Int},
+                      Tuple{Vector{String},Dict{String,VersionSpec}}}()
+        key = Int[]
         for v in vers
-            for (r, d) in info.deps
-                v in r && union!(deps[v], _dep_names(d, reg_inst))
+            empty!(key)
+            for (i, (r, _)) in enumerate(dep_entries)
+                v in r && push!(key, i)
             end
-            for (r, c) in info.compat
-                v in r && mergewith!(∩, comp[v], _compat_names(c, reg_inst))
+            for (i, (r, _)) in enumerate(comp_entries)
+                v in r && push!(key, nd + i)
             end
-            hasfield(typeof(info), :weak_compat) &&
-            for (r, c) in info.weak_compat
-                v in r && mergewith!(∩, comp[v], _compat_names(c, reg_inst))
+            for (i, (r, _)) in enumerate(weak_entries)
+                v in r && push!(key, nd + nc + i)
             end
+            group = get(groups, key, nothing)
+            if group === nothing
+                d = String[]
+                c = Dict{String,VersionSpec}()
+                for i in key
+                    if i ≤ nd
+                        union!(d, _dep_names(dep_entries[i][2], reg_inst))
+                    elseif i ≤ nd + nc
+                        mergewith!(∩, c,
+                            _compat_names(comp_entries[i - nd][2], reg_inst))
+                    else
+                        mergewith!(∩, c,
+                            _compat_names(weak_entries[i - nd - nc][2], reg_inst))
+                    end
+                end
+                # sort deps & scrub out excludes (stdlibs, julia itself)
+                sort!(d)
+                setdiff!(d, excludes)
+                for x in excludes
+                    delete!(c, x)
+                end
+                group = (d, c)
+                groups[copy(key)] = group
+            end
+            deps[v], comp[v] = group
         end
-        foreach(sort!, values(deps))
-        # scrub out excluded deps (stdlibs, julia itself)
-        for d in values(deps)
-            setdiff!(d, excludes)
-        end
-        for c in values(comp), x in excludes
-            delete!(c, x)
-        end
-        # deduplicate data structures to save some memory
-        dedup_values!(deps, vers)
-        dedup_values!(comp, vers)
         # return resolver PkgData structure
         PkgData(vers, deps, comp)
     end

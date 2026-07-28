@@ -85,18 +85,108 @@ function SAT(
                 end
             end
 
-            # conflicts
-            #   ∀ q@j ∈ conflicts(p, i): !p@i OR !q@j
-            for i = 1:n_p
-                for (q, b) in info_p.interacts
-                    p < q || continue # conflicts are symmetrical
-                    n_q = length(info[q].versions)
-                    v_q = vars[q]
-                    for j = 1:n_q
-                        info_p.conflicts[i, b+j] || continue
-                        # conflicting versions are mutually exclusive
-                        PicoSAT.add(pico, -(v_p + i))
-                        PicoSAT.add(pico, -(v_q + j))
+            # conflicts are added below, rectangle-encoded
+        end
+
+        # conflicts, encoded as rectangles: within each interacting pair's
+        # conflict bitmap, group p's versions by their conflict pattern
+        # against q (identical patterns are the norm, since conflicts come
+        # from shared compat entries) and split each pattern into maximal
+        # runs of q's versions. each (version group) × (run) rectangle
+        # becomes one clause ¬x ∨ ¬y over trigger literals meaning "some
+        # version in the group/run is chosen": the version literal itself
+        # for singletons, the package variable when every version is
+        # covered, and otherwise a shared auxiliary variable defined by
+        # one implication per covered version. triggers occur only
+        # negatively, so the one-directional definitions suffice: a real
+        # conflict forces both triggers true and violates the rectangle
+        # clause, while every conflict-free assignment extends by setting
+        # each trigger to the value of its defining disjunction.
+        psets = Dict{Tuple{Int,Vector{Int}},Int}() # (v_p, versions) => var
+        qints = Dict{NTuple{3,Int},Int}()          # (v_q, lo, hi)   => var
+        pat = UInt64[]
+        S = Int[]
+        runs = Tuple{Int,Int}[]
+
+        # trigger literal for "some of versions lo:hi of the package with
+        # variable base v and n versions is chosen"
+        function run_trigger(v::Int, lo::Int, hi::Int, n::Int)
+            lo == hi && return v + lo
+            lo == 1 && hi == n && return v
+            get!(qints, (v, lo, hi)) do
+                t = PicoSAT.inc_max_var(pico)
+                for j = lo:hi
+                    PicoSAT.add(pico, -(v + j))
+                    PicoSAT.add(pico, t)
+                    PicoSAT.add(pico, 0)
+                end
+                t
+            end
+        end
+
+        # trigger literal for "some version in S of the package with
+        # variable base v and n versions is chosen"
+        function set_trigger(v::Int, S::Vector{Int}, n::Int)
+            length(S) == 1 && return v + S[1]
+            length(S) == n && return v
+            # contiguous sets share the interval triggers
+            S[end] - S[1] + 1 == length(S) &&
+                return run_trigger(v, S[1], S[end], n)
+            get!(() -> begin
+                t = PicoSAT.inc_max_var(pico)
+                for i in S
+                    PicoSAT.add(pico, -(v + i))
+                    PicoSAT.add(pico, t)
+                    PicoSAT.add(pico, 0)
+                end
+                t
+            end, psets, (v, copy(S)))
+        end
+
+        for p in names
+            info_p = info[p]
+            n_p = length(info_p.versions)
+            v_p = vars[p]
+            for (q, b) in info_p.interacts
+                p < q || continue # conflicts are symmetrical
+                info_q = info[q]
+                n_q = length(info_q.versions)
+                v_q = vars[q]
+                Y = info_q.conflicts
+                c = info_q.interacts[p]
+                W = col_words(Y)
+                resize!(pat, W)
+                # group p's versions by conflict pattern: the pattern of
+                # p@i is the contiguous column c+i of q's matrix
+                groups = Dict{Vector{UInt64},Vector{Int}}()
+                for i = 1:n_p
+                    col_copy!(pat, Y, c + i)
+                    clear_rows_above!(pat, n_q)
+                    all(iszero, pat) && continue
+                    push!(get!(() -> Int[], groups, copy(pat)), i)
+                end
+                for (pattern, Sg) in groups
+                    # maximal runs of the pattern
+                    empty!(runs)
+                    prev = -2
+                    @inbounds for w = 1:W
+                        z = pattern[w]
+                        while !iszero(z)
+                            j = ((w - 1) << 6) + trailing_zeros(z) + 1
+                            z &= z - 1
+                            if j == prev + 1
+                                runs[end] = (runs[end][1], j)
+                            else
+                                push!(runs, (j, j))
+                            end
+                            prev = j
+                        end
+                    end
+                    x = set_trigger(v_p, Sg, n_p)
+                    for (lo, hi) in runs
+                        y = run_trigger(v_q, lo, hi, n_q)
+                        PicoSAT.add(pico, -x)
+                        PicoSAT.add(pico, -y)
                         PicoSAT.add(pico, 0)
                     end
                 end

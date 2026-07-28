@@ -140,6 +140,15 @@ function mark_necessary!(
             # conflicts for any active versions of package
             X[end, j] = any(X[i, j] for i = 1:m if X[i, end])
         end
+        # conflict columns for inactive partner versions are also
+        # irrelevant: no model over the active versions can include
+        # the partner, so the conflict cannot constrain anything
+        for (q, b) in info_p.interacts
+            Y = info[q].conflicts
+            for k = 1:size(Y, 1)-1
+                X[end, b+k] &= Y[k, end]
+            end
+        end
     end
     # some work vectors
     J = Int[] # active versions vector

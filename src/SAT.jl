@@ -47,6 +47,22 @@ function SAT(
     pico = PicoSAT.init() # TODO: use jl_malloc?
     try # free memory on error
         PicoSAT.adjust(pico, N)
+
+        # append the literals for "no version in lo:hi of the package
+        # with variable base v, ladder base l, and n versions is chosen"
+        lits = Int[]
+        function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
+            if lo == hi
+                push!(lits, -(v + lo))
+            elseif lo == 1 && hi == n
+                push!(lits, -v)
+            elseif lo == 1
+                push!(lits, -(l + hi))
+            else
+                push!(lits, -(l + hi), l + lo - 1)
+            end
+            return lits
+        end
         # default unconstrained variables to false: models then carry
         # fewer spuriously-true packages ("junk"), which makes solves
         # faster and improvement steps land on better versions
@@ -113,14 +129,29 @@ function SAT(
                 end
             end
 
-            # dependencies
-            #   ∀ q ∈ deps(p, i): p@i => q
-            for i = 1:n_p
-                for (j, q) in enumerate(info_p.depends)
-                    info_p.conflicts[i, j] || continue
-                    PicoSAT.add(pico, -(v_p + i))
-                    PicoSAT.add(pico, vars[q])
-                    PicoSAT.add(pico, 0)
+            # dependencies, one clause per maximal run of versions
+            # sharing the dependency (dep sets change rarely across
+            # versions, so runs are long):
+            #   (some version in run chosen) => q
+            l_p = get(lads, p, 0)
+            for (k, q) in enumerate(info_p.depends)
+                v_q = vars[q]
+                i = 1
+                while i ≤ n_p
+                    if info_p.conflicts[i, k]
+                        lo = i
+                        while i < n_p && info_p.conflicts[i + 1, k]
+                            i += 1
+                        end
+                        empty!(lits)
+                        run_lits!(lits, v_p, l_p, lo, i, n_p)
+                        for x in lits
+                            PicoSAT.add(pico, x)
+                        end
+                        PicoSAT.add(pico, v_q)
+                        PicoSAT.add(pico, 0)
+                    end
+                    i += 1
                 end
             end
 
@@ -145,22 +176,6 @@ function SAT(
         psets = Dict{Tuple{Int,Vector{Int}},Int}() # (v_p, versions) => var
         pat = UInt64[]
         runs = Tuple{Int,Int}[]
-        lits = Int[]
-
-        # append the literals for "no version in lo:hi of the package
-        # with variable base v, ladder base l, and n versions is chosen"
-        function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
-            if lo == hi
-                push!(lits, -(v + lo))
-            elseif lo == 1 && hi == n
-                push!(lits, -v)
-            elseif lo == 1
-                push!(lits, -(l + hi))
-            else
-                push!(lits, -(l + hi), l + lo - 1)
-            end
-            return lits
-        end
 
         # literal for "some version in S of the package with variable
         # base v and n versions is chosen" (non-contiguous S only)

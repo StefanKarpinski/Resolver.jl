@@ -22,16 +22,24 @@ function SAT(
     names = sort!(collect(keys(info)))
 
     # variable indices:
-    #   p    vars[p]    package p chosen
-    #   p@i  vars[p]+i  version i of p chosen
+    #   p     vars[p]     package p chosen
+    #   p@i   vars[p]+i   version i of p chosen
+    #   p@≤k  lads[p]+k   some version ≤ k of p chosen (prefix ladder,
+    #                     only for packages with several versions)
     N = 1
     vars = Dict{P,Int}()
+    lads = Dict{P,Int}()
     for p in names
         vars[p] = N
         n_p = length(info[p].versions)
         # 1 variable for package
         # n_p variables for versions
         N += 1 + n_p
+        if n_p ≥ 2
+            # n_p prefix-ladder variables at lads[p]+1 : lads[p]+n_p
+            lads[p] = N - 1
+            N += n_p
+        end
     end
     N -= 1 # last used variable
 
@@ -39,6 +47,22 @@ function SAT(
     pico = PicoSAT.init() # TODO: use jl_malloc?
     try # free memory on error
         PicoSAT.adjust(pico, N)
+
+        # append the literals for "no version in lo:hi of the package
+        # with variable base v, ladder base l, and n versions is chosen"
+        lits = Int[]
+        function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
+            if lo == hi
+                push!(lits, -(v + lo))
+            elseif lo == 1 && hi == n
+                push!(lits, -v)
+            elseif lo == 1
+                push!(lits, -(l + hi))
+            else
+                push!(lits, -(l + hi), l + lo - 1)
+            end
+            return lits
+        end
         # default unconstrained variables to false: models then carry
         # fewer spuriously-true packages ("junk"), which makes solves
         # faster and improvement steps land on better versions
@@ -66,37 +90,163 @@ function SAT(
                 PicoSAT.add(pico, 0)
             end
 
-            # versions are mutually exclusive
-            #   !p@i OR !p@j
-            for i = 1:n_p-1, j = i+1:n_p
-                PicoSAT.add(pico, -(v_p + i))
-                PicoSAT.add(pico, -(v_p + j))
+            # prefix ladder: L_k holds iff some version ≤ k is chosen.
+            # the two upward directions make chosen versions force their
+            # ladder suffix true; the completion direction, together with
+            # at-most-one below, forces the ladder prefix *below* the
+            # chosen version false — which the interval conflict literals
+            # rely on when they occur positively
+            if n_p ≥ 2
+                l_p = lads[p]
+                for k = 1:n_p
+                    # p@k => L_k
+                    PicoSAT.add(pico, -(v_p + k))
+                    PicoSAT.add(pico, l_p + k)
+                    PicoSAT.add(pico, 0)
+                end
+                for k = 2:n_p
+                    # L_(k-1) => L_k
+                    PicoSAT.add(pico, -(l_p + k - 1))
+                    PicoSAT.add(pico, l_p + k)
+                    PicoSAT.add(pico, 0)
+                end
+                # completion: L_k => p@k OR L_(k-1)
+                PicoSAT.add(pico, -(l_p + 1))
+                PicoSAT.add(pico, v_p + 1)
                 PicoSAT.add(pico, 0)
-            end
-
-            # dependencies
-            #   ∀ q ∈ deps(p, i): p@i => q
-            for i = 1:n_p
-                for (j, q) in enumerate(info_p.depends)
-                    info_p.conflicts[i, j] || continue
-                    PicoSAT.add(pico, -(v_p + i))
-                    PicoSAT.add(pico, vars[q])
+                for k = 2:n_p
+                    PicoSAT.add(pico, -(l_p + k))
+                    PicoSAT.add(pico, v_p + k)
+                    PicoSAT.add(pico, l_p + k - 1)
+                    PicoSAT.add(pico, 0)
+                end
+                # versions are mutually exclusive:
+                #   p@k => no version < k (linear via the ladder)
+                for k = 2:n_p
+                    PicoSAT.add(pico, -(v_p + k))
+                    PicoSAT.add(pico, -(l_p + k - 1))
                     PicoSAT.add(pico, 0)
                 end
             end
 
-            # conflicts
-            #   ∀ q@j ∈ conflicts(p, i): !p@i OR !q@j
-            for i = 1:n_p
-                for (q, b) in info_p.interacts
-                    p < q || continue # conflicts are symmetrical
-                    n_q = length(info[q].versions)
-                    v_q = vars[q]
-                    for j = 1:n_q
-                        info_p.conflicts[i, b+j] || continue
-                        # conflicting versions are mutually exclusive
-                        PicoSAT.add(pico, -(v_p + i))
-                        PicoSAT.add(pico, -(v_q + j))
+            # dependencies, one clause per maximal run of versions
+            # sharing the dependency (dep sets change rarely across
+            # versions, so runs are long):
+            #   (some version in run chosen) => q
+            l_p = get(lads, p, 0)
+            for (k, q) in enumerate(info_p.depends)
+                v_q = vars[q]
+                i = 1
+                while i ≤ n_p
+                    if info_p.conflicts[i, k]
+                        lo = i
+                        while i < n_p && info_p.conflicts[i + 1, k]
+                            i += 1
+                        end
+                        empty!(lits)
+                        run_lits!(lits, v_p, l_p, lo, i, n_p)
+                        for x in lits
+                            PicoSAT.add(pico, x)
+                        end
+                        PicoSAT.add(pico, v_q)
+                        PicoSAT.add(pico, 0)
+                    end
+                    i += 1
+                end
+            end
+
+            # conflicts are added below, rectangle-encoded
+        end
+
+        # conflicts, encoded as rectangles: within each interacting pair's
+        # conflict bitmap, group p's versions by their conflict pattern
+        # against q (identical patterns are the norm, since conflicts come
+        # from shared compat entries) and split each pattern into maximal
+        # runs of q's versions. each (version group) × (run) rectangle
+        # becomes one clause forbidding "some version in the group chosen
+        # AND some version in the run chosen". a side contributes its
+        # version literal when it is a singleton, its package variable
+        # when every version is covered, prefix-ladder literals when it
+        # is an interval — ¬L_hi ∨ L_(lo-1), correct because a chosen
+        # version in the interval forces L_hi true and (by at-most-one
+        # plus ladder completion) L_(lo-1) false — and otherwise a shared
+        # auxiliary trigger defined by one implication per version.
+        # triggers occur only negatively, so their one-directional
+        # definitions suffice for exact model projection.
+        psets = Dict{Tuple{Int,Vector{Int}},Int}() # (v_p, versions) => var
+        pat = UInt64[]
+        runs = Tuple{Int,Int}[]
+
+        # literal for "some version in S of the package with variable
+        # base v and n versions is chosen" (non-contiguous S only)
+        function set_trigger(v::Int, S::Vector{Int})
+            get!(() -> begin
+                t = PicoSAT.inc_max_var(pico)
+                for i in S
+                    PicoSAT.add(pico, -(v + i))
+                    PicoSAT.add(pico, t)
+                    PicoSAT.add(pico, 0)
+                end
+                t
+            end, psets, (v, S))
+        end
+
+        for p in names
+            info_p = info[p]
+            n_p = length(info_p.versions)
+            v_p = vars[p]
+            l_p = get(lads, p, 0)
+            for (q, b) in info_p.interacts
+                p < q || continue # conflicts are symmetrical
+                info_q = info[q]
+                n_q = length(info_q.versions)
+                v_q = vars[q]
+                l_q = get(lads, q, 0)
+                Y = info_q.conflicts
+                c = info_q.interacts[p]
+                W = col_words(Y)
+                resize!(pat, W)
+                # group p's versions by conflict pattern: the pattern of
+                # p@i is the contiguous column c+i of q's matrix
+                groups = Dict{Vector{UInt64},Vector{Int}}()
+                for i = 1:n_p
+                    col_copy!(pat, Y, c + i)
+                    clear_rows_above!(pat, n_q)
+                    all(iszero, pat) && continue
+                    push!(get!(() -> Int[], groups, copy(pat)), i)
+                end
+                for (pattern, Sg) in groups
+                    # p-side literals: interval via the ladder, otherwise
+                    # a shared trigger
+                    empty!(lits)
+                    if Sg[end] - Sg[1] + 1 == length(Sg)
+                        run_lits!(lits, v_p, l_p, Sg[1], Sg[end], n_p)
+                    else
+                        push!(lits, -set_trigger(v_p, Sg))
+                    end
+                    np_lits = length(lits)
+                    # maximal runs of the pattern
+                    empty!(runs)
+                    prev = -2
+                    @inbounds for w = 1:W
+                        z = pattern[w]
+                        while !iszero(z)
+                            j = ((w - 1) << 6) + trailing_zeros(z) + 1
+                            z &= z - 1
+                            if j == prev + 1
+                                runs[end] = (runs[end][1], j)
+                            else
+                                push!(runs, (j, j))
+                            end
+                            prev = j
+                        end
+                    end
+                    for (lo, hi) in runs
+                        resize!(lits, np_lits)
+                        run_lits!(lits, v_q, l_q, lo, hi, n_q)
+                        for x in lits
+                            PicoSAT.add(pico, x)
+                        end
                         PicoSAT.add(pico, 0)
                     end
                 end

@@ -68,15 +68,33 @@ function pkg_info(
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,
 ) where {P,V}
-    validate_pkg_data_consistency(data, reqs)
+    # intern packages as integer indices once, up front: the build phases
+    # below run entirely on vectors, and package names reappear only in
+    # the final PkgInfo structures. ids follow name order (packages are
+    # sorted), so id-sorted dependency and interaction lists coincide
+    # with the name-sorted ones the output requires
+    pkgs = sort!(collect(keys(data)))
+    N = length(pkgs)
+    ix = Dict{P,Int}(p => i for (i, p) in enumerate(pkgs))
+    datas = [data[p] for p in pkgs]
+    nver = Int[length(d.versions) for d in datas]
+
+    # required packages must exist
+    for r in reqs
+        haskey(ix, r) || throw(ArgumentError(
+            "Required package $r is not available in the package data"))
+    end
+
     # conflict masks per distinct compat entry: for each partner q with a
     # conflicting version, the bitmask of conflicting versions of q
-    MasksT = Dict{P, Vector{UInt64}}
+    MasksT = Vector{Tuple{Int,Vector{UInt64}}}
     function compute_masks(comp_pv)
         masks = MasksT()
         for (q, comp_pvq) in comp_pv
-            haskey(data, q) || continue # unreachable (weak dep)
-            vers = data[q].versions
+            qi = get(ix, q, 0)
+            # compatibility constraints on unknown packages are allowed
+            qi == 0 && continue
+            vers = datas[qi].versions
             mask = zeros(UInt64, (length(vers) + 63) >> 6)
             found = false
             for (j, w) in enumerate(vers)
@@ -84,7 +102,7 @@ function pkg_info(
                 mask[((j - 1) >> 6) + 1] |= UInt64(1) << ((j - 1) & 63)
                 found = true
             end
-            found && (masks[q] = mask)
+            found && push!(masks, (qi, mask))
         end
         return masks
     end
@@ -94,16 +112,16 @@ function pkg_info(
     # compat dicts across a package's versions, so each package has only
     # a handful of distinct entries — a linear identity scan finds them
     # far more cheaply than hashing every version's dict
-    vmasks = Dict{P, Vector{Tuple{V, MasksT}}}()
-    interacts = Dict{P,Vector{P}}(p => P[] for p in keys(data))
+    vmasks = [Tuple{V,MasksT}[] for _ = 1:N]
+    interacts = [Int[] for _ = 1:N]
     objs = Vector{Any}()
     mvals = Vector{MasksT}()
-    for (p, data_p) in data
-        interacts_p = interacts[p]
-        vm = Tuple{V, MasksT}[]
+    for pi = 1:N
+        interacts_p = interacts[pi]
+        vm = vmasks[pi]
         empty!(objs)
         empty!(mvals)
-        for (v, comp_pv) in data_p.compat
+        for (v, comp_pv) in datas[pi].compat
             idx = 0
             for ci = 1:length(objs)
                 if objs[ci] === comp_pv
@@ -119,50 +137,73 @@ function pkg_info(
             masks = mvals[idx]
             isempty(masks) && continue
             push!(vm, (v, masks))
-            for q in keys(masks)
-                (q == p || q in interacts_p) && continue
-                push!(interacts_p, q)
-                push!(interacts[q], p)
+            for (qi, _) in masks
+                (qi == pi || qi in interacts_p) && continue
+                push!(interacts_p, qi)
+                push!(interacts[qi], pi)
             end
         end
-        isempty(vm) || (vmasks[p] = vm)
     end
-    foreach(sort!, values(interacts))
+    foreach(sort!, interacts)
 
-    # construct dict of PkgInfo structs
-    info = Dict{P,PkgInfo{P,V}}()
-    for (p, data_p) in data
-        # union the version's dependency sets; they are shared objects
-        # (provider deduplication), so skip repeats by identity first
-        empty!(objs)
+    # dependency ids (validating that dependencies exist), interaction
+    # block offsets, and the conflicts matrices
+    depids = Vector{Vector{Int}}(undef, N)
+    dobjs = Vector{Vector{Any}}(undef, N)       # distinct dep vectors
+    dcols = Vector{Vector{Vector{Int}}}(undef, N) # their column indices
+    offs = Vector{Vector{Int}}(undef, N)
+    mats = Vector{BitMatrix}(undef, N)
+    for pi = 1:N
+        data_p = datas[pi]
+        # union the versions' dependency sets; they are shared objects
+        # (provider deduplication), so convert each distinct one once
+        objs_p = Any[]
         for dv in values(data_p.depends)
-            repeat = false
-            for o in objs
+            found = false
+            for o in objs_p
                 if o === dv
-                    repeat = true
+                    found = true
                     break
                 end
             end
-            repeat || push!(objs, dv)
+            found || push!(objs_p, dv)
         end
-        D = P[]
-        for dv in objs
+        ids = Int[]
+        for dv in objs_p, q in dv
+            qi = get(ix, q, 0)
+            qi == 0 && throw(ArgumentError(
+                "Package $(pkgs[pi]) depends on $q, but $q is not available in the package data"))
+            push!(ids, qi)
+        end
+        ids = sort!(unique!(ids))
+        depids[pi] = ids
+        # per distinct dep vector, the dependency column indices
+        # (self-dependencies get no bits, as before)
+        cols_p = Vector{Int}[]
+        for dv in objs_p
+            cols = Int[]
             for q in dv
-                push!(D, q)
+                qi = ix[q]
+                qi == pi && continue
+                push!(cols, searchsortedfirst(ids, qi))
             end
+            push!(cols_p, cols)
         end
-        D = sort!(unique!(D))
-        T = Dict{P,Int}(p => 0 for p in interacts[p])
-        n = length(D)
-        for q in interacts[p]
-            T[q] = n
-            n += length(data[q].versions)
+        dobjs[pi] = objs_p
+        dcols[pi] = cols_p
+        # interaction block offsets
+        n = length(ids)
+        off = Vector{Int}(undef, length(interacts[pi]))
+        for (k, qi) in enumerate(interacts[pi])
+            off[k] = n
+            n += nver[qi]
         end
+        offs[pi] = off
         # conflicts matrix: n+1 columns of padded_rows(m) bits each — rows
         # 1:m are versions, row m+1 holds column-active flags, the rest is
         # word-alignment padding (always zero); column n+1 holds the
         # version-active flags
-        m = length(data_p.versions)
+        m = nver[pi]
         X = falses(padded_rows(m), n + 1)
         # mark all versions & columns as active; the column flags live at
         # a fixed bit of each column's chunk span, so set them directly
@@ -175,33 +216,46 @@ function pkg_info(
         @inbounds for j = 1:n
             ch[(j - 1) * W + wf] |= bf
         end
-        # add the PkgInfo struct to dict
-        info[p] = PkgInfo{P,V}(data_p.versions, D, T, X)
+        mats[pi] = X
     end
 
+    # block offset of package qi's versions in package pi's matrix
+    block(pi::Int, qi::Int) =
+        offs[pi][searchsortedfirst(interacts[pi], qi)]
+
     # initialize conflicts matrices
-    for (p, info_p) in info
-        X = info_p.conflicts
-        V⁻¹ = Dict{V,Int}(v => i for (i, v) in enumerate(info_p.versions))
-        D⁻¹ = Dict{P,Int}(q => j for (j, q) in enumerate(info_p.depends))
-        data_p = data[p]
-        # set dependency bits
+    for pi = 1:N
+        data_p = datas[pi]
+        X = mats[pi]
+        V⁻¹ = Dict{V,Int}(v => i for (i, v) in enumerate(data_p.versions))
+        # set dependency bits (column lists precomputed above)
+        objs_p = dobjs[pi]
+        cols_p = dcols[pi]
         for (v, deps_pv) in data_p.depends
             i = V⁻¹[v]
-            for q in deps_pv
-                q == p && continue
-                X[i, D⁻¹[q]] = true
+            idx = 0
+            for ci = 1:length(objs_p)
+                if objs_p[ci] === deps_pv
+                    idx = ci
+                    break
+                end
+            end
+            for k in cols_p[idx]
+                X[i, k] = true
             end
         end
         # set compatibility bits
-        for (v, masks) in get(vmasks, p, Tuple{V, MasksT}[])
+        for (v, masks) in vmasks[pi]
             i = V⁻¹[v]
-            for (q, mask) in masks
-                q == p && continue
-                info_q = info[q]
-                Y = info_q.conflicts
-                b = info_p.interacts[q]
-                c = info_q.interacts[p]
+            Wx = col_words(X)
+            wx = ((i - 1) >> 6) + 1
+            bx = UInt64(1) << ((i - 1) & 63)
+            xch = X.chunks
+            for (qi, mask) in masks
+                qi == pi && continue
+                Y = mats[qi]
+                b = block(pi, qi)
+                c = block(qi, pi)
                 # partner-side column is contiguous: blit the mask
                 ybase = (c + i - 1) * col_words(Y)
                 @inbounds for w = 1:length(mask)
@@ -210,10 +264,6 @@ function pkg_info(
                 # own-side row: one bit per conflicting partner version,
                 # written straight into the chunks (the row bit sits at a
                 # fixed offset of each column's span)
-                Wx = col_words(X)
-                wx = ((i - 1) >> 6) + 1
-                bx = UInt64(1) << ((i - 1) & 63)
-                xch = X.chunks
                 @inbounds for w = 1:length(mask)
                     z = mask[w]
                     while !iszero(z)
@@ -224,6 +274,16 @@ function pkg_info(
                 end
             end
         end
+    end
+
+    # materialize the package-keyed PkgInfo structures
+    info = Dict{P,PkgInfo{P,V}}()
+    for pi = 1:N
+        D = pkgs[depids[pi]]
+        T = Dict{P,Int}(
+            pkgs[qi] => offs[pi][k]
+            for (k, qi) in enumerate(interacts[pi]))
+        info[pkgs[pi]] = PkgInfo{P,V}(datas[pi].versions, D, T, mats[pi])
     end
 
     # only keep reachable, necessary packages & versions

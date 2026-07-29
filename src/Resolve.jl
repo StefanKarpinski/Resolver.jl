@@ -19,7 +19,23 @@ function resolve_core(
     # pinning each as it goes (in priority order); return the newly-reachable
     # dependencies of the chosen versions that still need optimizing
     function optimize!(opts::Set{P}, seen::Set{P})
-        for p in sort!(collect(opts); by)
+        layer = sort!(collect(opts); by)
+        # optimistic joint probe: assume the best version of every
+        # package in the layer that the current model doesn't already
+        # have at its best. when jointly feasible — the common case —
+        # one solve pins the whole layer, and joint feasibility of the
+        # best versions witnesses each of the sequential optimizations
+        # below, so the layered answer is unchanged. a failed probe
+        # tells us nothing and the sequential path proceeds as usual
+        # (skipped for a single package, whose own probe covers it)
+        todo = [p for p in layer if sol[p] > 1]
+        if length(todo) > 1
+            for p in todo
+                sat_assume(sat, p, 1)
+            end
+            is_satisfiable(sat) && extract_solution!(sat, sol)
+        end
+        for p in layer
             optimize_version!(sat, sol, p)
             # fix optimized version
             sat_add(sat, p, sol[p])

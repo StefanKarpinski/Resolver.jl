@@ -303,6 +303,92 @@ is marginal. Essentially all of the reduction is captured by one
 reachability pass and one redundancy pass; the remaining rounds just
 collect the stragglers because they cost next to nothing.
 
+## Preprocessing for caching
+
+Everything above concerns one resolve. When many resolves share a
+registry state, the question becomes which artifacts can be computed
+once and reused — and the answer is organized by what each artifact
+depends on: the registry content, the version ordering, and the
+requirements. Three results pin down the tiers.
+
+!!! note "Proposition (filtering for a larger requirement set)"
+    Let ``\mathrm{reqs} \subseteq \mathrm{reqs}'``. The filter run with
+    requirements ``\mathrm{reqs}'`` keeps every version of
+    ``\mathrm{Lay}(D, \mathrm{reqs})``, so by Theorem 4
+    ``\mathrm{Lay}(F_{\mathrm{reqs}'}(D), \mathrm{reqs}) =
+    \mathrm{Lay}(D, \mathrm{reqs})``.
+
+    *Proof.* Reachability is monotone in its seed set on a fixed
+    problem — every derivation from ``\mathrm{reqs}`` is a derivation
+    from ``\mathrm{reqs}'`` — so the ``\mathrm{reqs}'``-reach keeps a
+    superset of the ``\mathrm{reqs}``-reach, which keeps the answer
+    (Theorem 5). Redundancy elimination is requirement-agnostic
+    outright: Theorem 6's swap argument converts any witness model
+    containing a dominated version into one containing its dominator
+    without touching coverage, so on whatever problem it runs, the
+    layered trace of *every* requirement set avoids the versions it
+    deletes. Each round of the iterated filter therefore preserves the
+    answer, and Theorem 4 applies after each. ∎
+
+!!! note "Corollary (whole-registry prefiltering)"
+    Filtering once with *every* package required yields a reduced
+    problem on which any requirement set resolves to its raw answer,
+    with satisfiability verdicts preserved (unsatisfiability trivially,
+    since models only shrink; satisfiability because the answer
+    survives). Filtering is, in this sense, a monotone function of the
+    requirements, and the all-requirements filter is its safe upper
+    envelope.
+
+The prefiltered problem still depends on the version *ordering* — both
+reachability's prefixes and redundancy's better-dominates-worse are
+stated in terms of it. How much preprocessing can be shared across
+orderings has an exact answer:
+
+!!! note "Proposition (order-free deletion is exactly model-freeness)"
+    A version can be deleted without changing the layered answer for
+    every version ordering and every requirement set iff it appears in
+    no model.
+
+    *Proof.* If a version appears in no model, deleting it leaves the
+    model set — and hence every trace — untouched. Conversely, if
+    ``p@v`` appears in a model ``M``, order ``p``'s versions with ``v``
+    first and require ``p``: the trace pins ``p`` at the best feasible
+    rank, and ``M`` witnesses rank 1, so the answer contains ``p@v``
+    and deleting it changes the answer. ∎
+
+So the strongest ordering-independent filter is exactly the removal of
+model-free versions (of which the arc-consistency test — a version one
+of whose dependencies has no compatible version left — is a cheap
+sound approximation, and per-version SAT probes are the complete one).
+One more piece of ordering-independent structure exists:
+
+!!! note "Lemma (interchangeable versions)"
+    Call two versions of a package *interchangeable* when they have the
+    same dependency set and every compatibility entry in the problem —
+    their own and every other package's — constrains them equally
+    (equivalently: their constraint rows are identical). Interchangeable
+    versions can be collapsed to whichever of them the active ordering
+    ranks best, preserving that ordering's layered answers: the
+    collapsed versions are dominated by the representative (identical
+    constraints are in particular a subset), so Theorem 6's argument
+    applies on the raw problem and Theorem 4 finishes. The classes are
+    ordering-independent; only the representative choice is not.
+
+    Beware that a package's *own* dependencies and compat matching is
+    not sufficient: another package's compatibility bound can admit one
+    of the two versions and not the other, and then they are genuinely
+    distinguishable — solutions needing the excluded pairing must pick
+    the right one. The equal-incoming-constraints half of the
+    definition is what rules this out.
+
+Together these give a three-tier cache: per registry state (parsed
+data, the model-free set, interchangeability classes), per ordering
+(the whole-registry prefilter), and per resolve (requirement-specific
+filtering, which is fast and not worth caching). A non-standard
+ordering — say, preferring versions closest to an installed manifest —
+invalidates only the middle tier, which is orders of magnitude cheaper
+to rebuild than the first.
+
 !!! warning "Formalization boundary"
     Theorems 2, 3, 5, and 6 are proved against the rule set as stated
     above, which is a faithful but hand-made reading of `find_reachable`

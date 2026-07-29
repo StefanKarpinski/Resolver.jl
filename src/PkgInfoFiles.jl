@@ -44,6 +44,9 @@ function load_pkg_info_file(
             interacts = read_vals(io, pv)
             conflicts = read_bits(io, padded_rows(length(versions)))
             interacts = Dict{P, Int}(q => 0 for q in interacts)
+            # the interchangeability classes are a function of the conflicts
+            # matrix, so the file need not carry them: the four-argument
+            # constructor recomputes them
             info[p] = PkgInfo(versions, depends, interacts, conflicts)
         end
         # compute interacts dict values

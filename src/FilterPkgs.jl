@@ -1,3 +1,119 @@
+"""
+    class_representatives(info, prob) :: Dict{P, BitVector}
+
+Per package, a mask of the versions that survive collapsing its
+interchangeability classes: the T1 classes (`version_classes`) refined by
+`prob`, then one representative per refined class.
+
+**Refinement.** User compat and pins are the only constraints that can tell two
+members of a T1 class apart, because they are stated on version *values*
+instead of on the registry's rows — so splitting each class by `prob`'s
+[`exclusion_masks`](@ref Resolver.exclusion_masks) is enough, and it costs
+nothing for the packages the user did not constrain. Read as the virtual
+package of `Problem`'s docstring, this is just row equality again, over one
+more conflict column.
+
+**Representative.** The best member in the active rank order, which is version
+order, so the lowest-indexed one.
+
+Collapsing is answer-preserving: identical constraint rows are in particular a
+subset of each other, so a class member is dominated by its representative and
+the redundancy theorem's swap argument applies (see the manual's Theory section,
+lemma on interchangeable versions). Representatives *are* versions, and the
+members dropped are exactly the ones the layered answer never chooses, so
+nothing has to be mapped back afterwards.
+"""
+function class_representatives(
+    info :: AbstractDict{P, PkgInfo{P,V}},
+    prob :: Problem{P} = Problem(P[]),
+) where {P,V}
+    excl = exclusion_masks(info, prob)
+    keep = Dict{P,BitVector}()
+    seen = Bool[] # refined classes already represented
+    for (p, info_p) in info
+        m = length(info_p.versions)
+        cls = info_p.classes
+        e = get(excl, p, nothing)
+        k = falses(m)
+        resize!(seen, 2m)
+        fill!(seen, false)
+        for i = 1:m
+            # refined class key: the T1 class, split by forbidden-ness
+            c = 2 * cls[i] - (e !== nothing && e[i])
+            seen[c] && continue
+            seen[c] = true
+            k[i] = true # the first member found is the best one
+        end
+        keep[p] = k
+    end
+    return keep
+end
+
+"""
+    prepare_pkg_info(info, prob, [info′]; group = true) :: Dict{P,PkgInfo{P,V}}
+
+The per-resolve half of preprocessing, run on a T1 artifact (see
+[`pkg_info`](@ref Resolver.pkg_info)) to produce the universe the SAT instance
+is built over. Two steps, in this order:
+
+1. **Collapse** each interchangeability class, refined by `prob`, to its best
+   member (`class_representatives`).
+2. **Filter** the collapsed universe for reachability and redundancy against
+   the actual requirements and constraints (`filter_pkg_info!`).
+
+Filtering has to come second: both of its passes are stated in terms of the
+version ordering, and both get cheaper the fewer versions there are. The
+collapse is handed over as *marks* rather than as a rebuilt universe, so the
+two steps share one materialization (see `copy_marked!`).
+
+The result is a fresh dict — `info` is left untouched, so a T1 artifact stays
+reusable across resolves — unless the caller passes its own scratch dict as
+`info′`, or `info` itself when it owns it. `group = false` skips the collapse,
+which is the ungrouped path the tests compare against.
+"""
+function prepare_pkg_info(
+    info  :: AbstractDict{P, PkgInfo{P,V}},
+    prob  :: Problem{P},
+    info′ :: Dict{P, PkgInfo{P,V}} = Dict{P, PkgInfo{P,V}}();
+    group :: Bool = true,
+) where {P,V}
+    keep = group ? class_representatives(info, prob) : nothing
+    copy_marked!(info′, info, keep)
+    filter_pkg_info!(info′, prob)
+    return info′
+end
+
+# Copy `info` into `info′`, marking active exactly the versions `keep` selects
+# (all of them when it is `nothing`); when the two are the same dict, only the
+# marks are written. This is how the collapse is handed to `filter_pkg_info!`:
+# as *marks* rather than as an already-shrunken universe, so that the filter's
+# own first `drop_unmarked!` materializes the collapse and its own deletions
+# together, in one rebuild instead of two. Every pass the filter runs before
+# that point reads the version flags as the version set, so they all see the
+# collapsed problem — which is the problem the interchangeability lemma
+# licenses substituting for the original.
+function copy_marked!(
+    info′ :: Dict{P, PkgInfo{P,V}},
+    info  :: AbstractDict{P, PkgInfo{P,V}},
+    keep  :: Union{Nothing, AbstractDict{P, BitVector}} = nothing,
+) where {P,V}
+    for (p, info_p) in info
+        X = info_p.conflicts
+        m = length(info_p.versions)
+        n = size(X, 2) - 1
+        if info′ === info
+            keep === nothing || (X[1:m, end] .= keep[p])
+            continue
+        end
+        X′ = copy(X)
+        X′[1:m, end] .= keep === nothing ? true : keep[p]
+        X′[m+1, 1:n] .= true
+        info′[p] = PkgInfo(copy(info_p.versions), copy(info_p.depends),
+                           copy(info_p.interacts), X′, copy(info_p.classes))
+    end
+    return info′
+end
+
 filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
@@ -15,9 +131,14 @@ function filter_pkg_info!(
     # index-based, so they are rebuilt after every deletion round; only the
     # constrained packages cost anything
     excl = exclusion_masks(info, prob)
-    # arc consistency first: it needs no marks and it is what makes the
-    # deletions safe — dropping a package while a kept version still
-    # depends on it would leave a dangling name. then redundancy
+    # the version flags on entry are the version set to filter: normally all
+    # of them, but `prepare_pkg_info` seeds them with the interchangeability
+    # collapse, so that the first `drop_unmarked!` below deletes the collapsed
+    # members along with everything the passes here find.
+    #
+    # arc consistency first: it needs no reachability marks and it is what
+    # makes the deletions safe — dropping a package while a kept version
+    # still depends on it would leave a dangling name. then redundancy
     # elimination — it needs no reachability marks and does most of the
     # shrinking — then alternate reachability and redundancy until neither
     # deletes anything: each deleted version can expose more of both kinds
@@ -234,9 +355,19 @@ function mark_installable!(
     # arc-consistency test — a sound approximation of deleting model-free
     # versions (see the theory docs) — and it is also what keeps `depends`
     # from naming a package that `drop_unmarked!` deletes as empty
+    #
+    # a dependency naming a package that is not in `info` at all counts the
+    # same way: it cannot be satisfied either, and a deletion elsewhere (the
+    # class collapse, say, or an earlier `drop_unmarked!`) is exactly how one
+    # comes about. `info` does not change here, so the absentees are found once
+    absent = Set{P}()
+    for info_p in values(info), q in info_p.depends
+        haskey(info, q) || push!(absent, q)
+    end
     empties = Set{P}()
     while true
         empty!(empties)
+        union!(empties, absent)
         for (p, info_p) in info
             X = info_p.conflicts
             any(X[i, end] for i = 1:length(info_p.versions)) && continue
@@ -518,6 +649,7 @@ function drop_unmarked!(
         D = info_p.depends
         T = info_p.interacts
         X = info_p.conflicts
+        C = info_p.classes
         m = length(V)
         n = size(X, 2) - 1
         W = col_words(X)
@@ -533,11 +665,7 @@ function drop_unmarked!(
         if m′ == m && all(K)
             X[m+1, 1:n] .= true
             if info !== info′
-                V′ = copy(V)
-                D′ = copy(D)
-                T′ = copy(T)
-                X′ = copy(X)
-                info′[p] = PkgInfo(V′, D′, T′, X′)
+                info′[p] = PkgInfo(copy(V), copy(D), copy(T), copy(X), copy(C))
             end
             continue
         end
@@ -604,8 +732,14 @@ function drop_unmarked!(
         @assert j′ == b′
         X′[1:m′, end] .= true  # kept versions are active
         X′[m′+1, 1:b′] .= true # kept columns are active
+        # the surviving versions keep the classes they were in: dropping
+        # versions and columns can only *merge* row-equality classes (fewer
+        # rows to distinguish, fewer columns to differ in), so restricting the
+        # partition stays sound, if possibly finer than the truth. `pkg_info`
+        # is where it is computed exactly
+        C′ = renumber_classes!(C[I])
         # assign new struct into info′
-        info′[p] = PkgInfo(V′, D′, T′, X′)
+        info′[p] = PkgInfo(V′, D′, T′, X′, C′)
     end
     return info′
 end

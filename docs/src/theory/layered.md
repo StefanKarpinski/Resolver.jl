@@ -54,8 +54,8 @@ itself, which pins the unique answer.
 
 ## Filtering
 
-Real problems are shrunk before solving by two passes (`pkg_info` with
-`filter=true`, the default):
+Real problems are shrunk before solving by two passes
+(`filter_pkg_info!`, run per resolve from `prepare_pkg_info`):
 
 **Reachability** (`find_reachable`) computes, per package, a version
 *prefix* to keep, by a fixpoint of *conflict-driven degradation*:
@@ -388,6 +388,15 @@ filtering, which is fast and not worth caching). A non-standard
 ordering — say, preferring versions closest to an installed manifest —
 invalidates only the middle tier, which is orders of magnitude cheaper
 to rebuild than the first.
+
+The implementation draws the line between the first tier and the rest
+at `pkg_info`, whose output — conflict matrices, the arc-consistency
+prune and the classes (`version_classes`) — is exactly the
+registry-only artifact. Everything ordering- or problem-dependent runs
+per resolve in `prepare_pkg_info`: the classes are refined by the
+user's constraints and collapsed to their best members
+(`class_representatives`), and the collapsed problem is then filtered
+(`filter_pkg_info!`).
 
 !!! warning "Formalization boundary"
     Theorems 2, 3, 5, and 6 are proved against the rule set as stated

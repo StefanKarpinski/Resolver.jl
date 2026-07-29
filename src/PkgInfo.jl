@@ -3,13 +3,140 @@ struct PkgInfo{P,V}
     depends   :: Vector{P}
     interacts :: Dict{P, Int}
     conflicts :: BitMatrix
+    # the interchangeability partition of `versions`, as a class id per
+    # version (see `version_classes`): versions share a class when nothing in
+    # the registry can tell them apart. Derived from `conflicts`, and at the
+    # T1 boundary (`pkg_info`) exactly so
+    classes   :: Vector{Int}
 end
 
+PkgInfo(
+    versions  :: Vector{V},
+    depends   :: Vector{P},
+    interacts :: Dict{P,Int},
+    conflicts :: BitMatrix,
+) where {P,V} = PkgInfo{P,V}(versions, depends, interacts, conflicts,
+    version_classes(conflicts, length(versions)))
+
+# `classes` is a function of `conflicts`, so it is not compared: in-place
+# shrinking (see `drop_unmarked!`) leaves a sound but possibly finer partition
+# than a recomputation would give, and that difference is not a difference of
+# content
 function Base.:(==)(a::PkgInfo, b::PkgInfo)
     a.versions  == b.versions  &&
     a.depends   == b.depends   &&
     a.interacts == b.interacts &&
     a.conflicts == b.conflicts
+end
+
+"""
+    version_classes(X, m) :: Vector{Int}
+
+The interchangeability partition of the `m` versions whose conflicts matrix is
+`X`, as a class id per version — ids numbered `1, 2, …` in the version order of
+each class's first member.
+
+Per the manual's Theory section (lemma on interchangeable versions), two
+versions of a package are *interchangeable* when they have the same dependency
+set and every compatibility entry in the problem — their own and every other
+package's — constrains them equally. In `PkgInfo` terms that is exactly row
+equality, and the test is purely local to `X`: the dependency columns carry the
+dependency set, and the interaction blocks carry every compatibility entry that
+mentions the package, incoming as much as outgoing, because `pkg_info` records
+each conflict symmetrically in both partners' matrices. (The incoming half is
+not optional — another package's bound can admit one of two versions and not
+the other, and then they are genuinely distinguishable.)
+
+The partition is a property of the registry alone: it is independent of the
+requirements, of the version ordering, and of any user constraints. That is
+what puts it on the T1 side of the boundary, and what lets the collapse to
+class representatives be a per-resolve step (see `class_representatives`).
+
+The scan is word-parallel over columns: one pass computes, for every adjacent
+pair of versions at once, whether their rows differ anywhere, which yields the
+classes that are contiguous runs of versions — nearly all of them in practice,
+since dependency sets and compat bounds vary in blocks. A second pass hashes
+one row per run and merges runs whose rows compare equal, so the result is the
+exact row-equality partition, hence invariant under reordering versions.
+"""
+function version_classes(X::BitMatrix, m::Int)
+    version_classes!(Vector{Int}(undef, m), X, m)
+end
+
+function version_classes!(ids::Vector{Int}, X::BitMatrix, m::Int)
+    resize!(ids, m)
+    m > 0 || return ids
+    n = size(X, 2) - 1
+    W = col_words(X)
+    chunks = X.chunks
+
+    # pass 1: word-parallel adjacency differences. bit i-1 of `d` records
+    # whether rows i and i+1 differ; within a word, row i's bit and row i+1's
+    # bit are adjacent, so one shift-and-xor per word compares 64 pairs at
+    # once (the topmost pair straddles into the next word)
+    d = zeros(UInt64, W)
+    @inbounds for k = 1:n
+        base = (k - 1) * W
+        for w = 1:W
+            c = chunks[base + w]
+            nxt = w < W ? chunks[base + w + 1] : UInt64(0)
+            d[w] |= (c ⊻ (c >> 1)) ⊻ ((nxt & 1) << 63)
+        end
+    end
+    runs = Int[1] # first version of each run of adjacent identical rows
+    nc = 1
+    ids[1] = 1
+    @inbounds for i = 2:m
+        if !iszero(d[((i - 2) >> 6) + 1] & (UInt64(1) << ((i - 2) & 63)))
+            nc += 1
+            push!(runs, i)
+        end
+        ids[i] = nc # = the index of i's run
+    end
+    nc > 1 || return ids
+
+    # pass 2: merge runs whose rows are equal but not adjacent. hashes only
+    # bucket the candidates; every merge is confirmed by comparing the rows
+    buckets = Dict{UInt,Vector{Int}}()
+    for (r, i) in enumerate(runs)
+        push!(get!(() -> Int[], buckets, row_hash(X, i, n, W)), r)
+    end
+    canon = collect(1:nc) # each run's earliest run with an equal row
+    merged = false
+    for rs in values(buckets)
+        length(rs) > 1 || continue
+        sort!(rs)
+        for a = 2:length(rs)
+            for b = 1:a-1
+                canon[rs[b]] == rs[b] || continue # not a class of its own
+                rows_equal(X, runs[rs[b]], runs[rs[a]], n, W) || continue
+                canon[rs[a]] = rs[b]
+                merged = true
+                break
+            end
+        end
+    end
+    merged || return ids
+
+    # renumber the surviving classes in order of first appearance
+    num = zeros(Int, nc)
+    nc′ = 0
+    for r = 1:nc
+        canon[r] == r && (num[r] = (nc′ += 1))
+    end
+    @inbounds for i = 1:m
+        ids[i] = num[canon[ids[i]]]
+    end
+    return ids
+end
+
+# renumber class ids to 1, 2, … in order of first appearance
+function renumber_classes!(ids::Vector{Int})
+    num = Dict{Int,Int}()
+    for (i, c) in enumerate(ids)
+        ids[i] = get!(() -> length(num) + 1, num, c)
+    end
+    return ids
 end
 
 function pkg_data(
@@ -55,33 +182,54 @@ end
 
 function pkg_info(
     deps :: DepsProvider{P},
-    prob :: Problem{P};
+    reqs :: SetOrVec{P} = deps.packages;
     filter :: Bool = true,
 ) where {P}
-    data = pkg_data(deps, prob.reqs)
-    info = pkg_info(data, prob; filter)
+    data = pkg_data(deps, reqs)
+    info = pkg_info(data, reqs; filter)
     return info
 end
 
-# bare requirements: an unconstrained problem (which costs nothing to build)
+# a `Problem`'s requirements are all of it that reaches T1 — that is the point
+# of the boundary — so these are pure conveniences for `pkg_info(_, prob.reqs)`.
+# Elsewhere the `Problem` form is the primary one and the requirements form the
+# convenience; here the dependence really does run the other way
+
 pkg_info(
     deps :: DepsProvider{P},
-    reqs :: SetOrVec{P} = deps.packages;
+    prob :: Problem{P};
     filter :: Bool = true,
-) where {P} = pkg_info(deps, Problem(reqs); filter)
+) where {P} = pkg_info(deps, prob.reqs; filter)
 
 pkg_info(
     data :: AbstractDict{P,<:PkgData{P}},
-    reqs :: SetOrVec{P} = keys(data);
-    filter :: Bool = true,
-) where {P} = pkg_info(data, Problem(reqs); filter)
-
-function pkg_info(
-    data :: AbstractDict{P,<:PkgData{P,V}},
     prob :: Problem{P};
     filter :: Bool = true,
+) where {P} = pkg_info(data, prob.reqs; filter)
+
+"""
+    pkg_info(data, reqs = all packages; filter = true) :: Dict{P,PkgInfo{P,V}}
+
+The **T1 artifact**: the dependency closure of `reqs`, encoded as one `PkgInfo`
+per package — conflict matrices, plus the
+preprocessing that depends on the registry *alone*, namely the arc-consistency
+prune (`mark_installable!`) and the interchangeability partition
+(`version_classes`). Nothing here depends on the version ordering, on user
+compat or pins, or (beyond the closure) on the requirements, so the result can
+be computed once and shared by, or cached across, arbitrarily many resolves.
+
+`filter = false` skips the arc-consistency prune, leaving the conflict matrices
+exactly as the data spells them out.
+
+Requirement-specific and constraint-specific shrinking — reachability and
+redundancy elimination — happens per resolve instead, after the classes have
+been refined and collapsed: see `prepare_pkg_info`.
+"""
+function pkg_info(
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    reqs :: SetOrVec{P} = keys(data);
+    filter :: Bool = true,
 ) where {P,V}
-    reqs = prob.reqs
     # intern packages as integer indices once, up front: the build phases
     # below run entirely on vectors, and package names reappear only in
     # the final PkgInfo structures. ids follow name order (packages are
@@ -290,18 +438,36 @@ function pkg_info(
         end
     end
 
-    # materialize the package-keyed PkgInfo structures
+    # materialize the package-keyed PkgInfo structures. classes start out as
+    # singletons (always a sound partition) and are computed for real below,
+    # once the prune has settled which versions there are
     info = Dict{P,PkgInfo{P,V}}()
     for pi = 1:N
         D = pkgs[depids[pi]]
         T = Dict{P,Int}(
             pkgs[qi] => offs[pi][k]
             for (k, qi) in enumerate(interacts[pi]))
-        info[pkgs[pi]] = PkgInfo{P,V}(datas[pi].versions, D, T, mats[pi])
+        info[pkgs[pi]] = PkgInfo{P,V}(
+            datas[pi].versions, D, T, mats[pi], collect(1:nver[pi]))
     end
 
-    # only keep reachable, necessary packages & versions
-    filter && filter_pkg_info!(info, prob)
+    # the T1 preprocessing: arc consistency, then interchangeability. Both are
+    # properties of the registry alone — the arc-consistency test deletes
+    # versions one of whose dependencies has no versions at all, which is a
+    # sound approximation of deleting model-free versions and, per the manual's
+    # Theory section, exactly the kind of deletion that is safe for *every*
+    # ordering and requirement set; the classes are row equality. Reachability
+    # and redundancy elimination are not of that kind — both are stated in
+    # terms of the version ordering, and reachability in terms of the
+    # requirements too — so they now run per resolve, in `prepare_pkg_info`.
+    if filter
+        mark_installable!(info)
+        drop_unmarked!(info)
+    end
+    for info_p in values(info)
+        version_classes!(info_p.classes, info_p.conflicts,
+                         length(info_p.versions))
+    end
 
     return info
 end

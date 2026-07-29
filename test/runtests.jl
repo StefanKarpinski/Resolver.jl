@@ -196,6 +196,68 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file
     end
 end
 
+@testset "zero-version packages" begin
+    # a package with no versions can never be installed: requiring it makes
+    # the problem unsatisfiable, versions depending on it are uninstallable,
+    # and the filter must not leave references to it behind
+    nodeps = Dict{Symbol,Vector{Symbol}}()
+    nocomp = Dict{Symbol,Dict{Symbol,Any}}()
+
+    # a zero-version package required directly
+    data = Dict(
+        :A => PkgData(Symbol[], nodeps, nocomp),
+        :B => PkgData([:v1], nodeps, nocomp),
+    )
+    @test resolve(data, [:A]) === nothing
+    @test resolve(data, [:A, :B]) === nothing
+    @test resolve(data, [:B]) == Dict(:B => :v1)
+    @test isempty(resolve(data, Symbol[]))
+    @test !haskey(pkg_info(data, [:A]), :A)
+    test_resolver(data, [:A])
+    test_resolver(data, [:B])
+
+    # A's only version depends on the zero-version package B
+    data = Dict(
+        :A => PkgData([:v1], Dict(:v1 => [:B]), nocomp),
+        :B => PkgData(Symbol[], nodeps, nocomp),
+    )
+    @test resolve(data, [:A]) === nothing
+    @test isempty(resolve(data, Symbol[]))
+    @test isempty(pkg_info(data, [:A]))
+    @test isempty(pkg_info(data, Symbol[]))
+    # unfiltered info keeps the package (and its dependents) as they are
+    info = pkg_info(data, [:A]; filter = false)
+    @test isempty(info[:B].versions)
+    @test info[:A].depends == [:B]
+    test_resolver(data, [:A])
+
+    # uninstallability propagates transitively
+    data = Dict(
+        :A => PkgData([:v1], Dict(:v1 => [:B]), nocomp),
+        :B => PkgData(Symbol[], nodeps, nocomp),
+        :C => PkgData([:v1], Dict(:v1 => [:A]), nocomp),
+    )
+    @test resolve(data, [:C]) === nothing
+    @test isempty(pkg_info(data, [:C]))
+    test_resolver(data, [:C])
+
+    # A@v2 depends on the zero-version package B, A@v1 doesn't: degrade
+    data = Dict(
+        :A => PkgData([:v2, :v1], Dict(:v2 => [:B]), nocomp),
+        :B => PkgData(Symbol[], nodeps, nocomp),
+        :C => PkgData([:v1], Dict(:v1 => [:A]), nocomp),
+    )
+    @test resolve(data, [:A]) == Dict(:A => :v1)
+    @test resolve(data, [:C]) == Dict(:C => :v1, :A => :v1)
+    @test isempty(resolve(data, Symbol[]))
+    info = pkg_info(data, [:A])
+    @test !haskey(info, :B)
+    @test info[:A].versions == [:v1]
+    @test isempty(info[:A].depends)
+    test_resolver(data, [:A])
+    test_resolver(data, [:C])
+end
+
 @testset "registry resolve" begin
     rp = registry.provider()
     test_resolver(rp, ["JSON"])

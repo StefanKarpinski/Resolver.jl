@@ -67,6 +67,13 @@ function SAT(
         # fewer spuriously-true packages ("junk"), which makes solves
         # faster and improvement steps land on better versions
         PicoSAT.set_global_default_phase(pico, 0)
+        # ... except each package's best version, which defaults to
+        # true: when a package must be chosen the solver tries its best
+        # version first, so models land at or near the optimum and the
+        # descent's improvement loops mostly never need to run
+        for v_p in values(vars)
+            PicoSAT.set_default_phase_lit(pico, v_p + 1, 1)
+        end
 
         # generate SAT problem
         for p in names

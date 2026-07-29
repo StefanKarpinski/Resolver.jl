@@ -2,14 +2,19 @@ function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
 ) where {P,V}
-    # redundancy elimination first — it needs no reachability marks and
-    # does most of the shrinking — then alternate reachability and
-    # redundancy until neither deletes anything: each deleted version can
-    # expose more of both kinds of pruning, and every round preserves the
-    # resolved answer (see the theory docs on iterating the filter).
-    # requirement packages always survive filtering, so the requirements
-    # remain valid across rounds. rounds strictly shrink the total
-    # version count, so the loop terminates
+    # arc consistency first: it needs no marks and it is what makes the
+    # deletions safe — dropping a package while a kept version still
+    # depends on it would leave a dangling name. then redundancy
+    # elimination — it needs no reachability marks and does most of the
+    # shrinking — then alternate reachability and redundancy until neither
+    # deletes anything: each deleted version can expose more of both kinds
+    # of pruning, and every round preserves the resolved answer (see the
+    # theory docs on iterating the filter). requirement packages survive
+    # filtering unless they have no installable version at all — nothing
+    # can satisfy those — so the requirements remain valid across rounds.
+    # rounds strictly shrink the total version count, so the loop
+    # terminates
+    mark_installable!(info)
     mark_necessary!(info)
     drop_unmarked!(info)
     while true
@@ -50,13 +55,15 @@ function find_reachable(
     ix = Dict{P,Int}(p => i for (i, p) in enumerate(pkgs))
     infos = Vector{PkgInfo{P,V}}(undef, N)
     nvers = Vector{Int}(undef, N)
-    deps = Vector{Vector{Int}}(undef, N)     # interned depends, same order
+    # interned depends, same order (id 0: dependency absent from info,
+    # i.e. a package with no installable version — see below)
+    deps = Vector{Vector{Int}}(undef, N)
     partners = Vector{Vector{Tuple{Int,Int}}}(undef, N)
     for p = 1:N
         info_p = info[pkgs[p]]
         infos[p] = info_p
         nvers[p] = length(info_p.versions)
-        deps[p] = Int[ix[q] for q in info_p.depends]
+        deps[p] = Int[get(ix, q, 0) for q in info_p.depends]
         # (partner id, offset of p's version block in the partner's matrix)
         prt = Tuple{Int,Int}[
             (ix[q], info[q].interacts[pkgs[p]])
@@ -100,7 +107,9 @@ function find_reachable(
     #   "k is latest reachable version of q that depends on p"
 
     for p in reqs
-        enqueue(ix[p], 1)
+        # a requirement with no installable version reaches nothing
+        i = get(ix, p, 0)
+        i == 0 || enqueue(i, 1)
     end
 
     # notation:
@@ -134,6 +143,12 @@ function find_reachable(
             for (k, q) in enumerate(deps[p])
                 info_p.conflicts[j, k] || continue
                 # p@j depends on q
+                if q == 0
+                    # q has no installable version at all, so neither has
+                    # p@j: p can only be installed past it
+                    next(p, j)
+                    continue
+                end
                 rdeps_q = rdeps[q]
                 rdeps_q[p] = max(get(rdeps_q, p, 0), j)
                 next(q, 0) # q can be required
@@ -177,6 +192,42 @@ function mark_reachable!(
         info_p.conflicts[r+1:end, end] .= false
     end
     return reach
+end
+
+function mark_installable!(
+    info :: Dict{P, <: PkgInfo{P}},
+) where {P}
+    # a package with no active versions cannot be installed, so no version
+    # depending on it can be either: deactivate those, to a fixpoint (each
+    # deactivation can empty another package's active set). this is the
+    # arc-consistency test — a sound approximation of deleting model-free
+    # versions (see the theory docs) — and it is also what keeps `depends`
+    # from naming a package that `drop_unmarked!` deletes as empty
+    empties = Set{P}()
+    while true
+        empty!(empties)
+        for (p, info_p) in info
+            X = info_p.conflicts
+            any(X[i, end] for i = 1:length(info_p.versions)) && continue
+            push!(empties, p)
+        end
+        isempty(empties) && return info
+        dirty = false
+        for info_p in values(info)
+            X = info_p.conflicts
+            for (k, q) in enumerate(info_p.depends)
+                q in empties || continue
+                # q is uninstallable, drop the p@i that depend on it
+                for i = 1:length(info_p.versions)
+                    X[i, end] || continue
+                    X[i, k] || continue
+                    X[i, end] = false
+                    dirty = true
+                end
+            end
+        end
+        dirty || return info
+    end
 end
 
 function mark_necessary!(
@@ -505,34 +556,13 @@ function drop_excluded!(
     drop :: SetOrVec{P},
 ) where {P,V}
     drop isa AbstractSet || (drop = Set{P}(drop))
-    dirty = false
     for (p, info_p) in info
         # deactivate all versions of dropped packages
-        if p ∈ drop
-            info_p.conflicts[:, end] .= false
-            dirty = true
-            continue
-        end
+        p ∈ drop || continue
+        info_p.conflicts[:, end] .= false
     end
-    while dirty
-        # deactivate versions that depend on dropped packages
-        dirty = false
-        for (p, info_p) in info
-            X = info_p.conflicts
-            for (k, q) in enumerate(info_p.depends)
-                Y = info[q].conflicts
-                any(Y[i, end] for i = 1:length(info[q].versions)) && continue
-                # no active versions of q, delete p@i that depend on it
-                for i = 1:length(info_p.versions)
-                    info_p.conflicts[i, end] || continue
-                    info_p.conflicts[i, k] || continue
-                    # p@i depends on q, so drop p@i too
-                    info_p.conflicts[i, end] = false
-                    dirty = true
-                end
-            end
-        end
-    end
+    # deactivate versions that depend on dropped packages
+    mark_installable!(info)
     drop_unmarked!(info)
 end
 

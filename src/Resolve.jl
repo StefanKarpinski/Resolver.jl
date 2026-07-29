@@ -7,6 +7,9 @@ function resolve_core(
     by   :: Function = identity, # priority ordering
     restore :: Bool = true, # restore the SAT instance's state before returning
 ) where {P}
+    # a requirement the instance doesn't know has no installable version —
+    # the filter drops such packages — so it cannot be satisfied
+    all(p -> haskey(sat.info, p), reqs) || return nothing
     # a solution exists iff the requirements are jointly satisfiable; the
     # check only assumes, so an unsatisfiable resolve leaves no state behind
     is_satisfiable(sat, reqs) || return nothing

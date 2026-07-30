@@ -311,6 +311,41 @@ end
         @test sol[LIBSODIUM_JLL] == v"1.0.21+0"
     end
 
+    # HistoricalStdlibVersions gives one stdlib version number to entries with
+    # different dependency sets across Julia versions -- the provider tells them
+    # apart with a synthetic build number -- so a bundled entry has to be matched
+    # to the Julias that bundle *it*, not to every Julia that bundles something
+    # with the same version number. Julia 1.11 and 1.12 both bundle a Markdown
+    # 1.11.0, and only 1.12's depends on JuliaSyntaxHighlighting.
+    @testset "a bundled stdlib entry belongs to its own Julias" begin
+        MARKDOWN = UUID("d6f4376e-aef5-505a-96c1-9c027394607a")
+        JULIA_SYNTAX_HIGHLIGHTING = UUID("ac6e5ff7-fb65-4e79-a425-ec3bc9c03011")
+        reg = make_provider(VersionSpec("1.11 - 1.12"))
+        pd = Resolver.pkg_data(reg, [MARKDOWN])[MARKDOWN]
+        # two entries with the same version number, told apart by the build
+        entries = [v for v in pd.versions if Base.thispatch(v) == v"1.11.0"]
+        @test length(entries) == 2
+        with = only(v for v in entries
+                    if JULIA_SYNTAX_HIGHLIGHTING in pd.depends[v])
+        without = only(v for v in entries if v ≠ with)
+        # each is admitted by the Julias that ship it, and by no others
+        @test v"1.12.0" ∈ pd.compat[with][JULIA_UUID]
+        @test v"1.11.0" ∉ pd.compat[with][JULIA_UUID]
+        @test v"1.11.0" ∈ pd.compat[without][JULIA_UUID]
+        @test v"1.12.0" ∉ pd.compat[without][JULIA_UUID]
+        # ... so a resolve on 1.12 gets 1.12's Markdown, dependencies and all
+        sol = resolve_versions("", ["--julia=1.12.0"];
+                               deps = ["Markdown" => MARKDOWN])
+        @test !isnothing(sol)
+        @test sol[MARKDOWN] == v"1.11.0"
+        @test haskey(sol, JULIA_SYNTAX_HIGHLIGHTING)
+        sol = resolve_versions("", ["--julia=1.11.0"];
+                               deps = ["Markdown" => MARKDOWN])
+        @test !isnothing(sol)
+        @test sol[MARKDOWN] == v"1.11.0"
+        @test !haskey(sol, JULIA_SYNTAX_HIGHLIGHTING)
+    end
+
     # The provider offers a bundled stdlib version whatever the registries say,
     # so `bundled_versions` answers "which versions of this stdlib can I get on
     # these Julias at all" -- the version sets the couplings below are stated

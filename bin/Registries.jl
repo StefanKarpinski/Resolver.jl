@@ -117,12 +117,20 @@ end
 
 # The Julia versions to resolve against, and what they bundle:
 #
-#   stdlibs[uuid][version] : the historical stdlib info for a bundled version
-#   stdlib_pins[uuid]      : the (Julia version, bundled-version spec) pairs.
-#     Recorded so `registry_provider` can reconcile a stdlib version's `julia`
-#     compat with the Julia versions that bundle it. Recorded for the
-#     upgradable stdlibs too, which are bundled without being pinned: a bundled
-#     version must be installable on its Julia either way.
+#   stdlibs[uuid][version] : the historical stdlib info for a bundled version.
+#     One version number can cover entries with *different* dependencies across
+#     Julia versions, which is what the synthetic build number below is for, so
+#     these keys identify an entry rather than merely a version number.
+#   bundlers[uuid][version] : the Julia versions that bundle that entry, as a
+#     spec, keyed exactly as `stdlibs` is. Recorded so `registry_provider` can
+#     reconcile a stdlib version's `julia` compat with the Julia versions that
+#     bundle it. Recorded for the upgradable stdlibs too, which are bundled
+#     without being pinned: a bundled version must be installable on its Julia
+#     either way.
+#   by_patch[uuid][thispatch(version)] : the same, unioned over the entries that
+#     share a major.minor.patch. This is what a *registry* version is widened by,
+#     since a registry version is one version number with no entry to identify,
+#     and major.minor.patch is exactly what a Julia's exact-version pin compares.
 #
 # Split out of `registry_provider` so that `bundled_versions` can report the
 # bundled version sets without building a provider.
@@ -132,7 +140,7 @@ function julia_and_stdlib_versions(
     julia_vers = filter(in(julia_versions), JULIA_VERSIONS)
 
     stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
-    stdlib_pins = Dict{UUID,Vector{Tuple{VersionNumber,VersionSpec}}}()
+    bundlers = Dict{UUID,Dict{VersionNumber,VersionSpec}}()
     for julia_ver in julia_vers
         last_stdlibs = UNREGISTERED_STDLIBS
         for (v, this_stdlibs) in STDLIBS_BY_VERSION
@@ -141,8 +149,6 @@ function julia_and_stdlib_versions(
         end
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
-            push!(get!(()->valtype(stdlib_pins)(), stdlib_pins, uuid),
-                  (julia_ver, VersionSpec(stdlib_ver)))
             deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
             # Sometimes HistoricalStdlibVersions gives the same
             # version number to stdlib entries with different deps.
@@ -166,9 +172,23 @@ function julia_and_stdlib_versions(
                 )
             end
             deps_u[stdlib_ver] = stdlib_info
+            # `julia_vers` is ascending, so the run of Julias that bundle one
+            # entry merges into a single range as it accumulates
+            bundlers_u = get!(()->valtype(bundlers)(), bundlers, uuid)
+            bundlers_u[stdlib_ver] = haskey(bundlers_u, stdlib_ver) ?
+                bundlers_u[stdlib_ver] ∪ VersionSpec(julia_ver) :
+                VersionSpec(julia_ver)
         end
     end
-    return julia_vers, stdlibs, stdlib_pins
+    by_patch = Dict{UUID,Dict{VersionNumber,VersionSpec}}()
+    for (uuid, bundlers_u) in bundlers
+        d = get!(()->valtype(by_patch)(), by_patch, uuid)
+        for (v, spec) in bundlers_u
+            key = Base.thispatch(v)
+            d[key] = haskey(d, key) ? d[key] ∪ spec : spec
+        end
+    end
+    return julia_vers, stdlibs, bundlers, by_patch
 end
 
 # Per package, the versions the provider offers because a Julia in
@@ -180,7 +200,7 @@ end
 function bundled_versions(
     julia_versions :: VersionSpec,
 )
-    _, stdlibs, _ = julia_and_stdlib_versions(julia_versions)
+    _, stdlibs, _, _ = julia_and_stdlib_versions(julia_versions)
     Dict{UUID,Vector{VersionNumber}}(
         uuid => collect(keys(vers)) for (uuid, vers) in stdlibs)
 end
@@ -239,7 +259,7 @@ function registry_provider(
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
 )
-    julia_vers, stdlibs, stdlib_pins =
+    julia_vers, stdlibs, bundlers, by_patch =
         julia_and_stdlib_versions(julia_versions)
 
     return DepsProvider(keys(packages)) do uuid::UUID
@@ -387,20 +407,29 @@ function registry_provider(
         # The upgradable stdlibs get the same treatment even though no pin makes
         # them conflict: a bundled version must be installable on the Julia that
         # bundles it whether or not that Julia insists on it.
-        if uuid in keys(stdlib_pins)
-            # per version, the Julias that bundle it
-            bundling = Dict{VersionNumber,VersionSpec}()
-            for (julia_ver, ver_spec) in stdlib_pins[uuid]
-                for v in vers
-                    v in ver_spec || continue # julia_ver bundles this version
-                    bundling[v] = haskey(bundling, v) ?
-                        bundling[v] ∪ VersionSpec(julia_ver) : VersionSpec(julia_ver)
+        if uuid in keys(bundlers)
+            bundlers_u = bundlers[uuid]
+            by_patch_u = by_patch[uuid]
+            for v in vers
+                if v in bundled_only
+                    # `v` is one of the stdlib table's own keys, so it names an
+                    # entry: the Julias that bundle *it* are the ones that ship
+                    # its dependency set. Matching by version number instead
+                    # would pair a Julia with a same-numbered entry whose deps
+                    # belong to a different Julia -- which is exactly what the
+                    # synthetic build number exists to prevent.
+                    comp_v = get!(()->valtype(comp)(), comp, v)
+                    comp_v[JULIA_UUID] = bundlers_u[v]
+                else
+                    # a registry version names no entry, so it is widened by
+                    # every Julia that bundles its version number -- which is
+                    # what a Julia's exact-version pin matches
+                    julias = get(by_patch_u, Base.thispatch(v), nothing)
+                    julias === nothing && continue
+                    comp_v = get!(()->valtype(comp)(), comp, v)
+                    comp_v[JULIA_UUID] =
+                        get(comp_v, JULIA_UUID, VersionSpec("*")) ∪ julias
                 end
-            end
-            for (v, julias) in bundling
-                comp_v = get!(()->valtype(comp)(), comp, v)
-                comp_v[JULIA_UUID] = v in bundled_only ? julias :
-                    get(comp_v, JULIA_UUID, VersionSpec("*")) ∪ julias
             end
         end
         # insert dependency on julia itself

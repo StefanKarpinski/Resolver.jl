@@ -14,7 +14,9 @@ usage: $PROGRAM_FILE [options] [<project path>]
   --print-manifest        print the new manifest to stdout
   --print-versions        print the resolved versions to stdout
 
-  --julia=<versions>      Julia versions to resolve for (default: 1+)
+  --julia=<versions>      Julia versions to resolve for; overrides the
+                          project's own [compat] julia bound, which is
+                          the default (and 1+ if it has none too)
                           use registry compat syntax, not semver
 
   --allow-pre[=<pkgs>]    allow prerelease versions
@@ -90,18 +92,9 @@ end
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
-import Resolver: Resolver, DepsProvider, PkgData, resolve
+import Resolver: Resolver, DepsProvider, PkgData, Problem, resolve
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
-
-## options: target Julia version
-
-const julia_versions = handle_opts(:julia, VersionSpec("1")) do val::String
-    try VersionSpec(split(val, r"\s*,\s*"))
-    catch
-        usage("Invalid compat version spec: --julia=$val")
-    end
-end
 
 ## load project & manifest
 
@@ -255,6 +248,33 @@ if in_workspace
         end
     end
 end
+
+## options: target Julia version
+#
+# The Julia versions to resolve for come from `--julia` if given, otherwise
+# from the project's own `[compat] julia` bound (intersected across the
+# workspace above), otherwise from the `1` default. `--julia` overrides the
+# project bound outright rather than intersecting with it, so the flag always
+# says exactly what will be resolved for.
+#
+# Whichever source wins feeds the one `julia_versions` spec that determines
+# both the `julia` package's version universe and, through it, which
+# historical stdlib versions are bundled and pinned (see Registries.jl) --
+# so a project bound and the equivalent `--julia` are indistinguishable
+# downstream. The bound is *consumed* here: it must not also constrain
+# `julia` as a user compat entry in the `Problem` below, or the two readings
+# of the same entry would compound.
+
+const julia_versions = something(
+    handle_opts(:julia) do val::String
+        try VersionSpec(split(val, r"\s*,\s*"))
+        catch
+            usage("Invalid compat version spec: --julia=$val")
+        end
+    end,
+    pop!(project_compat, JULIA_UUID, nothing),
+    VersionSpec("1"),
+)
 
 ## options: parsing packages specs
 
@@ -430,13 +450,33 @@ end
 reg = registry_provider(
     packages;
     julia_versions,
-    project_compat,
     sort_versions,
     allow_pre,
     workspace_pkgs,
 )
-pkg_info = Resolver.pkg_info(reg, reqs)
-sol = resolve(pkg_info, reqs; by=sort_packages_by)
+
+# the project's compat bounds are user constraints, not part of the package
+# universe: they go into the `Problem`, which forbids the versions they exclude
+# by clause instead of deleting them from the provider's data. (the `julia`
+# bound is not among them: it was consumed above, as the Julia version
+# universe.) bounds on packages Julia bundles as stdlibs are widened to admit
+# the bundled versions, so that answers stay exactly what they were when the
+# provider applied compat itself: it applied compat to a package's registry
+# versions and *then* patched the bundled ones back in, so those were never
+# subject to it. (a bundled version is pinned by the Julia that bundles it, so
+# excluding it just makes that Julia infeasible.)
+let compat = Dict{UUID,VersionSpec}(), bundled = bundled_versions(julia_versions, allow_pre)
+    for (uuid, spec) in project_compat
+        for v in get(bundled, uuid, ())
+            spec = spec ∪ VersionSpec(v)
+        end
+        compat[uuid] = spec
+    end
+    global const problem = Problem(reqs; compat)
+end
+
+pkg_info = Resolver.pkg_info(reg, problem)
+sol = resolve(pkg_info, problem; by=sort_packages_by)
 sol === nothing && error("Unsatisfiable")
 
 ## output results
@@ -548,6 +588,14 @@ for (uuid, version) in sol
 end
 
 if output == :print_versions
+    # the best version of a package that the project's constraints admit: the
+    # info keeps the versions the Problem forbids (they are constrained away,
+    # not deleted), so they don't count as available here
+    function best_version(uuid::UUID)
+        vers = pkg_info[uuid].versions
+        i = findfirst(v -> !Resolver.is_excluded(problem, uuid, v), vers)
+        return isnothing(i) ? first(vers) : vers[i]
+    end
     # print packages and versions in priority order, required packages first
     pkgs = sort!(collect(keys(sol)), by = sort_packages_by)
     sort!(pkgs, by = !in(reqs))
@@ -568,7 +616,7 @@ if output == :print_versions
             version = something(info_map[uuid].version, julia_version)
         end
         optimal = uuid in keys(stdlibs) ||
-            version == first(pkg_info[uuid].versions)
+            version == best_version(uuid)
         try print(uuid, " ", rpad(name, width), " ", version)
             optimal || print(" ⊼")
             println()

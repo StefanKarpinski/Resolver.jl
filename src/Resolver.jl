@@ -1,9 +1,10 @@
 module Resolver
 
-export resolve
+export resolve, Problem
 
 include("BitKernels.jl")
 include("DepsProvider.jl")
+include("Problem.jl")
 include("PkgInfo.jl")
 include("PkgInfoFiles.jl")
 include("FilterPkgs.jl")

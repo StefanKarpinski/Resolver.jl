@@ -456,7 +456,6 @@ end
 reg = registry_provider(
     packages;
     julia_versions,
-    allow_pre,
     workspace_pkgs,
 )
 
@@ -473,7 +472,14 @@ reg = registry_provider(
 # Julia choice to satisfy it. If no admissible Julia bundles a version the bound
 # admits, and no registry version fits either, the requirements really are
 # unsatisfiable and saying so beats silently ignoring the bound.
-const problem = Problem(reqs; compat = project_compat)
+#
+# prerelease admission rides along as an exclusion kind: `--allow-pre` says which
+# packages' prereleases the query accepts, and the rest are forbidden the same
+# way a compat bound forbids a version.
+const problem = Problem(reqs;
+    compat = project_compat,
+    excludes = [prerelease_exclusion(allow_pre)],
+)
 
 pkg_info = Resolver.pkg_info(reg, problem)
 sol = resolve(pkg_info, problem; by=sort_packages_by, order=version_order)

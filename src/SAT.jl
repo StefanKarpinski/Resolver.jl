@@ -277,14 +277,15 @@ function SAT(
     finalizer(finalize, SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}()))
 end
 
-# the structural SAT instance for `info`, plus `prob`'s user constraints as
+# the structural SAT instance for `info`, plus `prob`'s constraints as
 # selector-guarded exclusion clauses: for each constraint source that forbids a
-# kept version — one per compat entry, one per pin — a fresh selector variable
-# `s` and one clause `(¬s, "no version in run")` per maximal run of forbidden
-# versions. the selectors are then asserted as unit clauses inside a sat_push
-# frame, so production solves see them at level 0 (no assumptions), while a
-# single sat_pop relaxes every user constraint at once. nothing pops the frame
-# in production; the frame exists so diagnostics can.
+# kept version — one per compat entry, one per pin, one per admission kind and
+# package — a fresh selector variable `s` and one clause `(¬s, "no version in
+# run")` per maximal run of forbidden versions. the selectors are then asserted
+# as unit clauses inside a sat_push frame, so production solves see them at
+# level 0 (no assumptions), while a single sat_pop relaxes every constraint at
+# once. nothing pops the frame in production; the frame exists so diagnostics
+# can.
 #
 # constraints on packages absent from `info`, constraints that forbid nothing,
 # and constraints that forbid only versions the filter already dropped emit no
@@ -312,7 +313,7 @@ function add_exclusions!(
     _, vars, lads = sat_variables(info)
     lits = Int[]
     mask = BitVector()
-    for p in constrained_packages(prob)
+    for p in constrained_packages(info, prob)
         haskey(info, p) || continue # constraint on an absent package
         vers = info[p].versions
         n_p = length(vers)
@@ -320,27 +321,16 @@ function add_exclusions!(
         v_p = vars[p]
         l_p = get(lads, p, 0)
         resize!(mask, n_p)
-        # one selector per constraint source, so diagnostics can tell a
-        # compat bound and a pin on the same package apart
-        for kind in (:compat, :pin)
+        # one selector per constraint source (see `exclusion_sources`), so
+        # diagnostics can tell a compat bound, a pin and an admission knob on
+        # the same package apart
+        for (kind, forbids) in exclusion_sources(prob, p)
             fill!(mask, false)
             found = false
-            if kind == :compat
-                haskey(prob.compat, p) || continue
-                s = prob.compat[p]
-                for (i, v) in enumerate(vers)
-                    v ∈ s && continue
-                    mask[i] = true
-                    found = true
-                end
-            else
-                haskey(prob.pins, p) || continue
-                w = prob.pins[p]
-                for (i, v) in enumerate(vers)
-                    v == w && continue
-                    mask[i] = true
-                    found = true
-                end
+            for (i, v) in enumerate(vers)
+                forbids(v) || continue
+                mask[i] = true
+                found = true
             end
             found || continue # nothing left to forbid
             sel = PicoSAT.inc_max_var(pico)

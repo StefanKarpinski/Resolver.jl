@@ -1,7 +1,7 @@
 module Registries
 
 export registry_provider, package_info, bundled_versions,
-    UPGRADABLE_STDLIBS_UUIDS
+    prerelease_exclusion, UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
@@ -128,11 +128,8 @@ end
 # bundled version sets without building a provider.
 function julia_and_stdlib_versions(
     julia_versions :: VersionSpec,
-    allow_pre      :: Dict{UUID,Bool} = Dict(UUID(0) => false),
 )
     julia_vers = filter(in(julia_versions), JULIA_VERSIONS)
-    get(allow_pre, JULIA_UUID, allow_pre[UUID(0)]) ||
-        filter!(v -> isempty(v.prerelease), julia_vers)
 
     stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
     stdlib_pins = Dict{UUID,Vector{Tuple{VersionNumber,VersionSpec}}}()
@@ -182,34 +179,41 @@ end
 # Julias", so it stays available for introspection and for the tests.
 function bundled_versions(
     julia_versions :: VersionSpec,
-    allow_pre      :: Dict{UUID,Bool} = Dict(UUID(0) => false),
 )
-    _, stdlibs, _ = julia_and_stdlib_versions(julia_versions, allow_pre)
+    _, stdlibs, _ = julia_and_stdlib_versions(julia_versions)
     Dict{UUID,Vector{VersionNumber}}(
         uuid => collect(keys(vers)) for (uuid, vers) in stdlibs)
 end
 
+## prerelease admission
+#
+# Whether a query will accept prerelease versions is a *query* fact, not a
+# registry one: the versions exist either way. So the provider offers them all
+# and `--allow-pre` reaches the resolver as one of the `Problem`'s exclusion
+# kinds, forbidding the prereleases of the packages it was not given for -- which
+# is what deleting them used to accomplish, minus the need for a private universe.
+#
+# `allow_pre` is keyed by package uuid with the zero uuid holding the default,
+# exactly as the flag parses it.
+prerelease_exclusion(allow_pre::Dict{UUID,Bool}) =
+    :prerelease => function (uuid::UUID, v::VersionNumber)
+        isempty(v.prerelease) && return false
+        return !get(allow_pre, uuid, get(allow_pre, UUID(0), false))
+    end
+
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
     julia_versions :: VersionSpec = VersionSpec("1"),
-    allow_pre      :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
 )
-    function filter_pre!(uuid::UUID, vers::Vector{VersionNumber})
-        if !get(allow_pre, uuid, allow_pre[UUID(0)])
-            filter!(v->isempty(v.prerelease), vers)
-        end
-        return vers
-    end
-
     function filter_yanked!(info, vers::Vector{VersionNumber})
         filter!(v -> !isyanked(info, v), vers)
         return vers
     end
 
     julia_vers, stdlibs, stdlib_pins =
-        julia_and_stdlib_versions(julia_versions, allow_pre)
+        julia_and_stdlib_versions(julia_versions)
 
     return DepsProvider(keys(packages)) do uuid::UUID
         if uuid in keys(workspace_pkgs)
@@ -262,12 +266,11 @@ function registry_provider(
                 info = package_info(entry)
                 # versions from this registry, filtered
                 new_vers = collect(keys(info.version_info))
-                filter_pre!(uuid, new_vers)
                 filter_yanked!(info, new_vers)
-                # the project's own compat is *not* applied here: it is a user
-                # constraint, and it reaches the resolver as part of the
-                # `Problem` (see bin/resolve.jl). the provider only decides
-                # which versions exist at all
+                # neither the project's own compat nor prerelease admission is
+                # applied here: both are query constraints, and they reach the
+                # resolver as part of the `Problem` (see bin/resolve.jl). the
+                # provider only decides which versions exist at all
                 # scan versions and populate deps & compat data
                 for v in new_vers
                     # NOTE: we probably won't support the same name meaning

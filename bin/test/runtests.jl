@@ -26,6 +26,11 @@ const LINEAR_ALGEBRA = UUID("37e2e46d-f89d-539d-b4ee-838fcccc9c8e")
 const JSON = UUID("682c06a0-de6a-54ab-a142-c8b1cf79cde6")
 const STATISTICS = UUID("10745b16-79ce-11e8-11f9-7d13ad32a3b2")
 const DELIMITED_FILES = UUID("8bb1440f-4735-579b-a4ab-409b98df4dab")
+# LLVM_full_jll has prerelease versions in the General registry (11.0.0-rc5 &c),
+# and Wine_jll has *only* prerelease versions -- so it must not resolve at all
+# unless prereleases are admitted.
+const LLVM_FULL_JLL = UUID("a3ccf953-465e-511d-b87f-60a6490c289d")
+const WINE_JLL = UUID("9fae3aff-8997-5dd1-9b84-5d0cc5e0bffa")
 
 # Load packages from the installed registries (mirrors bin/resolve.jl).
 const packages = Dict{UUID,Vector{PkgEntry}}()
@@ -38,8 +43,25 @@ end
 make_provider(julia::VersionSpec) = registry_provider(
     packages;
     julia_versions = julia,
-    allow_pre = Dict(UUID(0) => false),
 )
+
+# `--allow-pre`'s dictionary: the zero uuid holds the default
+no_pre = Dict(UUID(0) => false)
+all_pre = Dict(UUID(0) => true)
+
+# The old baked path, for the knobs that used to be applied by deleting versions
+# from the provider's output: `prob`'s excluded versions gone from the data, and
+# with them their deps & compat entries (which `pkg_info` reads by version).
+function bake(data::AbstractDict{P}, prob::Resolver.Problem{P}) where {P}
+    baked = empty(data)
+    for (p, d) in data
+        vers = [v for v in d.versions if !Resolver.is_excluded(prob, p, v)]
+        baked[p] = Resolver.PkgData(vers,
+            typeof(d.depends)(v => d.depends[v] for v in vers if haskey(d.depends, v)),
+            typeof(d.compat)(v => d.compat[v] for v in vers if haskey(d.compat, v)))
+    end
+    return baked
+end
 
 # Is the requirement set resolvable for the given Julia spec?
 function resolves(reqs::Vector{UUID}; julia::VersionSpec)
@@ -180,6 +202,44 @@ end
         @test Resolver.resolve(info, prob; order) == Resolver.resolve(baked, prob)
         @test Resolver.resolve(info, prob; order)[JULIA_UUID] <
               Resolver.resolve(info, prob)[JULIA_UUID]
+    end
+
+    # Prerelease admission is a query constraint, not a property of the package
+    # universe: the versions exist either way, and `--allow-pre` says which of
+    # them a query accepts. The oracle is the old path, where the provider
+    # deleted the prereleases it was not told to keep -- so resolving against the
+    # data with them dropped must give exactly what constraining them gives, at
+    # registry scale and for every admission setting.
+    @testset "prerelease admission is a resolve-time constraint" begin
+        reg = make_provider(VersionSpec("1.10"))
+        reqs = sort([LLVM_FULL_JLL, WINE_JLL, JSON, JULIA_UUID])
+        data = Resolver.pkg_data(reg, reqs)
+        # the provider really does offer prereleases now
+        @test any(!isempty(v.prerelease) for v in data[LLVM_FULL_JLL].versions)
+        # and the one artifact keeps them, for every query to constrain as it likes
+        info = Resolver.pkg_info(reg, reqs)
+        @test any(!isempty(v.prerelease) for v in info[LLVM_FULL_JLL].versions)
+
+        for allow_pre in (no_pre, all_pre,
+                          Dict(UUID(0) => false, LLVM_FULL_JLL => true))
+            excludes = [prerelease_exclusion(allow_pre)]
+            prob = Resolver.Problem(reqs; excludes)
+            old = bake(data, prob) # the versions deleted, as the provider used to
+            @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
+            @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
+        end
+
+        # and it is not inert: every Wine_jll in the registry is a prerelease, so
+        # requiring it is unsatisfiable unless prereleases are admitted -- per
+        # package or globally, the flag's two shapes
+        wine = ["Wine_jll" => WINE_JLL]
+        @test isnothing(resolve_versions("", ["--julia=1.10"]; deps = wine))
+        pre = resolve_versions("", ["--julia=1.10", "--allow-pre=Wine_jll"];
+                               deps = wine)
+        @test !isnothing(pre)
+        @test !isempty(pre[WINE_JLL].prerelease)
+        @test pre == resolve_versions("", ["--julia=1.10", "--allow-pre"];
+                                      deps = wine)
     end
 
     # The provider offers a bundled stdlib version whatever the registries say,

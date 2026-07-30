@@ -461,27 +461,14 @@ reg = registry_provider(
 # bound is not among them: it was consumed above, as the Julia version
 # universe.)
 #
-# bounds on the stdlibs Julia *pins* are widened to admit the bundled versions,
-# so that answers stay exactly what they were when the provider applied compat
-# itself: it applied compat to a package's registry versions and *then* patched
-# the bundled ones back in, so those were never subject to it. a pinned stdlib's
-# version is dictated by the chosen Julia, so a bound excluding it would only
-# make that Julia infeasible -- Pkg treats such a bound as inert too.
-#
-# the upgradable stdlibs are excluded from the widening: nothing pins them, so
-# their versions are resolved like any other package's, and a user bound on one
-# must be enforced strictly -- again matching Pkg.
-let compat = Dict{UUID,VersionSpec}(), bundled = bundled_versions(julia_versions, allow_pre)
-    for (uuid, spec) in project_compat
-        if uuid ∉ UPGRADABLE_STDLIBS_UUIDS
-            for v in get(bundled, uuid, ())
-                spec = spec ∪ VersionSpec(v)
-            end
-        end
-        compat[uuid] = spec
-    end
-    global const problem = Problem(reqs; compat)
-end
+# every bound is enforced strictly, stdlibs included. a bound on a stdlib is not
+# inert: a Julia version is compatible with exactly the stdlib versions it
+# bundles -- that is what its compat pins say -- so a bound that excludes those
+# versions excludes the Julia along with them, and the resolver *steers* the
+# Julia choice to satisfy it. If no admissible Julia bundles a version the bound
+# admits, and no registry version fits either, the requirements really are
+# unsatisfiable and saying so beats silently ignoring the bound.
+const problem = Problem(reqs; compat = project_compat)
 
 pkg_info = Resolver.pkg_info(reg, problem)
 sol = resolve(pkg_info, problem; by=sort_packages_by)

@@ -142,10 +142,9 @@ end
     end
 
     # The provider offers a bundled stdlib version whatever the registries say,
-    # and it used to apply project compat to the registry versions only --
-    # before patching the bundled ones back in. `bundled_versions` is what lets
-    # bin/resolve.jl widen its Problem's bounds to reproduce that exactly.
-    # Julia 1.10.8 is frozen, so what it bundles never changes.
+    # so `bundled_versions` answers "which versions of this stdlib can I get on
+    # these Julias at all" -- the version sets the couplings below are stated
+    # in terms of. Julia 1.10.8 is frozen, so what it bundles never changes.
     @testset "bundled stdlib versions" begin
         bundled = bundled_versions(VersionSpec("1.10.8"))
         @test haskey(bundled, STATISTICS)
@@ -218,13 +217,42 @@ end
         old = resolve_versions("", ["--julia=1.8"]; deps = stat)
         @test !isnothing(old)
         @test old[STATISTICS] ∈ bundled_versions(VersionSpec("1.8"))[STATISTICS]
+    end
 
-        # a pinned stdlib is unaffected: nothing can move LinearAlgebra off the
-        # version its Julia bundles, so a bound excluding that version stays
-        # inert (widened away) rather than becoming unsatisfiable
-        pinned = resolve_versions("LinearAlgebra = \"1.11\"", ["--julia=1.10"];
-                                  deps = ["LinearAlgebra" => LINEAR_ALGEBRA])
-        @test !isnothing(pinned)
-        @test pinned[LINEAR_ALGEBRA] ∈ VersionSpec("1.10")
+    # A bound on a stdlib is not inert. A Julia version is compatible with
+    # exactly the stdlib versions it bundles -- its compat pins say so -- and a
+    # version that exists only as a bundled stdlib is installable only on the
+    # Julias that ship it. So a bound on a stdlib constrains the Julia choice
+    # through those couplings, and the resolver steers Julia to satisfy it or
+    # reports the requirements unsatisfiable.
+    @testset "stdlib bounds steer the julia choice" begin
+        linalg = ["LinearAlgebra" => LINEAR_ALGEBRA]
+        stat = ["Statistics" => STATISTICS]
+
+        # a bound on a pinned stdlib pushes Julia forward: only a Julia that
+        # bundles a LinearAlgebra ≥ 1.11 can satisfy it
+        steered = resolve_versions("LinearAlgebra = \"1.11\""; deps = linalg)
+        @test !isnothing(steered)
+        @test steered[LINEAR_ALGEBRA] ≥ v"1.11"
+        @test steered[JULIA_UUID] ≥ v"1.11"
+
+        # ... and when the Julia universe is restricted to versions that bundle
+        # no such LinearAlgebra, the bound is unsatisfiable rather than inert
+        @test isnothing(resolve_versions("LinearAlgebra = \"1.11\"",
+                                        ["--julia=1.10"]; deps = linalg))
+
+        # no Julia bundles a LinearAlgebra 99.x, and there is no registry copy
+        # of it either
+        @test isnothing(resolve_versions("LinearAlgebra = \"99\""; deps = linalg))
+
+        # a bundled-only version is admitted just by the Julias that bundle it,
+        # never by any other: Statistics 1.10.0 exists only as Julia 1.10's
+        # bundled copy (the registry starts at 1.11.0), so bounding Statistics
+        # to the 1.10 series steers Julia to 1.10 as well -- it must not pair
+        # 1.10.0 with a newer Julia that ships something else
+        tilde = resolve_versions("Statistics = \"~1.10\""; deps = stat)
+        @test !isnothing(tilde)
+        @test tilde[STATISTICS] ∈ bundled_versions(VersionSpec("1.10"))[STATISTICS]
+        @test tilde[JULIA_UUID] ∈ VersionSpec("1.10")
     end
 end

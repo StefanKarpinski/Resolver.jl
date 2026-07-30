@@ -54,8 +54,8 @@ itself, which pins the unique answer.
 
 ## Filtering
 
-Real problems are shrunk before solving by two passes (`pkg_info` with
-`filter=true`, the default):
+Real problems are shrunk before solving by two passes
+(`filter_pkg_info!`, run per resolve from `prepare_pkg_info`):
 
 **Reachability** (`find_reachable`) computes, per package, a version
 *prefix* to keep, by a fixpoint of *conflict-driven degradation*:
@@ -388,6 +388,29 @@ filtering, which is fast and not worth caching). A non-standard
 ordering — say, preferring versions closest to an installed manifest —
 invalidates only the middle tier, which is orders of magnitude cheaper
 to rebuild than the first.
+
+The implementation draws the line between the first tier and the rest
+at `pkg_info`, whose output — conflict matrices, the arc-consistency
+prune and the classes (`version_classes`) — is exactly the
+registry-only artifact, and it merges the second and third tiers into
+one per-resolve pass, `prepare_pkg_info`, since the middle tier is
+cheap enough not to be worth storing. That pass lays each package's
+versions out in the ordering the query asked for
+(`version_permutations`), refines the classes by the user's constraints
+and collapses each to its best member in that ordering
+(`class_representatives`), and filters the result
+(`filter_pkg_info!`).
+
+The ordering is a `resolve` parameter rather than part of the problem,
+which is what makes one artifact serve every query: it selects among
+the valid solutions instead of changing which solutions are valid. What
+*does* change the model set — the user's compat bounds and pins, and
+the admission of prerelease and yanked versions — is a `Problem`, and
+enters as constraints on the artifact's versions rather than as
+deletions from it (see `exclusion_masks`). So there is one T1 artifact
+per registry state, full stop: every version the registry state offers
+is in it, in canonical order, and each query says which of them it will
+accept and in what order it prefers them.
 
 !!! warning "Formalization boundary"
     Theorems 2, 3, 5, and 6 are proved against the rule set as stated

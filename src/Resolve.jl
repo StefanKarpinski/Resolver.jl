@@ -117,6 +117,21 @@ carries.
 a `SAT` instance. The `SAT` method also accepts `restore::Bool = true`: when
 true the instance's clauses are restored before returning so the instance
 can be reused; `restore = false` is faster for single-use instances.
+
+The other methods accept two more keywords:
+
+  * `order`: the *version* preference ordering, as a callable mapping a package
+    to a `lt` comparator over its versions ("is preferred to"). The default,
+    `nothing`, means the order the universe already lists them in — which for a
+    T1 artifact (see [`pkg_info`](@ref Resolver.pkg_info)) is the canonical one
+    the registry state fixes. The ordering is not a constraint: it selects among
+    the valid solutions rather than changing which ones are valid, so it is a
+    parameter here instead of part of the `Problem`, and one artifact serves
+    every ordering.
+  * `group::Bool = true`: whether to collapse each package's interchangeable
+    versions to one representative before solving (see `prepare_pkg_info`).
+    Grouping is an optimization and cannot change the answer; `group = false` is
+    the escape hatch that says so.
 """
 function resolve(
     sat  :: SAT{P,V},
@@ -129,27 +144,9 @@ function resolve(
     return Dict{P,V}(p => sat.info[p].versions[i] for (p, i) in sol)
 end
 
-# primary entry points: a Problem (requirements + user constraints)
-
-function resolve(
-    deps :: DepsProvider{P},
-    prob :: Problem{P};
-    by   :: Function = identity, # package ordering
-) where {P}
-    info = pkg_info(deps, prob)
-    resolve(info, prob; by)
-end
-
-function resolve(
-    data :: AbstractDict{P,<:PkgData{P}},
-    prob :: Problem{P};
-    by   :: Function = identity, # package ordering
-) where {P}
-    info = pkg_info(data, prob)
-    resolve(info, prob; by)
-end
-
-function resolve(
+# resolve a universe that `prepare_pkg_info` has already laid out, collapsed
+# & filtered
+function resolve_prepared(
     info :: Dict{P,PkgInfo{P,V}},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
@@ -162,6 +159,45 @@ function resolve(
     end
 end
 
+# primary entry points: a Problem (requirements + user constraints). each
+# builds the T1 artifact for the problem's requirements, then prepares it —
+# the T1 info is freshly built and nobody else holds it, so preparation is
+# allowed to shrink it in place
+
+function resolve(
+    deps :: DepsProvider{P},
+    prob :: Problem{P};
+    by   :: Function = identity, # package ordering
+    group :: Bool = true, # collapse interchangeable versions
+    order = nothing, # version ordering
+) where {P}
+    info = pkg_info(deps, prob)
+    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob; by)
+end
+
+function resolve(
+    data :: AbstractDict{P,<:PkgData{P}},
+    prob :: Problem{P};
+    by   :: Function = identity, # package ordering
+    group :: Bool = true, # collapse interchangeable versions
+    order = nothing, # version ordering
+) where {P}
+    info = pkg_info(data, prob)
+    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob; by)
+end
+
+# a caller-supplied info may be a reusable (or cached) T1 artifact, so this
+# method prepares into a dict of its own and leaves the argument alone
+function resolve(
+    info :: AbstractDict{P,PkgInfo{P,V}},
+    prob :: Problem{P};
+    by   :: Function = identity, # package ordering
+    group :: Bool = true, # collapse interchangeable versions
+    order = nothing, # version ordering
+) where {P,V}
+    resolve_prepared(prepare_pkg_info(info, prob; group, order), prob; by)
+end
+
 # convenience entry points: bare requirements, with the user constraints (if
 # any) given as keywords instead of a `Problem`
 
@@ -171,7 +207,9 @@ resolve(
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
-) where {P} = resolve(deps, Problem(reqs; compat, pins); by)
+    group  :: Bool = true, # collapse interchangeable versions
+    order  = nothing, # version ordering
+) where {P} = resolve(deps, Problem(reqs; compat, pins); by, group, order)
 
 resolve(
     data :: AbstractDict{P,<:PkgData{P}},
@@ -179,12 +217,16 @@ resolve(
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
-) where {P} = resolve(data, Problem(reqs; compat, pins); by)
+    group  :: Bool = true, # collapse interchangeable versions
+    order  = nothing, # version ordering
+) where {P} = resolve(data, Problem(reqs; compat, pins); by, group, order)
 
 resolve(
-    info :: Dict{P,PkgInfo{P,V}},
+    info :: AbstractDict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
-) where {P,V} = resolve(info, Problem(reqs; compat, pins); by)
+    group  :: Bool = true, # collapse interchangeable versions
+    order  = nothing, # version ordering
+) where {P,V} = resolve(info, Problem(reqs; compat, pins); by, group, order)

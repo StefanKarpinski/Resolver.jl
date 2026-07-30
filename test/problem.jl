@@ -302,6 +302,93 @@ end
     end
 end
 
+@testset "Problem: exclusion kinds" begin
+    # `excludes` carries the *admission* knobs — "no prereleases", "no yanked
+    # versions" — which are stated about versions rather than about packages, so
+    # they come as `kind => predicate` pairs instead of per-package entries.
+    # Semantically a kind is nothing but another constraint source: forbidding
+    # exactly the versions a compat entry forbids must be the same problem.
+    nodeps = Dict{Symbol,Vector{Symbol}}()
+    nocomp = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
+    data = Dict(
+        :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]), nocomp),
+        :B => PkgData([:v2, :v1], nodeps, nocomp),
+    )
+    info = pkg_info(data, keys(data); filter = false)
+
+    odd = :test => (p, v) -> v == :v2 # forbid :v2 of every package
+    prob = Problem([:A]; excludes = [odd])
+    @test  is_excluded(prob, :A, :v2)
+    @test !is_excluded(prob, :A, :v1)
+    @test  is_excluded(prob, :Z, :v2) # a kind applies to packages too
+
+    # the kind reaches every package in the universe, unlike compat and pins
+    excl = exclusion_masks(info, prob)
+    @test sort!(collect(keys(excl))) == [:A, :B]
+    @test excl[:A] == excl[:B] == BitVector([true, false])
+
+    # ... and it is the same problem as the equivalent compat bounds
+    both = Problem([:A]; compat = Dict(:A => [:v1], :B => [:v1]))
+    @test exclusion_masks(info, both) == excl
+    @test resolve(data, prob) == resolve(data, both)
+    test_bake_equivalence(data, prob)
+
+    # one selector per source, so a kind, a compat bound and a pin on the same
+    # package stay distinguishable
+    prob = Problem([:A]; compat = Dict(:A => [:v1, :v2]),
+                         pins = Dict(:B => :v1), excludes = [odd])
+    sat = SAT(info, prob)
+    try
+        @test Set(values(sat.sels)) ==
+              Set([(:test, :A), (:test, :B), (:pin, :B)])
+    finally
+        finalize(sat)
+    end
+
+    # no kinds means no cost: the shared empty vector, and an unconstrained
+    # problem that still allocates nothing but its requirements
+    a, b = Problem([:A]), Problem([:B])
+    @test a.excludes === b.excludes
+    @test isempty(a.excludes)
+    @test isempty(Problem([:A]; excludes = Pair{Symbol,Any}[]).excludes)
+    @test exclusion_masks(info, a) === exclusion_masks(info, b)
+end
+
+@testset "Problem: exclusion kinds are ordinary constraints" begin
+    Random.seed!(rand(RandomDevice(), UInt64))
+    # A kind that forbids a random version subset per package must behave
+    # exactly like the compat entries that forbid the same versions, and (by
+    # bake-equivalence) exactly like deleting them from the data. Swept over the
+    # tiny grids, with compat and pins in force on top.
+    for (m, n) in ((2, 2), (2, 3), (3, 2), (3, 3), (2, 4), (4, 2))
+        make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
+        for _ = 1:40
+            fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
+            reqs = collect(make_reqs(rand(1:2^m-1)))
+            allowed = Dict(p => [v for v = 1:n if rand(Bool)] for p = 1:m+1)
+            kinds = [:test => (p, v) -> !(v in get(allowed, p, 1:n))]
+            for cs in (nothing, random_constraints(m, n))
+                compat, pins = cs === nothing ?
+                    (Dict{Int,Vector{Int}}(), Dict{Int,Int}()) : cs
+                as_kind = Problem(reqs; compat, pins, excludes = kinds)
+                as_compat = Problem(reqs;
+                    compat = mergewith!(∩, Dict(compat), Dict(allowed)), pins)
+                for by in (identity, p -> -p)
+                    @test resolve(data, as_kind; by) ==
+                          resolve(data, as_compat; by)
+                    test_bake_equivalence(data, as_kind; by)
+                end
+                # ... and the collapse and the ordering stay orthogonal to it
+                @test resolve(data, as_kind; group = false) ==
+                      resolve(data, as_kind; group = true)
+                order = p -> (u, v) -> u > v
+                @test resolve(data, as_kind; order) ==
+                      resolve(bake(data, as_kind), reqs; order)
+            end
+        end
+    end
+end
+
 @testset "Problem: brute-force cross-checks" begin
     # hand-built cases: the brute-force reference resolves the baked data
     nodeps = Dict{Symbol,Vector{Symbol}}()

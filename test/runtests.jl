@@ -256,9 +256,30 @@ end
     @test isempty(info[:A].depends)
     test_resolver(data, [:A])
     test_resolver(data, [:C])
+
+    # resolving an *unpruned* info reaches the same answers: dropping the
+    # version-less package leaves `depends` naming a package that is gone, and
+    # arc consistency has to read that as uninstallable too
+    data = Dict(
+        :A => PkgData([:v1], Dict(:v1 => [:B]), nocomp),
+        :B => PkgData(Symbol[], nodeps, nocomp),
+    )
+    info = pkg_info(data, [:A]; filter = false)
+    @test resolve(info, [:A]) === nothing
+    @test resolve(info, [:A]; group = false) === nothing
+    data = Dict(
+        :A => PkgData([:v2, :v1], Dict(:v2 => [:B]), nocomp),
+        :B => PkgData(Symbol[], nodeps, nocomp),
+        :C => PkgData([:v1], Dict(:v1 => [:A]), nocomp),
+    )
+    info = pkg_info(data, [:C]; filter = false)
+    @test resolve(info, [:C]) == Dict(:C => :v1, :A => :v1)
+    @test resolve(info, [:C]; group = false) == Dict(:C => :v1, :A => :v1)
 end
 
 include("problem.jl")
+include("classes.jl")
+include("ordering.jl")
 
 @testset "registry resolve" begin
     rp = registry.provider()

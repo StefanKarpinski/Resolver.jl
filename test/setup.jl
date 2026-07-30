@@ -7,7 +7,8 @@ using Test
 
 module TestResolver
 
-using Resolver: resolve, DepsProvider, PkgData, PkgInfo, pkg_data, pkg_info
+using Resolver: resolve, DepsProvider, PkgData, PkgInfo, pkg_data, pkg_info,
+    filter_pkg_info!
 using Test
 
 export test_resolver, ref_resolve
@@ -91,7 +92,10 @@ function test_resolver(
         # @info "optimality testing full data"
         info = data # type unstable but 🤷
     else
-        info = pkg_info(data, reqs)
+        # bound the enumeration by the *uncollapsed* filtered universe: the
+        # collapsed one is smaller, and enumerating fewer candidate solutions
+        # would only weaken the domination check below
+        info = filter_pkg_info!(pkg_info(data, reqs), reqs)
         Π = prod(float(length(ip.versions)+1) for ip in values(info))
         if Π > Π⁺
             # @info "no optimality testing"

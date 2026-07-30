@@ -73,6 +73,44 @@ function copy_col_bits!(dest::Vector{UInt64}, off::Int, X::BitMatrix, j::Int, le
     return dest
 end
 
+# rows of a conflicts matrix are strided across the column spans, so the two
+# primitives the interchangeability test needs read them bit by bit: a hash of
+# row i over the first n columns, and exact equality of rows i and j over them
+
+function row_hash(X::BitMatrix, i::Int, n::Int, W::Int)
+    chunks = X.chunks
+    wi = ((i - 1) >> 6) + 1
+    bi = (i - 1) & 63
+    h = zero(UInt)
+    acc = UInt64(0)
+    nb = 0
+    @inbounds for k = 1:n
+        acc |= ((chunks[(k - 1) * W + wi] >> bi) & 1) << nb
+        nb += 1
+        if nb == 64
+            h = hash(acc, h)
+            acc = UInt64(0)
+            nb = 0
+        end
+    end
+    nb > 0 && (h = hash(acc, h))
+    return h
+end
+
+function rows_equal(X::BitMatrix, i::Int, j::Int, n::Int, W::Int)
+    chunks = X.chunks
+    wi = ((i - 1) >> 6) + 1
+    bi = (i - 1) & 63
+    wj = ((j - 1) >> 6) + 1
+    bj = (j - 1) & 63
+    @inbounds for k = 1:n
+        base = (k - 1) * W
+        ((chunks[base + wi] >> bi) & 1) ==
+        ((chunks[base + wj] >> bj) & 1) || return false
+    end
+    return true
+end
+
 # highest set row ≤ hi in column j of X, or 0 if none
 function col_max_upto(X::BitMatrix, j::Int, hi::Int)
     hi ≤ 0 && return 0

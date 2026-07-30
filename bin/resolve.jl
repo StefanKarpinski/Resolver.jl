@@ -257,13 +257,15 @@ end
 # project bound outright rather than intersecting with it, so the flag always
 # says exactly what will be resolved for.
 #
-# Whichever source wins feeds the one `julia_versions` spec that determines
-# both the `julia` package's version universe and, through it, which
-# historical stdlib versions are bundled and pinned (see Registries.jl) --
-# so a project bound and the equivalent `--julia` are indistinguishable
-# downstream. The bound is *consumed* here: it must not also constrain
-# `julia` as a user compat entry in the `Problem` below, or the two readings
-# of the same entry would compound.
+# Whichever source wins is an ordinary compat entry on `julia`: the provider
+# offers every Julia version there is, along with every stdlib version any of
+# them bundles (see Registries.jl), and this bound constrains the `julia`
+# package the way any other bound constrains its own. So a project bound and
+# the equivalent `--julia` are indistinguishable downstream -- and the Julias
+# the bound excludes are excluded by clause rather than missing from the
+# universe, which is what lets one artifact answer for any of them. The
+# stdlib <-> Julia couplings do the rest: a Julia the bound rules out cannot
+# be chosen, so neither can a stdlib version only that Julia bundles.
 
 const julia_versions = something(
     handle_opts(:julia) do val::String
@@ -272,9 +274,11 @@ const julia_versions = something(
             usage("Invalid compat version spec: --julia=$val")
         end
     end,
-    pop!(project_compat, JULIA_UUID, nothing),
+    get(project_compat, JULIA_UUID, nothing),
     VersionSpec("1"),
 )
+
+project_compat[JULIA_UUID] = julia_versions
 
 ## options: parsing packages specs
 
@@ -363,7 +367,14 @@ handle_opts(r"^(allow_pre|(un)?fix|max|min)") do opt, val
     end
 end
 
-## version sorting
+## version ordering
+#
+# The version preference ordering is a *query* parameter, not part of the package
+# universe: it decides which of the valid solutions is optimal, not which
+# solutions are valid. So the provider hands over versions in the canonical order
+# (newest first, see Registries.jl) and this ordering reaches the resolver as
+# `resolve`'s `order` argument -- one comparator per package, built from the
+# --fix*/--max*/--min* options and the old manifest.
 
 function fixed(
     u::Nothing, # no old version
@@ -387,7 +398,7 @@ function fixed(
     end
 end
 
-function order(level::Symbol) :: Function
+function level_order(level::Symbol) :: Function
     level == :min && return (u::VersionNumber, v::VersionNumber) -> u < v
     level == :max && return (u::VersionNumber, v::VersionNumber) -> u > v
     level == :min_minor && return (u::VersionNumber, v::VersionNumber) ->
@@ -400,20 +411,19 @@ function order(level::Symbol) :: Function
         thismajor(u) ≠ thismajor(v) ? thismajor(u) > thismajor(v) : u < v
 end
 
-function sort_versions(uuid::UUID, vers::Set{VersionNumber})
+function version_order(uuid::UUID) :: Function
     fixed_by = fixed(
         get(old_versions, uuid, nothing),
         get(FIX_PATCH, uuid, FIX_PATCH[ZERO_UUID]),
         get(FIX_MINOR, uuid, FIX_MINOR[ZERO_UUID]),
         get(FIX_MAJOR, uuid, FIX_MAJOR[ZERO_UUID]),
     )
-    <ₒ = order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
+    <ₒ = level_order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
     function lt(u::VersionNumber, v::VersionNumber)
         fixed_u = fixed_by(u) :: UInt8
         fixed_v = fixed_by(v) :: UInt8
         fixed_u ≠ fixed_v ? fixed_u > fixed_v : u <ₒ v
     end
-    sort!(collect(vers); lt)
 end
 
 ## options: sorting packages (resolution priority)
@@ -447,19 +457,12 @@ end
 
 ## do an actual resolve
 
-reg = registry_provider(
-    packages;
-    julia_versions,
-    sort_versions,
-    allow_pre,
-    workspace_pkgs,
-)
+reg = registry_provider(packages; workspace_pkgs)
 
 # the project's compat bounds are user constraints, not part of the package
 # universe: they go into the `Problem`, which forbids the versions they exclude
-# by clause instead of deleting them from the provider's data. (the `julia`
-# bound is not among them: it was consumed above, as the Julia version
-# universe.)
+# by clause instead of deleting them from the provider's data. the `julia` bound
+# is one of them, no longer special (see above).
 #
 # every bound is enforced strictly, stdlibs included. a bound on a stdlib is not
 # inert: a Julia version is compatible with exactly the stdlib versions it
@@ -468,10 +471,21 @@ reg = registry_provider(
 # Julia choice to satisfy it. If no admissible Julia bundles a version the bound
 # admits, and no registry version fits either, the requirements really are
 # unsatisfiable and saying so beats silently ignoring the bound.
-const problem = Problem(reqs; compat = project_compat)
+#
+# the admission knobs ride along as exclusion kinds: `--allow-pre` says which
+# packages' prereleases the query accepts, and yanked versions are forbidden
+# outright (there is no option to accept one yet), each the same way a compat
+# bound forbids a version.
+const problem = Problem(reqs;
+    compat = project_compat,
+    excludes = [
+        prerelease_exclusion(allow_pre),
+        yanked_exclusion(packages),
+    ],
+)
 
 pkg_info = Resolver.pkg_info(reg, problem)
-sol = resolve(pkg_info, problem; by=sort_packages_by)
+sol = resolve(pkg_info, problem; by=sort_packages_by, order=version_order)
 sol === nothing && error("Unsatisfiable")
 
 ## output results
@@ -596,12 +610,28 @@ for (uuid, version) in sol
 end
 
 if output == :print_versions
-    # the best version of a package that the project's constraints admit: the
-    # info keeps the versions the Problem forbids (they are constrained away,
-    # not deleted), so they don't count as available here
+    # The best version of a package that was actually available. The universe
+    # holds every version of every package and every Julia, and says what a query
+    # admits by constraining rather than by leaving things out -- so "available"
+    # has to be spelled out here: the project's bounds must admit it, and it must
+    # be a version the registries have or one that a Julia the bound admits
+    # bundles. (A version bundled only by some other Julia is in the universe but
+    # was never on offer, and would make every stdlib look sub-optimal.) The info
+    # lists versions in the canonical order, not the requested one, so rank them
+    # with the same comparator the resolve used.
+    bundled_here = bundled_versions(julia_versions)
+    function on_offer(uuid::UUID, v::VersionNumber)
+        # a version the registries have is on offer whatever Julia we target,
+        # and so is anything no Julia bundles (`julia` itself included)
+        is_bundled(uuid, v) || return true
+        is_registered(packages, uuid, v) && return true
+        # otherwise it exists only because some Julia bundles it
+        return v in get(bundled_here, uuid, ())
+    end
     function best_version(uuid::UUID)
-        vers = pkg_info[uuid].versions
-        i = findfirst(v -> !Resolver.is_excluded(problem, uuid, v), vers)
+        vers = sort!(copy(pkg_info[uuid].versions); lt = version_order(uuid))
+        i = findfirst(v -> !Resolver.is_excluded(problem, uuid, v) &&
+                           on_offer(uuid, v), vers)
         return isnothing(i) ? first(vers) : vers[i]
     end
     # print packages and versions in priority order, required packages first

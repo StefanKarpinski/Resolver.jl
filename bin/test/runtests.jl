@@ -141,6 +141,47 @@ end
         @test info[JSON].versions[1] ∉ VersionSpec("0.20")
     end
 
+    # The version preference ordering is a resolve parameter, not part of the
+    # package universe: the provider always hands over the canonical order
+    # (newest first), and a query's ordering is `resolve`'s `order` argument. The
+    # oracle is the old path, where the ordering was baked into the provider's
+    # version vectors -- so sorting the data that way and resolving canonically
+    # must give exactly what passing the comparator gives, at registry scale.
+    @testset "the version ordering is a resolve parameter" begin
+        reg = make_provider(VersionSpec("1.10"))
+        reqs = sort([JSON, COMPILER_SUPPORT_LIBRARIES_JLL, JULIA_UUID])
+        prob = Resolver.Problem(reqs)
+        data = Resolver.pkg_data(reg, reqs)
+        # the provider's own order is canonical, so nothing needs permuting
+        info = Resolver.pkg_info(data, reqs)
+        @test Resolver.version_permutations(info, _ -> >) === nothing
+        # oldest first, then a couple of the real --max-minor / --min-minor
+        # comparators the options build
+        minor(u, v) = Base.thisminor(u) ≠ Base.thisminor(v) ?
+            Base.thisminor(u) > Base.thisminor(v) : u < v
+        rminor(u, v) = Base.thisminor(u) ≠ Base.thisminor(v) ?
+            Base.thisminor(u) < Base.thisminor(v) : u > v
+        for lt in (<, minor, rminor)
+            order = _ -> lt
+            baked = Dict(u => Resolver.PkgData(
+                            sort(collect(d.versions); lt), d.depends, d.compat)
+                         for (u, d) in data)
+            @test Resolver.resolve(data, prob; order) ==
+                  Resolver.resolve(baked, prob)
+            # ... and the one T1 artifact answers under any of them
+            @test Resolver.resolve(info, prob; order) ==
+                  Resolver.resolve(baked, prob)
+        end
+        # a per-package ordering: only julia reversed, everything else canonical
+        order = u -> u == JULIA_UUID ? (<) : (>)
+        baked = Dict(u => Resolver.PkgData(
+                        sort(collect(d.versions); lt = order(u)),
+                        d.depends, d.compat) for (u, d) in data)
+        @test Resolver.resolve(info, prob; order) == Resolver.resolve(baked, prob)
+        @test Resolver.resolve(info, prob; order)[JULIA_UUID] <
+              Resolver.resolve(info, prob)[JULIA_UUID]
+    end
+
     # The provider offers a bundled stdlib version whatever the registries say,
     # so `bundled_versions` answers "which versions of this stdlib can I get on
     # these Julias at all" -- the version sets the couplings below are stated

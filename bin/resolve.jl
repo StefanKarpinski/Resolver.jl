@@ -363,7 +363,14 @@ handle_opts(r"^(allow_pre|(un)?fix|max|min)") do opt, val
     end
 end
 
-## version sorting
+## version ordering
+#
+# The version preference ordering is a *query* parameter, not part of the package
+# universe: it decides which of the valid solutions is optimal, not which
+# solutions are valid. So the provider hands over versions in the canonical order
+# (newest first, see Registries.jl) and this ordering reaches the resolver as
+# `resolve`'s `order` argument -- one comparator per package, built from the
+# --fix*/--max*/--min* options and the old manifest.
 
 function fixed(
     u::Nothing, # no old version
@@ -387,7 +394,7 @@ function fixed(
     end
 end
 
-function order(level::Symbol) :: Function
+function level_order(level::Symbol) :: Function
     level == :min && return (u::VersionNumber, v::VersionNumber) -> u < v
     level == :max && return (u::VersionNumber, v::VersionNumber) -> u > v
     level == :min_minor && return (u::VersionNumber, v::VersionNumber) ->
@@ -400,20 +407,19 @@ function order(level::Symbol) :: Function
         thismajor(u) ≠ thismajor(v) ? thismajor(u) > thismajor(v) : u < v
 end
 
-function sort_versions(uuid::UUID, vers::Set{VersionNumber})
+function version_order(uuid::UUID) :: Function
     fixed_by = fixed(
         get(old_versions, uuid, nothing),
         get(FIX_PATCH, uuid, FIX_PATCH[ZERO_UUID]),
         get(FIX_MINOR, uuid, FIX_MINOR[ZERO_UUID]),
         get(FIX_MAJOR, uuid, FIX_MAJOR[ZERO_UUID]),
     )
-    <ₒ = order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
+    <ₒ = level_order(get(ORDER_MAP, uuid, ORDER_MAP[ZERO_UUID]))
     function lt(u::VersionNumber, v::VersionNumber)
         fixed_u = fixed_by(u) :: UInt8
         fixed_v = fixed_by(v) :: UInt8
         fixed_u ≠ fixed_v ? fixed_u > fixed_v : u <ₒ v
     end
-    sort!(collect(vers); lt)
 end
 
 ## options: sorting packages (resolution priority)
@@ -450,7 +456,6 @@ end
 reg = registry_provider(
     packages;
     julia_versions,
-    sort_versions,
     allow_pre,
     workspace_pkgs,
 )
@@ -471,7 +476,7 @@ reg = registry_provider(
 const problem = Problem(reqs; compat = project_compat)
 
 pkg_info = Resolver.pkg_info(reg, problem)
-sol = resolve(pkg_info, problem; by=sort_packages_by)
+sol = resolve(pkg_info, problem; by=sort_packages_by, order=version_order)
 sol === nothing && error("Unsatisfiable")
 
 ## output results
@@ -598,9 +603,11 @@ end
 if output == :print_versions
     # the best version of a package that the project's constraints admit: the
     # info keeps the versions the Problem forbids (they are constrained away,
-    # not deleted), so they don't count as available here
+    # not deleted), so they don't count as available here. The info lists
+    # versions in the canonical order, not the requested one, so rank them here
+    # with the same comparator the resolve used
     function best_version(uuid::UUID)
-        vers = pkg_info[uuid].versions
+        vers = sort!(copy(pkg_info[uuid].versions); lt = version_order(uuid))
         i = findfirst(v -> !Resolver.is_excluded(problem, uuid, v), vers)
         return isnothing(i) ? first(vers) : vers[i]
     end

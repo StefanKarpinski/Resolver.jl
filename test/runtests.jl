@@ -279,6 +279,7 @@ end
 
 include("problem.jl")
 include("classes.jl")
+include("ordering.jl")
 
 @testset "registry resolve" begin
     rp = registry.provider()

@@ -88,7 +88,11 @@ end
 
 ## extracting the dependency graph from registries
 
-function sort_versions_default(uuid::UUID, vers::Set{VersionNumber})
+# The canonical version order: newest first. It is a property of the registry
+# state alone, so the provider's output -- and with it the T1 artifact built from
+# it -- is the same whatever ordering a query prefers; the preference ordering is
+# the `order` argument to `Resolver.resolve` (see bin/resolve.jl).
+function sort_versions(uuid::UUID, vers::Set{VersionNumber})
     sort!(collect(vers), rev=true)
 end
 
@@ -188,7 +192,6 @@ end
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
     julia_versions :: VersionSpec = VersionSpec("1"),
-    sort_versions  :: Function = sort_versions_default,
     allow_pre      :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),

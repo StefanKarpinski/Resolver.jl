@@ -473,12 +473,16 @@ reg = registry_provider(
 # admits, and no registry version fits either, the requirements really are
 # unsatisfiable and saying so beats silently ignoring the bound.
 #
-# prerelease admission rides along as an exclusion kind: `--allow-pre` says which
-# packages' prereleases the query accepts, and the rest are forbidden the same
-# way a compat bound forbids a version.
+# the admission knobs ride along as exclusion kinds: `--allow-pre` says which
+# packages' prereleases the query accepts, and yanked versions are forbidden
+# outright (there is no option to accept one yet), each the same way a compat
+# bound forbids a version.
 const problem = Problem(reqs;
     compat = project_compat,
-    excludes = [prerelease_exclusion(allow_pre)],
+    excludes = [
+        prerelease_exclusion(allow_pre),
+        yanked_exclusion(packages),
+    ],
 )
 
 pkg_info = Resolver.pkg_info(reg, problem)

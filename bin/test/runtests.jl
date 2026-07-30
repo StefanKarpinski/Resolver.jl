@@ -31,6 +31,11 @@ const DELIMITED_FILES = UUID("8bb1440f-4735-579b-a4ab-409b98df4dab")
 # unless prereleases are admitted.
 const LLVM_FULL_JLL = UUID("a3ccf953-465e-511d-b87f-60a6490c289d")
 const WINE_JLL = UUID("9fae3aff-8997-5dd1-9b84-5d0cc5e0bffa")
+# Compat 4.0.0 is yanked from General (the julia-downgrade-compat case, see the
+# "yanked packages" testset in the package suite), and libsodium_jll's *newest*
+# registered version is too.
+const COMPAT = UUID("34da2185-b29b-5c13-b0c7-acf172513d20")
+const LIBSODIUM_JLL = UUID("a9144af2-ca23-56d9-984f-0d03f7b5ccf8")
 
 # Load packages from the installed registries (mirrors bin/resolve.jl).
 const packages = Dict{UUID,Vector{PkgEntry}}()
@@ -240,6 +245,70 @@ end
         @test !isempty(pre[WINE_JLL].prerelease)
         @test pre == resolve_versions("", ["--julia=1.10", "--allow-pre"];
                                       deps = wine)
+    end
+
+    # Yankedness is the same shape of fact as prerelease-ness -- a property of a
+    # version that a query may or may not accept -- so it is modeled the same
+    # way, as an exclusion kind, even though nothing yet offers the user a way to
+    # turn it off. The oracle is the old path, where the provider deleted yanked
+    # versions outright.
+    @testset "yanked versions are constrained, not deleted" begin
+        reg = make_provider(VersionSpec("1.10"))
+        reqs = sort([COMPAT, LIBSODIUM_JLL, JULIA_UUID])
+        data = Resolver.pkg_data(reg, reqs)
+        yanked = yanked_exclusion(packages)
+        forbids = last(yanked)
+
+        # `is_yanked` reads the registries, not the version number: Compat 4.0.0
+        # is yanked from General and libsodium_jll's newest version is too
+        @test forbids(COMPAT, v"4.0.0")
+        @test !forbids(COMPAT, v"4.1.0")
+        @test forbids(LIBSODIUM_JLL, v"1.0.22+0")
+        @test !forbids(LIBSODIUM_JLL, v"1.0.21+0")
+        @test !forbids(JSON, v"0.21.4")
+        @test !forbids(JULIA_UUID, v"1.10.0") # not a registered package at all
+        @test !forbids(COMPAT, v"99.0.0")     # no such version
+
+        # the provider offers them and the one artifact keeps them
+        @test v"4.0.0" in data[COMPAT].versions
+        info = Resolver.pkg_info(reg, reqs)
+        @test v"4.0.0" in info[COMPAT].versions
+
+        prob = Resolver.Problem(reqs; excludes = [yanked])
+        old = bake(data, prob) # the versions deleted, as the provider used to
+        @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
+        @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
+        # ... together with the prerelease kind, and under a reversed ordering
+        both = Resolver.Problem(reqs;
+            excludes = [yanked, prerelease_exclusion(no_pre)])
+        @test Resolver.resolve(info, both) ==
+              Resolver.resolve(bake(data, both), reqs)
+        order = u -> (<)
+        @test Resolver.resolve(info, both; order) ==
+              Resolver.resolve(bake(data, both), reqs; order)
+
+        # The selector map names the kind, so a diagnostic could one day say
+        # "the only version that satisfies this is yanked". libsodium_jll's
+        # yanked version is its *newest*, so nothing dominates it and the filter
+        # has to keep it -- it is ruled out by clause. Compat's is not, so
+        # redundancy elimination deletes it, which is the filter subsuming the
+        # deletion the provider used to do.
+        work = Resolver.prepare_pkg_info(info, prob)
+        sat = Resolver.SAT(work, prob)
+        try
+            @test (:yanked, LIBSODIUM_JLL) in values(sat.sels)
+            @test v"1.0.22+0" in work[LIBSODIUM_JLL].versions
+            @test v"4.0.0" ∉ work[COMPAT].versions
+        finally
+            Resolver.finalize(sat)
+        end
+
+        # end to end: libsodium_jll's newest registered version is yanked, so the
+        # resolve must land on the one below it
+        sol = resolve_versions("", ["--julia=1.10"];
+                               deps = ["libsodium_jll" => LIBSODIUM_JLL])
+        @test !isnothing(sol)
+        @test sol[LIBSODIUM_JLL] == v"1.0.21+0"
     end
 
     # The provider offers a bundled stdlib version whatever the registries say,

@@ -1,7 +1,7 @@
 module Registries
 
 export registry_provider, package_info, bundled_versions,
-    prerelease_exclusion, UPGRADABLE_STDLIBS_UUIDS
+    prerelease_exclusion, yanked_exclusion, is_yanked, UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
@@ -201,17 +201,44 @@ prerelease_exclusion(allow_pre::Dict{UUID,Bool}) =
         return !get(allow_pre, uuid, get(allow_pre, UUID(0), false))
     end
 
+## yanked versions
+#
+# Yankedness is the same shape of fact as prerelease-ness: a property of a version
+# that a query may or may not be willing to accept. Nothing offers the user a way
+# to accept one yet -- this kind is always in force -- but modeling it as a
+# constraint rather than a deletion is what keeps the package universe shared, and
+# is what lets a diagnostic eventually say "the only version that satisfies this
+# is yanked" instead of "no such version".
+#
+# A version is offered when *some* registry entry has it un-yanked, so it counts
+# as yanked only when every entry that has it says so -- and a version that no
+# registry has at all (a bundled stdlib) is not a registry version to yank.
+function is_yanked(
+    packages :: Dict{UUID,Vector{PkgEntry}},
+    uuid     :: UUID,
+    v        :: VersionNumber,
+)
+    entries = get(packages, uuid, nothing)
+    entries === nothing && return false
+    found = false
+    for entry in entries
+        info = package_info(entry)
+        haskey(info.version_info, v) || continue
+        isyanked(info, v) || return false
+        found = true
+    end
+    return found
+end
+
+yanked_exclusion(packages::Dict{UUID,Vector{PkgEntry}}) =
+    :yanked => (uuid::UUID, v::VersionNumber) -> is_yanked(packages, uuid, v)
+
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
     julia_versions :: VersionSpec = VersionSpec("1"),
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
 )
-    function filter_yanked!(info, vers::Vector{VersionNumber})
-        filter!(v -> !isyanked(info, v), vers)
-        return vers
-    end
-
     julia_vers, stdlibs, stdlib_pins =
         julia_and_stdlib_versions(julia_versions)
 
@@ -264,13 +291,12 @@ function registry_provider(
         elseif uuid in keys(packages)
             for entry in packages[uuid]
                 info = package_info(entry)
-                # versions from this registry, filtered
+                # every version this registry has
                 new_vers = collect(keys(info.version_info))
-                filter_yanked!(info, new_vers)
-                # neither the project's own compat nor prerelease admission is
-                # applied here: both are query constraints, and they reach the
-                # resolver as part of the `Problem` (see bin/resolve.jl). the
-                # provider only decides which versions exist at all
+                # nothing is filtered out here: the project's own compat,
+                # prerelease admission and yankedness are all query constraints,
+                # and they reach the resolver as part of the `Problem` (see
+                # bin/resolve.jl). the provider only decides which versions exist
                 # scan versions and populate deps & compat data
                 for v in new_vers
                     # NOTE: we probably won't support the same name meaning

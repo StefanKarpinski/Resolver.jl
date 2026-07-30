@@ -1,7 +1,20 @@
-function filter_pkg_info!(
+filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
+) where {P,V} = filter_pkg_info!(info, Problem(reqs))
+
+function filter_pkg_info!(
+    info :: Dict{P, PkgInfo{P,V}},
+    prob :: Problem{P},
 ) where {P,V}
+    reqs = prob.reqs
+    # user constraints enter as the exclusion masks of the virtual package
+    # that represents them (see Problem.jl): reachability treats an excluded
+    # version as one that conflicts with an always-present version, and
+    # redundancy treats the mask as one more conflict column. the masks are
+    # index-based, so they are rebuilt after every deletion round; only the
+    # constrained packages cost anything
+    excl = exclusion_masks(info, prob)
     # arc consistency first: it needs no marks and it is what makes the
     # deletions safe — dropping a package while a kept version still
     # depends on it would leave a dangling name. then redundancy
@@ -15,12 +28,13 @@ function filter_pkg_info!(
     # rounds strictly shrink the total version count, so the loop
     # terminates
     mark_installable!(info)
-    mark_necessary!(info)
+    mark_necessary!(info, excl)
     drop_unmarked!(info)
     while true
         total = sum(length(i.versions) for i in values(info); init = 0)
-        mark_reachable!(info, reqs)
-        mark_necessary!(info)
+        excl = exclusion_masks(info, prob)
+        mark_reachable!(info, reqs, excl)
+        mark_necessary!(info, excl)
         drop_unmarked!(info)
         sum(length(i.versions) for i in values(info); init = 0) < total ||
             break
@@ -40,6 +54,13 @@ of required "root" packages, using the following recursive logic:
 - P[i] reachable & P[i] conflicts w. reachable => P[i+1] reachable
 - D[end] conflicts w. reachable & P[i] depends on D => P[i+1] reachable
 
+The optional `excl` argument gives, per package, a mask of versions the user
+forbade. Those are the conflict rows of the always-present virtual package that
+represents the user constraints, so a reachable excluded version fires the same
+degradation rule as any other conflict:
+
+- P[i] reachable & P[i] excluded => P[i+1] reachable
+
 The function returns a dictionary mapping packages to the maximum version index
 of that package that could be reached in an optimal solution. If a package
 cannot appear in an optimal solution, it will not appear in this dictionary.
@@ -47,6 +68,7 @@ cannot appear in an optimal solution, it will not appear in this dictionary.
 function find_reachable(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
+    excl :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
 ) where {P,V}
     # intern packages as integer indices so that the fixpoint loop below
     # hashes no package names; all derived tables are indexed by pkg id
@@ -59,10 +81,13 @@ function find_reachable(
     # i.e. a package with no installable version — see below)
     deps = Vector{Vector{Int}}(undef, N)
     partners = Vector{Vector{Tuple{Int,Int}}}(undef, N)
+    # interned exclusion masks (nothing: package unconstrained, the norm)
+    excls = Vector{Union{Nothing,BitVector}}(nothing, N)
     for p = 1:N
         info_p = info[pkgs[p]]
         infos[p] = info_p
         nvers[p] = length(info_p.versions)
+        excls[p] = get(excl, pkgs[p], nothing)
         deps[p] = Int[get(ix, q, 0) for q in info_p.depends]
         # (partner id, offset of p's version block in the partner's matrix)
         prt = Tuple{Int,Int}[
@@ -138,7 +163,12 @@ function find_reachable(
             end
         end
         # process each newly reachable version of p
+        excl_p = excls[p]
         for j = reach[p]+1:min(i, m)
+            # user constraints: p@j conflicts with the always-present
+            # version of the virtual package, so it can never be a resting
+            # point — p can only be installed past it
+            excl_p === nothing || !excl_p[j] || next(p, j)
             # dependencies
             for (k, q) in enumerate(deps[p])
                 info_p.conflicts[j, k] || continue
@@ -184,8 +214,9 @@ end
 function mark_reachable!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
+    excl :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
 ) where {P,V}
-    reach = find_reachable(info, reqs)
+    reach = find_reachable(info, reqs, excl)
     for (p, info_p) in info
         r = min(get(reach, p, 0), length(info_p.versions))
         info_p.conflicts[1:r, end] .= true
@@ -232,6 +263,7 @@ end
 
 function mark_necessary!(
     info :: Dict{P, PkgInfo{P,V}},
+    excl :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
 ) where {P,V}
     # intern packages as integer indices so that the work loop below
     # hashes no package names (sorted so the processing order — and with
@@ -242,10 +274,13 @@ function mark_necessary!(
     infos = Vector{PkgInfo{P,V}}(undef, N)
     nvers = Vector{Int}(undef, N)
     partners = Vector{Vector{NTuple{3,Int}}}(undef, N)
+    # interned exclusion masks (nothing: package unconstrained, the norm)
+    excls = Vector{Union{Nothing,BitVector}}(nothing, N)
     for p = 1:N
         info_p = info[pkgs[p]]
         infos[p] = info_p
         nvers[p] = length(info_p.versions)
+        excls[p] = get(excl, pkgs[p], nothing)
         # (partner id, partner's version block offset in p's matrix,
         #  p's version block offset in the partner's matrix)
         prt = NTuple{3,Int}[
@@ -258,6 +293,7 @@ function mark_necessary!(
     A = UInt64[]        # active version mask
     D = UInt64[]        # per-version domination candidate masks
     T = UInt64[]        # mask of versions still tracked by the sweep
+    E = UInt64[]        # exclusion mask, padded to the column width
     R = Int[]           # redundant indices vector
     # initialize active column flags
     for p = 1:N
@@ -375,6 +411,29 @@ function mark_necessary!(
                     live = UInt64(0)
                     for w′ = 1:W
                         live |= (D[o + w′] &= X.chunks[base + w′])
+                    end
+                    iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
+                end
+            end
+        end
+        # the virtual package representing the user constraints contributes
+        # one more conflict column — the exclusion mask. its version is
+        # always present, so the column is always active: an excluded
+        # version must not dominate a non-excluded one
+        excl_p = excls[p]
+        if excl_p !== nothing
+            resize!(E, W)
+            fill!(E, 0)
+            copyto!(E, 1, excl_p.chunks, 1, min(W, length(excl_p.chunks)))
+            @inbounds for w = 1:W
+                c = E[w] & T[w]
+                while !iszero(c)
+                    i = ((w - 1) << 6) + trailing_zeros(c) + 1
+                    c &= c - 1
+                    o = (i - 1) * W
+                    live = UInt64(0)
+                    for w′ = 1:W
+                        live |= (D[o + w′] &= E[w′])
                     end
                     iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
                 end

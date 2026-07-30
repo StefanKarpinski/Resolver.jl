@@ -90,7 +90,7 @@ end
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
-import Resolver: Resolver, DepsProvider, PkgData, resolve
+import Resolver: Resolver, DepsProvider, PkgData, Problem, resolve
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
 
@@ -430,13 +430,38 @@ end
 reg = registry_provider(
     packages;
     julia_versions,
-    project_compat,
     sort_versions,
     allow_pre,
     workspace_pkgs,
 )
-pkg_info = Resolver.pkg_info(reg, reqs)
-sol = resolve(pkg_info, reqs; by=sort_packages_by)
+
+# the project's compat bounds are user constraints, not part of the package
+# universe: they go into the `Problem`, which forbids the versions they exclude
+# by clause instead of deleting them from the provider's data. two entries are
+# deliberately widened or dropped so the answers stay exactly what they were
+# when the provider applied compat itself:
+#
+#   * `julia` is dropped -- its version universe is set by `--julia` (which
+#     also drives the historical-stdlib pinning), and the project's own
+#     `julia` compat has never constrained resolution here;
+#   * bounds on packages Julia bundles as stdlibs are widened to admit the
+#     bundled versions -- the provider applied compat to a package's registry
+#     versions and *then* patched the bundled ones back in, so those were
+#     never subject to it. (a bundled version is pinned by the Julia that
+#     bundles it, so excluding it just makes that Julia infeasible.)
+let compat = Dict{UUID,VersionSpec}(), bundled = bundled_versions(julia_versions, allow_pre)
+    for (uuid, spec) in project_compat
+        uuid ≠ JULIA_UUID || continue
+        for v in get(bundled, uuid, ())
+            spec = spec ∪ VersionSpec(v)
+        end
+        compat[uuid] = spec
+    end
+    global const problem = Problem(reqs; compat)
+end
+
+pkg_info = Resolver.pkg_info(reg, problem)
+sol = resolve(pkg_info, problem; by=sort_packages_by)
 sol === nothing && error("Unsatisfiable")
 
 ## output results
@@ -548,6 +573,14 @@ for (uuid, version) in sol
 end
 
 if output == :print_versions
+    # the best version of a package that the project's constraints admit: the
+    # info keeps the versions the Problem forbids (they are constrained away,
+    # not deleted), so they don't count as available here
+    function best_version(uuid::UUID)
+        vers = pkg_info[uuid].versions
+        i = findfirst(v -> !Resolver.is_excluded(problem, uuid, v), vers)
+        return isnothing(i) ? first(vers) : vers[i]
+    end
     # print packages and versions in priority order, required packages first
     pkgs = sort!(collect(keys(sol)), by = sort_packages_by)
     sort!(pkgs, by = !in(reqs))
@@ -568,7 +601,7 @@ if output == :print_versions
             version = something(info_map[uuid].version, julia_version)
         end
         optimal = uuid in keys(stdlibs) ||
-            version == first(pkg_info[uuid].versions)
+            version == best_version(uuid)
         try print(uuid, " ", rpad(name, width), " ", version)
             optimal || print(" ⊼")
             println()

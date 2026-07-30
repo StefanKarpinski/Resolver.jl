@@ -1,6 +1,6 @@
 module Registries
 
-export registry_provider, package_info
+export registry_provider, package_info, bundled_versions
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
@@ -92,34 +92,24 @@ function dedup_values!(d::AbstractDict, vers::Vector)
     return d
 end
 
-function registry_provider(
-    packages       :: Dict{UUID,Vector{PkgEntry}};
-    julia_versions :: VersionSpec = VersionSpec("1"),
-    project_compat :: Dict{UUID,VersionSpec} = Dict{UUID,VersionSpec}(),
-    sort_versions  :: Function = sort_versions_default,
-    allow_pre      :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
-    workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
-                      Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
+# The Julia versions to resolve against, and what they bundle:
+#
+#   stdlibs[uuid][version] : the historical stdlib info for a bundled version
+#   stdlib_pins[uuid]      : the (Julia version, pinned-version spec) pairs.
+#     Recorded so `registry_provider` can widen a stdlib's own `julia` compat
+#     to include the Julia versions that bundle each of its versions.
+#
+# Split out of `registry_provider` because `bin/resolve.jl` needs the bundled
+# version sets too (see `bundled_versions`).
+function julia_and_stdlib_versions(
+    julia_versions :: VersionSpec,
+    allow_pre      :: Dict{UUID,Bool} = Dict(UUID(0) => false),
 )
-    function filter_pre!(uuid::UUID, vers::Vector{VersionNumber})
-        if !get(allow_pre, uuid, allow_pre[UUID(0)])
-            filter!(v->isempty(v.prerelease), vers)
-        end
-        return vers
-    end
-
-    function filter_yanked!(info, vers::Vector{VersionNumber})
-        filter!(v -> !isyanked(info, v), vers)
-        return vers
-    end
-
     julia_vers = filter(in(julia_versions), JULIA_VERSIONS)
-    filter_pre!(JULIA_UUID, julia_vers)
+    get(allow_pre, JULIA_UUID, allow_pre[UUID(0)]) ||
+        filter!(v -> isempty(v.prerelease), julia_vers)
 
     stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
-    # For each stdlib package: the (Julia version, pinned-version spec) pairs.
-    # Recorded so we can later widen the stdlib's own `julia` compat to include
-    # the Julia versions that bundle each of its versions (see the closure).
     stdlib_pins = Dict{UUID,Vector{Tuple{VersionNumber,VersionSpec}}}()
     for julia_ver in julia_vers
         last_stdlibs = UNREGISTERED_STDLIBS
@@ -157,6 +147,46 @@ function registry_provider(
             deps_u[stdlib_ver] = stdlib_info
         end
     end
+    return julia_vers, stdlibs, stdlib_pins
+end
+
+# Per package, the versions the provider offers because a Julia in
+# `julia_versions` bundles them -- regardless of what the registries say, and
+# regardless of any user compat. `bin/resolve.jl` widens the project's compat
+# bounds with these so that moving compat out of the provider (where it was
+# applied to the registry versions *before* the bundled ones were patched in)
+# doesn't change any answers.
+function bundled_versions(
+    julia_versions :: VersionSpec,
+    allow_pre      :: Dict{UUID,Bool} = Dict(UUID(0) => false),
+)
+    _, stdlibs, _ = julia_and_stdlib_versions(julia_versions, allow_pre)
+    Dict{UUID,Vector{VersionNumber}}(
+        uuid => collect(keys(vers)) for (uuid, vers) in stdlibs)
+end
+
+function registry_provider(
+    packages       :: Dict{UUID,Vector{PkgEntry}};
+    julia_versions :: VersionSpec = VersionSpec("1"),
+    sort_versions  :: Function = sort_versions_default,
+    allow_pre      :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
+    workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
+                      Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
+)
+    function filter_pre!(uuid::UUID, vers::Vector{VersionNumber})
+        if !get(allow_pre, uuid, allow_pre[UUID(0)])
+            filter!(v->isempty(v.prerelease), vers)
+        end
+        return vers
+    end
+
+    function filter_yanked!(info, vers::Vector{VersionNumber})
+        filter!(v -> !isyanked(info, v), vers)
+        return vers
+    end
+
+    julia_vers, stdlibs, stdlib_pins =
+        julia_and_stdlib_versions(julia_versions, allow_pre)
 
     return DepsProvider(keys(packages)) do uuid::UUID
         if uuid in keys(workspace_pkgs)
@@ -200,9 +230,10 @@ function registry_provider(
                 new_vers = collect(keys(info.version_info))
                 filter_pre!(uuid, new_vers)
                 filter_yanked!(info, new_vers)
-                if uuid in keys(project_compat)
-                    filter!(in(project_compat[uuid]), new_vers)
-                end
+                # the project's own compat is *not* applied here: it is a user
+                # constraint, and it reaches the resolver as part of the
+                # `Problem` (see bin/resolve.jl). the provider only decides
+                # which versions exist at all
                 # scan versions and populate deps & compat data
                 for v in new_vers
                     # NOTE: we probably won't support the same name meaning

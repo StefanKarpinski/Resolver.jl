@@ -2,6 +2,10 @@ mutable struct SAT{P,V}
     info :: Dict{P,PkgInfo{P,V}}
     pico :: Ptr{Cvoid}
     vars :: Dict{P,Int}
+    # selector variable => the user constraint it guards; internal, for
+    # diagnostics (the constraints are asserted as unit clauses inside a push
+    # frame, so popping it relaxes all of them at once)
+    sels :: Dict{Int,Tuple{Symbol,P}}
 end
 
 function Base.show(io::IO, sat::SAT)
@@ -15,17 +19,17 @@ function Base.show(io::IO, sat::SAT)
         ", clauses: ", c, ")")
 end
 
-function SAT(
-    info :: Dict{P,PkgInfo{P,V}},
-) where {P,V}
+# variable indices:
+#   p     vars[p]     package p chosen
+#   p@i   vars[p]+i   version i of p chosen
+#   p@≤k  lads[p]+k   some version ≤ k of p chosen (prefix ladder,
+#                     only for packages with several versions)
+# returns the (sorted) names, the two index maps, and the last used variable
+function sat_variables(
+    info :: Dict{P, <: PkgInfo{P}},
+) where {P}
     # sort names for predictability
     names = sort!(collect(keys(info)))
-
-    # variable indices:
-    #   p     vars[p]     package p chosen
-    #   p@i   vars[p]+i   version i of p chosen
-    #   p@≤k  lads[p]+k   some version ≤ k of p chosen (prefix ladder,
-    #                     only for packages with several versions)
     N = 1
     vars = Dict{P,Int}()
     lads = Dict{P,Int}()
@@ -41,28 +45,35 @@ function SAT(
             N += n_p
         end
     end
-    N -= 1 # last used variable
+    return names, vars, lads, N - 1
+end
+
+# append the literals for "no version in lo:hi of the package
+# with variable base v, ladder base l, and n versions is chosen"
+function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
+    if lo == hi
+        push!(lits, -(v + lo))
+    elseif lo == 1 && hi == n
+        push!(lits, -v)
+    elseif lo == 1
+        push!(lits, -(l + hi))
+    else
+        push!(lits, -(l + hi), l + lo - 1)
+    end
+    return lits
+end
+
+function SAT(
+    info :: Dict{P,PkgInfo{P,V}},
+) where {P,V}
+    names, vars, lads, N = sat_variables(info)
 
     # instantiate picosat solver
     pico = PicoSAT.init() # TODO: use jl_malloc?
     try # free memory on error
         PicoSAT.adjust(pico, N)
 
-        # append the literals for "no version in lo:hi of the package
-        # with variable base v, ladder base l, and n versions is chosen"
         lits = Int[]
-        function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
-            if lo == hi
-                push!(lits, -(v + lo))
-            elseif lo == 1 && hi == n
-                push!(lits, -v)
-            elseif lo == 1
-                push!(lits, -(l + hi))
-            else
-                push!(lits, -(l + hi), l + lo - 1)
-            end
-            return lits
-        end
         # default unconstrained variables to false: models then carry
         # fewer spuriously-true packages ("junk"), which makes solves
         # faster and improvement steps land on better versions
@@ -263,7 +274,116 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    finalizer(finalize, SAT(info, pico, vars))
+    finalizer(finalize, SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}()))
+end
+
+# the structural SAT instance for `info`, plus `prob`'s user constraints as
+# selector-guarded exclusion clauses: for each constraint source that forbids a
+# kept version — one per compat entry, one per pin — a fresh selector variable
+# `s` and one clause `(¬s, "no version in run")` per maximal run of forbidden
+# versions. the selectors are then asserted as unit clauses inside a sat_push
+# frame, so production solves see them at level 0 (no assumptions), while a
+# single sat_pop relaxes every user constraint at once. nothing pops the frame
+# in production; the frame exists so diagnostics can.
+#
+# constraints on packages absent from `info`, constraints that forbid nothing,
+# and constraints that forbid only versions the filter already dropped emit no
+# selector and no clauses — with none at all the instance is exactly SAT(info)
+function SAT(
+    info :: Dict{P,PkgInfo{P,V}},
+    prob :: Problem{P},
+) where {P,V}
+    sat = SAT(info)
+    try add_exclusions!(sat, prob)
+    catch
+        finalize(sat)
+        rethrow()
+    end
+    return sat
+end
+
+function add_exclusions!(
+    sat  :: SAT{P,V},
+    prob :: Problem{P},
+) where {P,V}
+    is_constrained(prob) || return sat
+    info = sat.info
+    pico = sat.pico
+    _, vars, lads = sat_variables(info)
+    lits = Int[]
+    mask = BitVector()
+    for p in constrained_packages(prob)
+        haskey(info, p) || continue # constraint on an absent package
+        vers = info[p].versions
+        n_p = length(vers)
+        n_p > 0 || continue # nothing to forbid, and no version variables
+        v_p = vars[p]
+        l_p = get(lads, p, 0)
+        resize!(mask, n_p)
+        # one selector per constraint source, so diagnostics can tell a
+        # compat bound and a pin on the same package apart
+        for kind in (:compat, :pin)
+            fill!(mask, false)
+            found = false
+            if kind == :compat
+                haskey(prob.compat, p) || continue
+                s = prob.compat[p]
+                for (i, v) in enumerate(vers)
+                    v ∈ s && continue
+                    mask[i] = true
+                    found = true
+                end
+            else
+                haskey(prob.pins, p) || continue
+                w = prob.pins[p]
+                for (i, v) in enumerate(vers)
+                    v == w && continue
+                    mask[i] = true
+                    found = true
+                end
+            end
+            found || continue # nothing left to forbid
+            sel = PicoSAT.inc_max_var(pico)
+            sat.sels[sel] = (kind, p)
+            # one clause per maximal run of forbidden versions, via the
+            # prefix ladder (same interval encoding as conflicts)
+            i = 1
+            while i ≤ n_p
+                if mask[i]
+                    lo = i
+                    while i < n_p && mask[i + 1]
+                        i += 1
+                    end
+                    empty!(lits)
+                    push!(lits, -sel)
+                    run_lits!(lits, v_p, l_p, lo, i, n_p)
+                    for x in lits
+                        PicoSAT.add(pico, x)
+                    end
+                    PicoSAT.add(pico, 0)
+                end
+                i += 1
+            end
+        end
+        # the structural instance defaults every package's best version to
+        # true, so that a package that must be chosen is tried at its best
+        # version first. when the user forbids that version, point the phase
+        # at the best version they do allow instead — otherwise the solver's
+        # first guess is infeasible for every constrained package at once
+        i = findfirst(v -> !is_excluded(prob, p, v), vers)
+        if i ≠ 1
+            PicoSAT.set_default_phase_lit(pico, v_p + 1, 0)
+            isnothing(i) || PicoSAT.set_default_phase_lit(pico, v_p + i, 1)
+        end
+    end
+    # assert the selectors in a push frame of their own
+    isempty(sat.sels) && return sat
+    sat_push(sat)
+    for sel in sort!(collect(keys(sat.sels)))
+        PicoSAT.add(pico, sel)
+        PicoSAT.add(pico, 0)
+    end
+    return sat
 end
 
 function finalize(sat::SAT)

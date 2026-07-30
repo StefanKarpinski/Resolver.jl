@@ -91,13 +91,20 @@ function resolve_core(
 end
 
 """
-    resolve(data, reqs; by = identity) -> Union{Dict{P,V}, Nothing}
+    resolve(data, prob::Problem; by = identity) -> Union{Dict{P,V}, Nothing}
+    resolve(data, reqs; by = identity, compat = ..., pins = ...)
 
 Resolve the requirements `reqs` against the package universe described by
 `data`, returning the optimal solution as a dict mapping each needed package
 to its chosen version, or `nothing` when the requirements are not jointly
 satisfiable. The solution covers every requirement and is exactly the
 dependency closure of the requirements under its own chosen versions.
+
+A [`Problem`](@ref) additionally constrains the admissible versions with user
+compat bounds and pins; the answer is the one the same universe with those
+versions deleted would give. The requirements-and-keywords form builds one, so
+`resolve(data, reqs; compat, pins)` and `resolve(data, Problem(reqs; compat,
+pins))` are the same call.
 
 The returned solution is the *layered solution*: requirements are optimized
 first, in the priority order induced by `by` (each package maximized to its
@@ -122,35 +129,62 @@ function resolve(
     return Dict{P,V}(p => sat.info[p].versions[i] for (p, i) in sol)
 end
 
-# convenience entry points
+# primary entry points: a Problem (requirements + user constraints)
 
 function resolve(
     deps :: DepsProvider{P},
-    reqs :: SetOrVec{P} = deps.packages;
+    prob :: Problem{P};
     by   :: Function = identity, # package ordering
 ) where {P}
-    info = pkg_info(deps, reqs)
-    resolve(info, reqs; by)
+    info = pkg_info(deps, prob)
+    resolve(info, prob; by)
 end
 
 function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
-    reqs :: SetOrVec{P} = keys(data);
+    prob :: Problem{P};
     by   :: Function = identity, # package ordering
 ) where {P}
-    info = pkg_info(data, reqs)
-    resolve(info, reqs; by)
+    info = pkg_info(data, prob)
+    resolve(info, prob; by)
 end
 
 function resolve(
     info :: Dict{P,PkgInfo{P,V}},
-    reqs :: SetOrVec{P} = keys(info);
+    prob :: Problem{P};
     by   :: Function = identity, # package ordering
 ) where {P,V}
-    sat = SAT(info)
+    sat = SAT(info, prob)
     # the instance is single-use, so don't bother restoring its state
-    try resolve(sat, reqs; by, restore=false)
+    try resolve(sat, prob.reqs; by, restore=false)
     finally
         finalize(sat)
     end
 end
+
+# convenience entry points: bare requirements, with the user constraints (if
+# any) given as keywords instead of a `Problem`
+
+resolve(
+    deps :: DepsProvider{P},
+    reqs :: SetOrVec{P} = deps.packages;
+    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
+    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
+    by     :: Function = identity, # package ordering
+) where {P} = resolve(deps, Problem(reqs; compat, pins); by)
+
+resolve(
+    data :: AbstractDict{P,<:PkgData{P}},
+    reqs :: SetOrVec{P} = keys(data);
+    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
+    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
+    by     :: Function = identity, # package ordering
+) where {P} = resolve(data, Problem(reqs; compat, pins); by)
+
+resolve(
+    info :: Dict{P,PkgInfo{P,V}},
+    reqs :: SetOrVec{P} = keys(info);
+    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
+    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
+    by     :: Function = identity, # package ordering
+) where {P,V} = resolve(info, Problem(reqs; compat, pins); by)

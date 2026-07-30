@@ -258,6 +258,8 @@ end
     test_resolver(data, [:C])
 end
 
+include("problem.jl")
+
 @testset "registry resolve" begin
     rp = registry.provider()
     test_resolver(rp, ["JSON"])

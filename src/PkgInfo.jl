@@ -55,19 +55,33 @@ end
 
 function pkg_info(
     deps :: DepsProvider{P},
-    reqs :: SetOrVec{P} = deps.packages;
+    prob :: Problem{P};
     filter :: Bool = true,
 ) where {P}
-    data = pkg_data(deps, reqs)
-    info = pkg_info(data, reqs; filter)
+    data = pkg_data(deps, prob.reqs)
+    info = pkg_info(data, prob; filter)
     return info
 end
 
-function pkg_info(
-    data :: AbstractDict{P,<:PkgData{P,V}},
+# bare requirements: an unconstrained problem (which costs nothing to build)
+pkg_info(
+    deps :: DepsProvider{P},
+    reqs :: SetOrVec{P} = deps.packages;
+    filter :: Bool = true,
+) where {P} = pkg_info(deps, Problem(reqs); filter)
+
+pkg_info(
+    data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
     filter :: Bool = true,
+) where {P} = pkg_info(data, Problem(reqs); filter)
+
+function pkg_info(
+    data :: AbstractDict{P,<:PkgData{P,V}},
+    prob :: Problem{P};
+    filter :: Bool = true,
 ) where {P,V}
+    reqs = prob.reqs
     # intern packages as integer indices once, up front: the build phases
     # below run entirely on vectors, and package names reappear only in
     # the final PkgInfo structures. ids follow name order (packages are
@@ -287,7 +301,7 @@ function pkg_info(
     end
 
     # only keep reachable, necessary packages & versions
-    filter && filter_pkg_info!(info, reqs)
+    filter && filter_pkg_info!(info, prob)
 
     return info
 end

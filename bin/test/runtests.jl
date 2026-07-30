@@ -1,6 +1,7 @@
 #!/usr/bin/env julia
 #
-# Regression tests for the `bin/` resolver tooling (bin/Registries.jl).
+# Regression tests for the `bin/` resolver tooling (bin/Registries.jl, plus
+# option handling exercised through bin/resolve.jl in a subprocess).
 #
 # Run from the repo root with the bin/ environment:
 #
@@ -44,6 +45,36 @@ function resolves(reqs::Vector{UUID}; julia::VersionSpec)
     reg = make_provider(julia)
     info = Resolver.pkg_info(reg, reqs)
     Resolver.resolve(info, reqs) !== nothing
+end
+
+# Resolve a one-dependency project with the given `[compat]` body and command
+# line flags, returning uuid => version. This drives the real `bin/resolve.jl`
+# in a subprocess, since that is where the project file is read and where the
+# option precedence lives. `--print-versions` (rather than manifest
+# generation) so it works on any host Julia, prerelease included.
+const RESOLVE_JL = normpath(joinpath(@__DIR__, "..", "resolve.jl"))
+const BIN_PROJECT = normpath(joinpath(@__DIR__, ".."))
+
+function resolve_versions(compat::AbstractString, flags::Vector{String} = String[])
+    dir = mktempdir()
+    open(joinpath(dir, "Project.toml"), "w") do io
+        println(io, "[deps]")
+        println(io, "JSON = \"$JSON\"")
+        isempty(compat) && return
+        println(io, "\n[compat]")
+        println(io, compat)
+    end
+    out = IOBuffer()
+    julia = Base.julia_cmd()[1]
+    cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions $flags`
+    success(pipeline(cmd; stdout = out)) || error("failed: $cmd")
+    vers = Dict{UUID,VersionNumber}()
+    for line in eachline(seekstart(out))
+        m = match(r"^(\S{36})\s+\S+\s+(\S+)", line)
+        isnothing(m) && continue
+        vers[UUID(m[1])] = VersionNumber(m[2])
+    end
+    return vers
 end
 
 @testset "bin/Registries.jl" begin
@@ -105,5 +136,35 @@ end
         @test haskey(bundled, STATISTICS)
         @test v"1.10.0" in bundled[STATISTICS]
         @test !haskey(bundled, JSON) # not a stdlib
+    end
+
+    # The Julia versions to resolve for come from `--julia` if given, otherwise
+    # from the project's own `[compat] julia` bound, otherwise from the `1`
+    # default. Unlike every other compat entry, the `julia` bound selects a
+    # version *universe* rather than constraining one: it decides which Julias
+    # exist to be resolved among, and with them which stdlib versions are
+    # bundled and pinned.
+    @testset "julia compat as the default julia bound" begin
+        # the newest release the `1` default admits: what resolving with
+        # neither a flag nor a project bound has always picked
+        newest = maximum(v for v in Registries.JULIA_VERSIONS
+                         if isempty(v.prerelease) && v ∈ VersionSpec("1"))
+
+        # neither a flag nor a bound: unchanged
+        plain = resolve_versions("")
+        @test plain[JULIA_UUID] == newest
+
+        # the project's bound supplies the default, and here it changes the
+        # answer -- which it silently failed to do before
+        bound = resolve_versions("julia = \"~1.10\"")
+        @test bound[JULIA_UUID] ∈ VersionSpec("1.10")
+        @test bound[JULIA_UUID] ≠ plain[JULIA_UUID]
+
+        # `--julia` overrides the bound outright rather than intersecting with
+        # it: the answer is exactly the flag's answer on a project with no
+        # bound at all
+        flag = resolve_versions("julia = \"~1.10\"", ["--julia=1.9"])
+        @test flag[JULIA_UUID] ∈ VersionSpec("1.9")
+        @test flag == resolve_versions("", ["--julia=1.9"])
     end
 end

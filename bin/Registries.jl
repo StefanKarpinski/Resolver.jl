@@ -1,13 +1,32 @@
 module Registries
 
-export registry_provider, package_info, bundled_versions
+export registry_provider, package_info, bundled_versions,
+    UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
 import JSON
+import Pkg
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance, init_package_info!, isyanked, reachable_registries
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData
+
+## the upgradable stdlibs
+#
+# Julia bundles a version of every stdlib, but two of them it does not *pin*:
+# `Pkg.Types.UPGRADABLE_STDLIBS`. For those, registry versions compete with the
+# bundled one like any other package's, which is what Pkg does and what we
+# model (see the JULIA_UUID branch of the provider). Pkg only grew the constant
+# in 1.12, so fall back to its values on the older Pkgs `bin/` supports.
+const UPGRADABLE_STDLIBS_UUIDS =
+    if isdefined(Pkg.Types, :UPGRADABLE_STDLIBS_UUIDS)
+        Set{UUID}(Pkg.Types.UPGRADABLE_STDLIBS_UUIDS)
+    else
+        Set{UUID}([
+            UUID("8bb1440f-4735-579b-a4ab-409b98df4dab"), # DelimitedFiles
+            UUID("10745b16-79ce-11e8-11f9-7d13ad32a3b2"), # Statistics
+        ])
+    end
 
 ## metaprogram around Pkg's `init_package_info!` signature change
 #
@@ -95,12 +114,14 @@ end
 # The Julia versions to resolve against, and what they bundle:
 #
 #   stdlibs[uuid][version] : the historical stdlib info for a bundled version
-#   stdlib_pins[uuid]      : the (Julia version, pinned-version spec) pairs.
-#     Recorded so `registry_provider` can widen a stdlib's own `julia` compat
-#     to include the Julia versions that bundle each of its versions.
+#   stdlib_pins[uuid]      : the (Julia version, bundled-version spec) pairs.
+#     Recorded so `registry_provider` can reconcile a stdlib version's `julia`
+#     compat with the Julia versions that bundle it. Recorded for the
+#     upgradable stdlibs too, which are bundled without being pinned: a bundled
+#     version must be installable on its Julia either way.
 #
-# Split out of `registry_provider` because `bin/resolve.jl` needs the bundled
-# version sets too (see `bundled_versions`).
+# Split out of `registry_provider` so that `bundled_versions` can report the
+# bundled version sets without building a provider.
 function julia_and_stdlib_versions(
     julia_versions :: VersionSpec,
     allow_pre      :: Dict{UUID,Bool} = Dict(UUID(0) => false),
@@ -119,7 +140,6 @@ function julia_and_stdlib_versions(
         end
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
-            # matches the pin the JULIA_UUID branch emits below
             push!(get!(()->valtype(stdlib_pins)(), stdlib_pins, uuid),
                   (julia_ver, VersionSpec(stdlib_ver)))
             deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
@@ -151,11 +171,11 @@ function julia_and_stdlib_versions(
 end
 
 # Per package, the versions the provider offers because a Julia in
-# `julia_versions` bundles them -- regardless of what the registries say, and
-# regardless of any user compat. `bin/resolve.jl` widens the project's compat
-# bounds with these so that moving compat out of the provider (where it was
-# applied to the registry versions *before* the bundled ones were patched in)
-# doesn't change any answers.
+# `julia_versions` bundles them, regardless of what the registries say. Nothing
+# in the resolve path needs this -- a bundled version is an ordinary candidate,
+# and a user bound that excludes it excludes the Julias that ship it -- but it
+# is the answer to "which versions of this stdlib can I even get on these
+# Julias", so it stays available for introspection and for the tests.
 function bundled_versions(
     julia_versions :: VersionSpec,
     allow_pre      :: Dict{UUID,Bool} = Dict(UUID(0) => false),
@@ -206,6 +226,9 @@ function registry_provider(
         vers = Set{VersionNumber}()
         deps = Dict{VersionNumber,Vector{UUID}}()
         comp = Dict{VersionNumber,Dict{UUID,VersionSpec}}()
+        # versions that exist only because a Julia bundles them (no registry
+        # entry); the widening below bounds them to their bundling Julias
+        bundled_only = Set{VersionNumber}()
         if uuid == JULIA_UUID
             union!(vers, julia_vers)
             for v in vers
@@ -216,9 +239,17 @@ function registry_provider(
                     v′ > Base.thispatch(v) && break
                     last_stdlibs = this_stdlibs
                 end
-                # add compat for all stdlibs of this version
+                # pin every stdlib this Julia bundles to its bundled version
+                # -- except the upgradable ones, which Julia bundles without
+                # pinning: for those the registry versions compete with the
+                # bundled one on their own `julia` compat, exactly as Pkg
+                # resolves them. "Pinned" here means pinned per candidate
+                # Julia: we resolve over Julia versions too, so each Julia
+                # version carries its own pins, and an upgradable stdlib
+                # simply carries none.
                 comp_v = get!(()->valtype(comp)(), comp, v)
                 for (stdlib_uuid, stdlib_info) in last_stdlibs
+                    stdlib_uuid in UPGRADABLE_STDLIBS_UUIDS && continue
                     stdlib_ver = something(stdlib_info.version, v)
                     comp_v[stdlib_uuid] = VersionSpec(stdlib_ver)
                 end
@@ -287,6 +318,7 @@ function registry_provider(
             for (v, info) in stdlibs[uuid]
                 v in vers && continue # prefer real registry data
                 push!(vers, v)
+                push!(bundled_only, v)
                 deps[v] = info.deps
             end
         end
@@ -304,20 +336,39 @@ function registry_provider(
         # anything pulling in the BLAS stack (LinearAlgebra -> OpenBLAS_jll ->
         # CompilerSupportLibraries_jll) is unsatisfiable there.
         #
-        # We *widen* rather than drop the bound: each version keeps its registry
-        # `julia` compat and additionally admits every Julia that bundles it.
-        # This is important because the same version can be a bundled stdlib for
-        # one Julia yet a resolvable dependency for another; for the latter the
-        # registry bound must still govern, so dropping it outright would wrongly
-        # make the version installable on Julias it isn't compatible with.
+        # For a version that *is* in the registry we widen rather than replace:
+        # it keeps its registry `julia` compat and additionally admits every
+        # Julia that bundles it. This is important because the same version can
+        # be a bundled stdlib for one Julia yet a resolvable dependency for
+        # another; for the latter the registry bound must still govern, so
+        # dropping it outright would wrongly make the version installable on
+        # Julias it isn't compatible with.
+        #
+        # A version that exists *only* as a bundled stdlib has no registry bound
+        # to keep, and it is not installable anywhere except where it ships:
+        # its `julia` compat is exactly the Julias that bundle it. Leaving it
+        # unbounded would let it pair with any Julia -- which the pins used to
+        # rule out for pinned stdlibs, but nothing rules out for the upgradable
+        # ones (so a Julia 1.12 resolve could take the Statistics that only
+        # Julia 1.10 ships).
+        #
+        # The upgradable stdlibs get the same treatment even though no pin makes
+        # them conflict: a bundled version must be installable on the Julia that
+        # bundles it whether or not that Julia insists on it.
         if uuid in keys(stdlib_pins)
+            # per version, the Julias that bundle it
+            bundling = Dict{VersionNumber,VersionSpec}()
             for (julia_ver, ver_spec) in stdlib_pins[uuid]
                 for v in vers
                     v in ver_spec || continue # julia_ver bundles this version
-                    comp_v = get!(()->valtype(comp)(), comp, v)
-                    comp_v[JULIA_UUID] =
-                        get(comp_v, JULIA_UUID, VersionSpec("*")) ∪ VersionSpec(julia_ver)
+                    bundling[v] = haskey(bundling, v) ?
+                        bundling[v] ∪ VersionSpec(julia_ver) : VersionSpec(julia_ver)
                 end
+            end
+            for (v, julias) in bundling
+                comp_v = get!(()->valtype(comp)(), comp, v)
+                comp_v[JULIA_UUID] = v in bundled_only ? julias :
+                    get(comp_v, JULIA_UUID, VersionSpec("*")) ∪ julias
             end
         end
         # insert dependency on julia itself

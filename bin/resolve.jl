@@ -459,21 +459,16 @@ reg = registry_provider(
 # universe: they go into the `Problem`, which forbids the versions they exclude
 # by clause instead of deleting them from the provider's data. (the `julia`
 # bound is not among them: it was consumed above, as the Julia version
-# universe.) bounds on packages Julia bundles as stdlibs are widened to admit
-# the bundled versions, so that answers stay exactly what they were when the
-# provider applied compat itself: it applied compat to a package's registry
-# versions and *then* patched the bundled ones back in, so those were never
-# subject to it. (a bundled version is pinned by the Julia that bundles it, so
-# excluding it just makes that Julia infeasible.)
-let compat = Dict{UUID,VersionSpec}(), bundled = bundled_versions(julia_versions, allow_pre)
-    for (uuid, spec) in project_compat
-        for v in get(bundled, uuid, ())
-            spec = spec ∪ VersionSpec(v)
-        end
-        compat[uuid] = spec
-    end
-    global const problem = Problem(reqs; compat)
-end
+# universe.)
+#
+# every bound is enforced strictly, stdlibs included. a bound on a stdlib is not
+# inert: a Julia version is compatible with exactly the stdlib versions it
+# bundles -- that is what its compat pins say -- so a bound that excludes those
+# versions excludes the Julia along with them, and the resolver *steers* the
+# Julia choice to satisfy it. If no admissible Julia bundles a version the bound
+# admits, and no registry version fits either, the requirements really are
+# unsatisfiable and saying so beats silently ignoring the bound.
+const problem = Problem(reqs; compat = project_compat)
 
 pkg_info = Resolver.pkg_info(reg, problem)
 sol = resolve(pkg_info, problem; by=sort_packages_by)
@@ -517,12 +512,25 @@ name_uuid_dict(d) = Dict{String,UUID}(uuid_to_name[u] => u for u in d) # >=1.14
 
 const info_map = Dict{UUID,ManifestEntry}()
 
+# is `uuid` recorded as a bundled stdlib of the resolved Julia, rather than as
+# an ordinary registry package? every pinned stdlib is; an upgradable one only
+# when it actually resolved to the version Julia bundles, since nothing pins it
+# and a registry version of it is an ordinary package -- tree hash and registry
+# deps -- exactly as Pkg records it. (`thispatch` drops the synthetic build
+# numbers the provider adds to tell same-numbered stdlib entries apart.)
+function bundled_stdlib(uuid::UUID, version::VersionNumber)
+    uuid in keys(stdlibs) || return false
+    uuid in UPGRADABLE_STDLIBS_UUIDS || return true
+    bundled = something(stdlibs[uuid].version, julia_version)
+    return Base.thispatch(version) == Base.thispatch(bundled)
+end
+
 for (uuid, version) in sol
     uuid === JULIA_UUID && continue
     # workspace packages become path entries in the manifest (written in the
     # manifest block below); they have no registry or stdlib info to record
     uuid in workspace_uuids && continue
-    if uuid in keys(stdlibs)
+    if bundled_stdlib(uuid, version)
         info = stdlibs[uuid]
         deps = Dict{String,UUID}()
         for dep in info.deps
@@ -615,7 +623,8 @@ if output == :print_versions
             name = info_map[uuid].name
             version = something(info_map[uuid].version, julia_version)
         end
-        optimal = uuid in keys(stdlibs) ||
+        # a pinned stdlib had no choice to make; an upgradable one did
+        optimal = uuid in keys(stdlibs) && uuid ∉ UPGRADABLE_STDLIBS_UUIDS ||
             version == best_version(uuid)
         try print(uuid, " ", rpad(name, width), " ", version)
             optimal || print(" ⊼")

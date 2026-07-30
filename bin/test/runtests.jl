@@ -45,14 +45,29 @@ for reg in reachable_registries()
     end
 end
 
-make_provider(julia::VersionSpec) = registry_provider(
-    packages;
-    julia_versions = julia,
-)
+# The one package universe: `registry_provider` has no query-dependent parameters
+# left, so there is nothing to vary here.
+const reg = registry_provider(packages)
 
 # `--allow-pre`'s dictionary: the zero uuid holds the default
 no_pre = Dict(UUID(0) => false)
 all_pre = Dict(UUID(0) => true)
+
+# The `Problem` bin/resolve.jl builds: the Julia bound as an ordinary compat entry
+# on `julia`, the project's other bounds beside it, and the admission kinds.
+function make_problem(
+    reqs      :: Vector{UUID};
+    julia     :: VersionSpec,
+    compat    :: AbstractDict = Dict{UUID,VersionSpec}(),
+    allow_pre :: Dict{UUID,Bool} = no_pre,
+)
+    c = Dict{UUID,Any}(compat)
+    c[JULIA_UUID] = julia
+    Resolver.Problem(reqs; compat = c, excludes = [
+        prerelease_exclusion(allow_pre),
+        yanked_exclusion(packages),
+    ])
+end
 
 # The old baked path, for the knobs that used to be applied by deleting versions
 # from the provider's output: `prob`'s excluded versions gone from the data, and
@@ -70,9 +85,9 @@ end
 
 # Is the requirement set resolvable for the given Julia spec?
 function resolves(reqs::Vector{UUID}; julia::VersionSpec)
-    reg = make_provider(julia)
-    info = Resolver.pkg_info(reg, reqs)
-    Resolver.resolve(info, reqs) !== nothing
+    prob = make_problem(reqs; julia)
+    info = Resolver.pkg_info(reg, prob)
+    Resolver.resolve(info, prob) !== nothing
 end
 
 # Resolve a project with the given dependencies, `[compat]` body and command
@@ -129,7 +144,6 @@ end
     # bound must still govern). Julia 1.10.8 is a frozen release, so its bundled
     # CompilerSupportLibraries_jll (1.1.1) never changes.
     @testset "stdlib julia-compat is widened, not cleared" begin
-        reg = make_provider(VersionSpec("1.10.8"))
         pd = Resolver.pkg_data(reg, [COMPILER_SUPPORT_LIBRARIES_JLL])[COMPILER_SUPPORT_LIBRARIES_JLL]
         compatible(v) = (spec = get(pd.compat[v], JULIA_UUID, nothing);
                          spec === nothing || v"1.10.8" ∈ spec)
@@ -156,8 +170,7 @@ end
     # applies them: they reach the resolver as part of a `Problem`, which
     # forbids the excluded versions by clause rather than deleting them.
     @testset "project compat travels in the Problem" begin
-        reg = make_provider(VersionSpec("1.10"))
-        prob = Resolver.Problem([JSON, JULIA_UUID];
+        prob = make_problem([JSON, JULIA_UUID]; julia = VersionSpec("1.10"),
             compat = Dict(JSON => VersionSpec("0.20")))
         info = Resolver.pkg_info(reg, prob)
         sol = Resolver.resolve(info, prob)
@@ -175,9 +188,8 @@ end
     # version vectors -- so sorting the data that way and resolving canonically
     # must give exactly what passing the comparator gives, at registry scale.
     @testset "the version ordering is a resolve parameter" begin
-        reg = make_provider(VersionSpec("1.10"))
         reqs = sort([JSON, COMPILER_SUPPORT_LIBRARIES_JLL, JULIA_UUID])
-        prob = Resolver.Problem(reqs)
+        prob = make_problem(reqs; julia = VersionSpec("1.10"))
         data = Resolver.pkg_data(reg, reqs)
         # the provider's own order is canonical, so nothing needs permuting
         info = Resolver.pkg_info(data, reqs)
@@ -216,7 +228,6 @@ end
     # data with them dropped must give exactly what constraining them gives, at
     # registry scale and for every admission setting.
     @testset "prerelease admission is a resolve-time constraint" begin
-        reg = make_provider(VersionSpec("1.10"))
         reqs = sort([LLVM_FULL_JLL, WINE_JLL, JSON, JULIA_UUID])
         data = Resolver.pkg_data(reg, reqs)
         # the provider really does offer prereleases now
@@ -253,7 +264,6 @@ end
     # turn it off. The oracle is the old path, where the provider deleted yanked
     # versions outright.
     @testset "yanked versions are constrained, not deleted" begin
-        reg = make_provider(VersionSpec("1.10"))
         reqs = sort([COMPAT, LIBSODIUM_JLL, JULIA_UUID])
         data = Resolver.pkg_data(reg, reqs)
         yanked = yanked_exclusion(packages)
@@ -320,19 +330,19 @@ end
     @testset "a bundled stdlib entry belongs to its own Julias" begin
         MARKDOWN = UUID("d6f4376e-aef5-505a-96c1-9c027394607a")
         JULIA_SYNTAX_HIGHLIGHTING = UUID("ac6e5ff7-fb65-4e79-a425-ec3bc9c03011")
-        reg = make_provider(VersionSpec("1.11 - 1.12"))
         pd = Resolver.pkg_data(reg, [MARKDOWN])[MARKDOWN]
-        # two entries with the same version number, told apart by the build
+        # several entries share the version number, told apart by the build
         entries = [v for v in pd.versions if Base.thispatch(v) == v"1.11.0"]
-        @test length(entries) == 2
-        with = only(v for v in entries
-                    if JULIA_SYNTAX_HIGHLIGHTING in pd.depends[v])
-        without = only(v for v in entries if v ≠ with)
-        # each is admitted by the Julias that ship it, and by no others
-        @test v"1.12.0" ∈ pd.compat[with][JULIA_UUID]
-        @test v"1.11.0" ∉ pd.compat[with][JULIA_UUID]
-        @test v"1.11.0" ∈ pd.compat[without][JULIA_UUID]
-        @test v"1.12.0" ∉ pd.compat[without][JULIA_UUID]
+        @test length(entries) ≥ 2
+        with = [v for v in entries if JULIA_SYNTAX_HIGHLIGHTING in pd.depends[v]]
+        without = setdiff(entries, with)
+        @test !isempty(with) && !isempty(without)
+        # each is admitted by the Julias that ship it, and by no others: the
+        # entry Julia 1.12 bundles is the one with the extra dependency
+        @test any(v -> v"1.12.0" ∈ pd.compat[v][JULIA_UUID], with)
+        @test all(v -> v"1.12.0" ∉ pd.compat[v][JULIA_UUID], without)
+        @test any(v -> v"1.11.0" ∈ pd.compat[v][JULIA_UUID], without)
+        @test all(v -> v"1.11.0" ∉ pd.compat[v][JULIA_UUID], with)
         # ... so a resolve on 1.12 gets 1.12's Markdown, dependencies and all
         sol = resolve_versions("", ["--julia=1.12.0"];
                                deps = ["Markdown" => MARKDOWN])
@@ -357,12 +367,67 @@ end
         @test !haskey(bundled, JSON) # not a stdlib
     end
 
+    # The Julia universe is not a query parameter either: the provider offers
+    # *every* Julia version, along with every stdlib version any of them bundles,
+    # and the `--julia` / project bound is an ordinary compat entry on `julia`. The
+    # stdlib <-> Julia couplings then do the work a restricted universe used to:
+    # a Julia the bound rules out cannot be chosen, so neither can a version only
+    # that Julia bundles.
+    @testset "the julia universe is the whole universe" begin
+        pd = Resolver.pkg_data(reg, [JULIA_UUID])[JULIA_UUID]
+        # every Julia there is, 0.x and the prerelease included -- the admission
+        # kinds and the bound are what narrow it
+        @test length(pd.versions) == length(Registries.JULIA_VERSIONS)
+        @test any(v -> v.major == 0, pd.versions)
+        @test any(v -> !isempty(v.prerelease), pd.versions)
+
+        # ... and each of them still pins the stdlibs it bundles, so the pins are
+        # per candidate Julia as before (LinearAlgebra is versioned with Julia)
+        @test v"1.10.8" ∈ pd.compat[v"1.10.8"][LINEAR_ALGEBRA]
+        @test v"1.11.0" ∉ pd.compat[v"1.10.8"][LINEAR_ALGEBRA]
+        @test !haskey(pd.compat[v"1.10.8"], STATISTICS) # upgradable: unpinned
+
+        # A version that exists only as a bundled stdlib is admitted by exactly
+        # the Julias that bundle it, drawn from the whole universe -- so a bound
+        # elsewhere that only such a version satisfies steers the Julia choice,
+        # and a Julia bound that excludes those Julias is unsatisfiable rather
+        # than inert. Statistics 1.10.0 ships only with Julia 1.10 (the registry
+        # starts at 1.11.0).
+        sd = Resolver.pkg_data(reg, [STATISTICS])[STATISTICS]
+        @test v"1.10.0" in sd.versions
+        julias = sd.compat[v"1.10.0"][JULIA_UUID]
+        @test v"1.10.8" ∈ julias
+        @test v"1.11.0" ∉ julias
+        @test v"1.9.0" ∉ julias
+        # a registry version keeps its own bound (Statistics 1.11.1 declares
+        # `julia = "1.9.4 - 1"`, so nothing older) and gains the Julias that
+        # bundle it (1.11.x, whose pins would otherwise be unsatisfiable there)
+        reg_julias = sd.compat[v"1.11.1"][JULIA_UUID]
+        @test v"1.9.0" ∉ reg_julias
+        @test v"1.11.6" ∈ reg_julias
+
+        # the whole point: one artifact, several Julia bounds, each answer the
+        # one a from-scratch resolve of that bound gives
+        reqs = sort([LINEAR_ALGEBRA, JSON, JULIA_UUID])
+        info = Resolver.pkg_info(reg, reqs)
+        for julia in (VersionSpec("1.9"), VersionSpec("1.10"), VersionSpec("1.11"),
+                      VersionSpec("1"), VersionSpec("1.10.8"))
+            prob = make_problem(reqs; julia)
+            sol = Resolver.resolve(info, prob)
+            @test !isnothing(sol)
+            @test sol[JULIA_UUID] ∈ julia
+            @test isempty(sol[JULIA_UUID].prerelease)
+            @test sol == Resolver.resolve(reg, prob)
+        end
+        # and a bound no Julia satisfies is unsatisfiable, not silently widened
+        @test isnothing(Resolver.resolve(info,
+            make_problem(reqs; julia = VersionSpec("99"))))
+    end
+
     # The Julia versions to resolve for come from `--julia` if given, otherwise
     # from the project's own `[compat] julia` bound, otherwise from the `1`
-    # default. Unlike every other compat entry, the `julia` bound selects a
-    # version *universe* rather than constraining one: it decides which Julias
-    # exist to be resolved among, and with them which stdlib versions are
-    # bundled and pinned.
+    # default -- the one bound whose reach goes beyond its own package, since the
+    # stdlib couplings propagate it.
     @testset "julia compat as the default julia bound" begin
         # the newest release the `1` default admits: what resolving with
         # neither a flag nor a project bound has always picked

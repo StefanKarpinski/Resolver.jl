@@ -1,7 +1,8 @@
 module Registries
 
 export registry_provider, package_info, bundled_versions,
-    prerelease_exclusion, yanked_exclusion, is_yanked, UPGRADABLE_STDLIBS_UUIDS
+    prerelease_exclusion, yanked_exclusion, is_yanked, is_registered, is_bundled,
+    UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
@@ -115,7 +116,7 @@ function dedup_values!(d::AbstractDict, vers::Vector)
     return d
 end
 
-# The Julia versions to resolve against, and what they bundle:
+# What each Julia version bundles, across the *whole* Julia version universe:
 #
 #   stdlibs[uuid][version] : the historical stdlib info for a bundled version.
 #     One version number can cover entries with *different* dependencies across
@@ -132,13 +133,14 @@ end
 #     since a registry version is one version number with no entry to identify,
 #     and major.minor.patch is exactly what a Julia's exact-version pin compares.
 #
-# Split out of `registry_provider` so that `bundled_versions` can report the
-# bundled version sets without building a provider.
+# There is one such universe per registry state. Which Julia versions a *query*
+# wants is not a property of the universe but a constraint on it: the `--julia`
+# flag and a project's own `[compat] julia` bound both reach the resolver as an
+# ordinary compat entry on `julia` in the `Problem` (see bin/resolve.jl). So this
+# is computed once, for every Julia there is, and every query shares it.
 function julia_and_stdlib_versions(
-    julia_versions :: VersionSpec,
+    julia_vers :: AbstractVector{VersionNumber} = JULIA_VERSIONS,
 )
-    julia_vers = filter(in(julia_versions), JULIA_VERSIONS)
-
     stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
     bundlers = Dict{UUID,Dict{VersionNumber,VersionSpec}}()
     for julia_ver in julia_vers
@@ -188,22 +190,36 @@ function julia_and_stdlib_versions(
             d[key] = haskey(d, key) ? d[key] ∪ spec : spec
         end
     end
-    return julia_vers, stdlibs, bundlers, by_patch
+    return stdlibs, bundlers, by_patch
 end
+
+const STDLIB_VERSIONS, BUNDLERS, BUNDLERS_BY_PATCH = julia_and_stdlib_versions()
 
 # Per package, the versions the provider offers because a Julia in
 # `julia_versions` bundles them, regardless of what the registries say. Nothing
 # in the resolve path needs this -- a bundled version is an ordinary candidate,
 # and a user bound that excludes it excludes the Julias that ship it -- but it
 # is the answer to "which versions of this stdlib can I even get on these
-# Julias", so it stays available for introspection and for the tests.
+# Julias", so it stays available for introspection and for the tests. Read off
+# the shared tables, so the versions it names are the ones a resolve produces,
+# synthetic build numbers and all.
 function bundled_versions(
-    julia_versions :: VersionSpec,
+    julia_versions :: VersionSpec = VersionSpec("*"),
 )
-    _, stdlibs, _, _ = julia_and_stdlib_versions(julia_versions)
-    Dict{UUID,Vector{VersionNumber}}(
-        uuid => collect(keys(vers)) for (uuid, vers) in stdlibs)
+    julias = filter(in(julia_versions), JULIA_VERSIONS)
+    out = Dict{UUID,Vector{VersionNumber}}()
+    for (uuid, vers) in STDLIB_VERSIONS
+        bundlers_u = BUNDLERS[uuid]
+        vs = [v for v in keys(vers) if any(in(bundlers_u[v]), julias)]
+        isempty(vs) || (out[uuid] = vs)
+    end
+    return out
 end
+
+# Does some Julia bundle this exact version of this package? False for every
+# version the registries alone provide, and for packages that are not stdlibs.
+is_bundled(uuid::UUID, v::VersionNumber) =
+    haskey(STDLIB_VERSIONS, uuid) && haskey(STDLIB_VERSIONS[uuid], v)
 
 ## prerelease admission
 #
@@ -253,14 +269,34 @@ end
 yanked_exclusion(packages::Dict{UUID,Vector{PkgEntry}}) =
     :yanked => (uuid::UUID, v::VersionNumber) -> is_yanked(packages, uuid, v)
 
+# Do the registries have this version, as opposed to it existing only because
+# some Julia bundles it? (the provider's `bundled_only`, from the outside.) Only
+# the reporting path needs the distinction -- for resolving, a bundled version is
+# an ordinary candidate whose `julia` compat says where it ships.
+function is_registered(
+    packages :: Dict{UUID,Vector{PkgEntry}},
+    uuid     :: UUID,
+    v        :: VersionNumber,
+)
+    entries = get(packages, uuid, nothing)
+    entries === nothing && return false
+    any(haskey(package_info(entry).version_info, v) for entry in entries)
+end
+
+# The package universe the registries and Julia's history describe: every version
+# of every package, every Julia version, and every stdlib version any Julia
+# bundles. It has no query-dependent parameters, which is the point -- one
+# universe per registry state, and every query is a `Problem` over it.
+#
+# (`workspace_pkgs` is not a query knob: a workspace's member packages are part of
+# the environment's package universe, fixed at their local versions, the way a
+# registry's packages are part of it at their registered versions.)
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
-    julia_versions :: VersionSpec = VersionSpec("1"),
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
 )
-    julia_vers, stdlibs, bundlers, by_patch =
-        julia_and_stdlib_versions(julia_versions)
+    stdlibs, bundlers, by_patch = STDLIB_VERSIONS, BUNDLERS, BUNDLERS_BY_PATCH
 
     return DepsProvider(keys(packages)) do uuid::UUID
         if uuid in keys(workspace_pkgs)
@@ -284,7 +320,7 @@ function registry_provider(
         # entry); the widening below bounds them to their bundling Julias
         bundled_only = Set{VersionNumber}()
         if uuid == JULIA_UUID
-            union!(vers, julia_vers)
+            union!(vers, JULIA_VERSIONS)
             for v in vers
                 deps[v] = valtype(deps)()
                 # find relevant stdlibs stanza

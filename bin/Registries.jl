@@ -1,13 +1,32 @@
 module Registries
 
-export registry_provider, package_info, bundled_versions
+export registry_provider, package_info, bundled_versions,
+    UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
 import JSON
+import Pkg
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance, init_package_info!, isyanked, reachable_registries
 import Pkg.Versions: VersionSpec
 import Resolver: DepsProvider, PkgData
+
+## the upgradable stdlibs
+#
+# Julia bundles a version of every stdlib, but two of them it does not *pin*:
+# `Pkg.Types.UPGRADABLE_STDLIBS`. For those, registry versions compete with the
+# bundled one like any other package's, which is what Pkg does and what we
+# model (see the JULIA_UUID branch of the provider). Pkg only grew the constant
+# in 1.12, so fall back to its values on the older Pkgs `bin/` supports.
+const UPGRADABLE_STDLIBS_UUIDS =
+    if isdefined(Pkg.Types, :UPGRADABLE_STDLIBS_UUIDS)
+        Set{UUID}(Pkg.Types.UPGRADABLE_STDLIBS_UUIDS)
+    else
+        Set{UUID}([
+            UUID("8bb1440f-4735-579b-a4ab-409b98df4dab"), # DelimitedFiles
+            UUID("10745b16-79ce-11e8-11f9-7d13ad32a3b2"), # Statistics
+        ])
+    end
 
 ## metaprogram around Pkg's `init_package_info!` signature change
 #
@@ -95,9 +114,11 @@ end
 # The Julia versions to resolve against, and what they bundle:
 #
 #   stdlibs[uuid][version] : the historical stdlib info for a bundled version
-#   stdlib_pins[uuid]      : the (Julia version, pinned-version spec) pairs.
+#   stdlib_pins[uuid]      : the (Julia version, bundled-version spec) pairs.
 #     Recorded so `registry_provider` can widen a stdlib's own `julia` compat
-#     to include the Julia versions that bundle each of its versions.
+#     to include the Julia versions that bundle each of its versions. Recorded
+#     for the upgradable stdlibs too, which are bundled without being pinned:
+#     the widening keeps a bundled version installable on its Julia either way.
 #
 # Split out of `registry_provider` because `bin/resolve.jl` needs the bundled
 # version sets too (see `bundled_versions`).
@@ -119,7 +140,6 @@ function julia_and_stdlib_versions(
         end
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
-            # matches the pin the JULIA_UUID branch emits below
             push!(get!(()->valtype(stdlib_pins)(), stdlib_pins, uuid),
                   (julia_ver, VersionSpec(stdlib_ver)))
             deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
@@ -216,9 +236,17 @@ function registry_provider(
                     v′ > Base.thispatch(v) && break
                     last_stdlibs = this_stdlibs
                 end
-                # add compat for all stdlibs of this version
+                # pin every stdlib this Julia bundles to its bundled version
+                # -- except the upgradable ones, which Julia bundles without
+                # pinning: for those the registry versions compete with the
+                # bundled one on their own `julia` compat, exactly as Pkg
+                # resolves them. "Pinned" here means pinned per candidate
+                # Julia: we resolve over Julia versions too, so each Julia
+                # version carries its own pins, and an upgradable stdlib
+                # simply carries none.
                 comp_v = get!(()->valtype(comp)(), comp, v)
                 for (stdlib_uuid, stdlib_info) in last_stdlibs
+                    stdlib_uuid in UPGRADABLE_STDLIBS_UUIDS && continue
                     stdlib_ver = something(stdlib_info.version, v)
                     comp_v[stdlib_uuid] = VersionSpec(stdlib_ver)
                 end
@@ -310,6 +338,10 @@ function registry_provider(
         # one Julia yet a resolvable dependency for another; for the latter the
         # registry bound must still govern, so dropping it outright would wrongly
         # make the version installable on Julias it isn't compatible with.
+        #
+        # The upgradable stdlibs get the same widening even though no pin makes
+        # them conflict: a bundled version must be installable on the Julia that
+        # bundles it whether or not that Julia insists on it.
         if uuid in keys(stdlib_pins)
             for (julia_ver, ver_spec) in stdlib_pins[uuid]
                 for v in vers

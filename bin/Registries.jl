@@ -56,11 +56,34 @@ end
 dep_uuids(d::AbstractDict) = values(d)   # <=1.13: name => uuid
 dep_uuids(d::AbstractSet)  = d            # >=1.14: Set{UUID}
 
-# (uuid => spec) pairs from a compat-map value; `name2uuid` resolves names on
-# the old (name-keyed) representation and is ignored on the new one
-compat_uuid_pairs(c::AbstractDict{<:AbstractString}, name2uuid::AbstractDict) =
-    (name2uuid[n] => s for (n, s) in c)
-compat_uuid_pairs(c::AbstractDict{UUID}, name2uuid::AbstractDict) = c
+# (uuid => spec) pairs from a compat-map value, keeping only the entries that
+# bound one of the version's dependencies. That set is given twice, once in
+# each key space, since the two representations key compat differently:
+# `names` is the version's (name => uuid) deps map and resolves compat names on
+# the old representation, `uuids` is the same dependencies as uuids and is what
+# the new representation compares against.
+#
+# The filtering is the point, not an implementation detail. A Compat.toml range
+# can cover versions whose Deps.toml does not list the bounded package, which
+# happens in General whenever a dependency is added without tightening the
+# compat range that predates it (Python_jll bounds LibMPDec_jll from 3.0 on,
+# but only depends on it from 3.10 on -- issue #54). Pkg ignores a bound on a
+# non-dependency, so it never notices and such entries ship.
+#
+# Dropping them is exactly Pkg's semantics -- a bound on something a version
+# does not depend on is inert -- and it matches `validate_pkg_data_consistency`,
+# which likewise allows compat on packages that aren't in the universe. It also
+# has to happen on *both* representations or they disagree: the old one resolves
+# compat names through the version's own deps map, where the name is missing,
+# while the new one resolves them through a name table built from every range at
+# once, where it is present. Same registry, same package data either way.
+#
+# Every version depends on julia (Pkg puts it in the deps map itself, in both
+# representations), so a `julia` bound is never dropped.
+compat_uuid_pairs(c::AbstractDict{<:AbstractString}, names::AbstractDict, uuids) =
+    (names[n] => s for (n, s) in c if haskey(names, n))
+compat_uuid_pairs(c::AbstractDict{UUID}, names::AbstractDict, uuids) =
+    (u => s for (u, s) in c if u in uuids)
 
 ## download Julia versions
 
@@ -371,7 +394,7 @@ function registry_provider(
                     comp_v = get!(()->valtype(comp)(), comp, v)
                     for (r, c) in info.compat
                         v in r || continue
-                        for (u, spec) in compat_uuid_pairs(c, deps_uuids)
+                        for (u, spec) in compat_uuid_pairs(c, deps_uuids, deps_v)
                             if u in keys(comp_v)
                                 comp_v[u] = spec ∩ comp_v[u]
                             else
@@ -379,16 +402,19 @@ function registry_provider(
                             end
                         end
                     end
-                    # weak deps
+                    # weak deps -- collected in both key spaces, since weak
+                    # compat is filtered against them the same way
                     weak_uuids = Dict{String,UUID}() # name => uuid (<=1.13 only)
+                    weak_v = Set{UUID}()
                     for (r, d) in info.weak_deps
                         v in r || continue
                         d isa AbstractDict && merge!(weak_uuids, d)
+                        union!(weak_v, dep_uuids(d))
                     end
                     # weak compat
                     for (r, c) in info.weak_compat
                         v in r || continue
-                        for (u, spec) in compat_uuid_pairs(c, weak_uuids)
+                        for (u, spec) in compat_uuid_pairs(c, weak_uuids, weak_v)
                             if u in keys(comp_v)
                                 comp_v[u] = spec ∩ comp_v[u]
                             else

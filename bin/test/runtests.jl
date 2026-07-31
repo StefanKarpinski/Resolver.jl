@@ -23,6 +23,7 @@ include(joinpath(@__DIR__, "..", "Registries.jl"))
 # UUIDs of the packages involved in issue #24.
 const COMPILER_SUPPORT_LIBRARIES_JLL = UUID("e66e0078-7015-5450-92f7-15fbd957f2ae")
 const LINEAR_ALGEBRA = UUID("37e2e46d-f89d-539d-b4ee-838fcccc9c8e")
+
 const JSON = UUID("682c06a0-de6a-54ab-a142-c8b1cf79cde6")
 const STATISTICS = UUID("10745b16-79ce-11e8-11f9-7d13ad32a3b2")
 const DELIMITED_FILES = UUID("8bb1440f-4735-579b-a4ab-409b98df4dab")
@@ -36,6 +37,11 @@ const WINE_JLL = UUID("9fae3aff-8997-5dd1-9b84-5d0cc5e0bffa")
 # registered version is too.
 const COMPAT = UUID("34da2185-b29b-5c13-b0c7-acf172513d20")
 const LIBSODIUM_JLL = UUID("a9144af2-ca23-56d9-984f-0d03f7b5ccf8")
+# Issue #54: Python_jll's Compat.toml bounds LibMPDec_jll over `3 - 3.10`, but
+# its Deps.toml only lists LibMPDec_jll from 3.10 on -- so the 3.8.x versions
+# carry a compat entry for a package that is not one of their dependencies.
+const PYTHON_JLL = UUID("93d3a430-8e7c-50da-8e8d-3dfcfb3baf05")
+const LIBMPDEC_JLL = UUID("7106de7a-f406-5ef1-84f7-3345f7341bd2")
 
 # Load packages from the installed registries (mirrors bin/resolve.jl).
 const packages = Dict{UUID,Vector{PkgEntry}}()
@@ -164,6 +170,55 @@ end
         @test resolves([COMPILER_SUPPORT_LIBRARIES_JLL, JULIA_UUID]; julia = VersionSpec("1.10"))
         # Realistic reproducer: LinearAlgebra pulls in the same stack transitively.
         @test resolves([LINEAR_ALGEBRA, JULIA_UUID]; julia = VersionSpec("1.10.8"))
+    end
+
+    # Issue #54: a registry compat entry may name a package that is not a
+    # dependency of the version the entry covers -- Python_jll bounds
+    # LibMPDec_jll over `3 - 3.10` while only listing it as a dependency from
+    # 3.10 on, so every 3.8.x build names a non-dependency. Pkg treats such a
+    # bound as inert for that version, and so must we.
+    @testset "compat naming a non-dependency is inert" begin
+        pd = Resolver.pkg_data(reg, [PYTHON_JLL])[PYTHON_JLL]
+        # the versions the malformed entry covers are still offered ...
+        old = [v for v in pd.versions if Base.thispatch(v) < v"3.10"]
+        @test !isempty(old)
+        # ... with neither a dependency on LibMPDec_jll nor a bound on it
+        @test all(v -> LIBMPDEC_JLL ∉ pd.depends[v], old)
+        @test all(v -> !haskey(pd.compat[v], LIBMPDEC_JLL), old)
+        # while the versions that *do* depend on it keep the bound
+        new = [v for v in pd.versions if LIBMPDEC_JLL in pd.depends[v]]
+        @test !isempty(new)
+        @test all(v -> haskey(pd.compat[v], LIBMPDEC_JLL), new)
+    end
+
+    # The two Pkg representations reach that entry by different routes: the
+    # <=1.13 one keys compat by name and resolves through the version's own deps
+    # map, where the name is absent (a `KeyError` before the fix); the >=1.14 one
+    # keys compat by uuid, resolved through a name table Pkg builds from every
+    # range at once, where it is present and the entry silently survives. So the
+    # drop has to be explicit on both, or the same registry yields different
+    # package data depending on which Julia parsed it. Whichever Julia runs this
+    # suite exercises only one of the two, so compare them head to head.
+    @testset "both registry representations agree" begin
+        dep = UUID("00000000-0000-0000-0000-0000000000d1")
+        non = UUID("00000000-0000-0000-0000-0000000000e2")
+        # the version's dependencies, in each key space
+        names = Dict("Dep" => dep, "julia" => JULIA_UUID)   # <=1.13
+        uuids = [dep, JULIA_UUID]                            # >=1.14
+        # the same compat entry both ways: a bound on a dependency, a bound on
+        # julia, and a bound on a package this version does not depend on
+        by_name = Dict("Dep" => VersionSpec("1"),
+                       "julia" => VersionSpec("1.6.0-1"),
+                       "NotADep" => VersionSpec("2"))
+        by_uuid = Dict(dep => VersionSpec("1"),
+                       JULIA_UUID => VersionSpec("1.6.0-1"),
+                       non => VersionSpec("2"))
+        from_names = Dict(Registries.compat_uuid_pairs(by_name, names, uuids))
+        from_uuids = Dict(Registries.compat_uuid_pairs(by_uuid, names, uuids))
+        @test from_names == from_uuids
+        # and what they agree on is: the non-dependency dropped, the rest kept
+        @test from_names == Dict(dep => VersionSpec("1"),
+                                 JULIA_UUID => VersionSpec("1.6.0-1"))
     end
 
     # A project's compat bounds are user constraints, so the provider no longer

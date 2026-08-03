@@ -393,6 +393,88 @@ is generally larger than the support of any single solution — and for a
 cluster rooted at a hub package it can be a substantial fraction of the
 universe. Exactness is not the same as smallness.
 
+## Goal safety: which universe answers which question
+
+Everything above licenses relaxation queries on the *prepared* universe
+``F(D)`` — and every one of those queries asks about **optimal** solutions,
+which is what preparation preserves. A goal does not.
+
+A goal query asks whether some solution has a property: that a package is
+present, absent, or at a named version. It does not ask about optimal
+solutions, and the two preparation passes that shrink hardest each delete
+versions on the grounds that no optimal solution uses them.
+
+!!! warning "Reachability and redundancy are not goal-safe"
+    Take ``A \to B``, ``B@3.1 \to X``, ``B@2.3 \to \varnothing``, with no
+    conflicts anywhere and ``R_0 = \{A\}``. Reach seeds ``B@3.1`` and nothing
+    degrades it, so ``F(D)`` has only ``B@3.1`` and *every* solution of
+    ``F(D)`` contains ``X``. In ``D`` the solution ``\{A@1, B@2.3\}`` avoids
+    it. So on ``F(D)`` the goal ``\lnot X`` is unsatisfiable and on ``D`` it
+    is satisfiable: not a worse answer, a wrong one.
+
+    Redundancy fails the same way in the other direction. If ``A@2`` (better)
+    depends on nothing and ``A@1`` depends on ``X``, then ``A@2`` dominates
+    ``A@1`` and elimination deletes it — after which the goal ``X`` present is
+    unsatisfiable, though ``\{A@1, X\}`` witnesses it in ``D``.
+
+    Both are Lemma R and the redundancy theorem behaving exactly as stated.
+    Neither ever claimed to preserve non-optimal solutions, and a goal is a
+    question about the whole solution set.
+
+What *is* goal-safe is the T1 half of preparation, and it is safe for a
+reason, not by luck:
+
+!!! note "Proposition G (T1 preserves every goal's witnesses)"
+    Let ``T_1(D)`` be ``D`` with (i) arc-consistency applied, and (ii) each
+    package's versions collapsed to one representative per
+    interchangeability class, plus any versions named by value. Then a
+    solution of ``D`` witnessing a presence or absence goal exists iff one of
+    ``T_1(D)`` does, and a solution assigning a named version ``v`` exists iff
+    one of ``T_1(D)`` does.
+
+    *Proof.* (i) Arc consistency deletes ``p@v`` only when ``p@v`` occurs in
+    no solution at all — it depends, transitively, on a package with no
+    installable version. A version in no solution witnesses no goal, and
+    deleting it removes no solution.
+
+    (ii) Two versions are in one interchangeability class when their rows in
+    the conflict matrix are equal, and the matrix's columns include the
+    *dependency* columns. So class members have identical dependency sets:
+    swapping ``p@v`` for its representative ``p@v'`` in a solution changes
+    nothing about which packages the solution contains, and preserves
+    conflict-freedom by row equality (Theorem 3's swap argument). A solution
+    containing (or avoiding) ``X`` therefore maps to one containing (or
+    avoiding) ``X``. A package that avoids ``X`` can never hide inside a class
+    whose representative needs it, because that would be two rows differing
+    in a dependency column.
+
+    For a goal naming a version by value the swap argument is exactly what
+    does *not* apply — the sibling is indistinguishable to every constraint
+    but it is not the version asked for — so those versions are excluded from
+    the collapse and survive as representatives of their own. ∎
+
+Composing Proposition G with Lemma D3: a goal query runs on ``T_1(D)``
+restricted to the closure of ``R_0`` together with the goal's own packages.
+That is `prepare_goal_info` plus the closure the T1 artifact is already built
+over. The sub-instance is bigger than the per-resolve one — the two hardest
+passes are off — which is the price of asking a different question.
+
+Two consequences worth stating plainly:
+
+- **Better-version goals are the exception**, and they are why the holdback
+  probe needs none of this. Reach keeps version *prefixes*: if the resolve
+  landed on ``p@i``, every version better than ``p@i`` is present in ``F(D)``
+  by construction. "Is a better ``p`` possible" is therefore answerable on the
+  instance the resolve already has in hand, which is what makes the automatic
+  julia check nearly free.
+- **The bound-level sub-instances follow the same rule.** With a goal in
+  force, `bound_story`'s per-cluster instance keeps the filter only when the
+  goal is a pure presence ask — whose packages it has already made
+  requirements of, so reach keeps their prefix. Anything else turns the two
+  passes off there too, and the closure budget may then decline the
+  sub-instance; the report stops at requirement level rather than answering
+  from the wrong universe.
+
 ## What the implementation does with this
 
 - The production instance asserts the user-constraint selectors as unit

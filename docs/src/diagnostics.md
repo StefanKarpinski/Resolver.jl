@@ -95,9 +95,84 @@ Verified fixes:
 Yankedness is deliberately *not* one of them: see
 [below](#Modelling-withdrawn-versions).
 
-Computing a diagnosis costs several extra solves. When you only need the
-verdict — a satisfiability probe in a loop, say — pass `diagnose = false` and
-get back `nothing`.
+## Asking for something: goals
+
+`resolve` takes two more keywords, and they change the *question* rather than
+the problem:
+
+```julia
+resolve(info, prob; with = "AnthropicClient")          # can I have this?
+resolve(info, prob; with = "DataFrames" => v"1.8.2")   # ... at this version?
+resolve(info, prob; without = "FillArrays")            # can I avoid this?
+resolve(info, prob; with = ["CUDA", "MKL"], without = "FillArrays")
+```
+
+The return contract does not change: the optimal solution satisfying the
+problem *and* the goal, or a `Diagnosis` of what it would take.
+
+```
+resolve(info, prob; with = "AnthropicClient")     # project already has BulkSMS
+```
+```
+Unsatisfiable — 1 conflict, 1 fix:
+Conflict 1: the goal and BulkSMS cannot be satisfied together.
+  • you require BulkSMS
+  • AnthropicClient (all versions) works with HTTP only at 1.0.1–1.11.0
+  • BulkSMS (all versions) works with HTTP only at 0.8.19
+Verified fixes:
+  1. drop requirement BulkSMS
+     → allows: AnthropicClient 0.1.0, HTTP 1.11.0
+```
+
+The whole difference between `with = "AnthropicClient"` and adding it to
+`prob.reqs` is one line of that report: the problem's constraints are
+*negotiable*, and a fix may propose relaxing any of them; the goal is the
+*fixed ask*, so "drop requirement AnthropicClient" can never be offered. The
+header says which conflicts the goal is part of.
+
+A `without` goal's story is a chain of forced dependencies rather than of
+incompatible pairs — nothing conflicts with anything, the package is simply
+unavoidable:
+
+```
+Conflict 1: the goal and Makie cannot be satisfied together.
+  • you require Makie
+  • Makie (all versions) requires GeometryBasics
+  • GeometryBasics (all admissible versions) requires FillArrays
+```
+
+Only *forced* edges appear: a path some other version choice could route
+around explains nothing, which is what separates this from `pkg> why
+FillArrays` printing every path there is. And when the package is avoidable,
+there is no conflict at all — `resolve` returns the optimal FillArrays-free
+solution.
+
+### Three tiers of effort
+
+Computing a diagnosis costs several extra solves, and so does the optimizing
+descent. Three calls answer the same question with more or less work:
+
+| call | cost | answer |
+|:--|:--|:--|
+| [`issatisfiable(data, prob; with)`](@ref issatisfiable) | one solve | `Bool` |
+| `resolve(data, prob; with, diagnose = false)` | one solve + descent | the solution, or `nothing` |
+| `resolve(data, prob; with)` | + explanation | the solution, or a `Diagnosis` |
+
+Nothing but the effort separates them; the verdicts agree. A UI greying out an
+upgrade button wants the first, a caller that needs the versions the second,
+and only the one that will actually print a report pays for the third.
+
+### Which universe answers a goal
+
+A goal query runs on a sub-instance built from the T1 artifact, not on the
+per-resolve one, because the per-resolve filter prunes exactly the escape
+routes a goal needs. `A→B`, `B@3.1→X`, `B@2.3→∅`, no conflicts: reachability
+keeps only `B@3.1`, so the prepared instance calls X unavoidable while the raw
+problem avoids it via `B@2.3`. The [theory
+page](theory/diagnostics.md#Goal-safety:-which-universe-answers-which-question)
+proves what survives — arc consistency and the interchangeability collapse are
+goal-safe, reachability and redundancy are not — and the counterexample above
+is a test.
 
 ## Modelling platform packages
 

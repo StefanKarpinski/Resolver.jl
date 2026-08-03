@@ -237,16 +237,31 @@ release can move go first, so a conflict tellable either way keeps the
 explanation the user can act on. `kept` is the subset of `users` that survived;
 it is `nothing` when the closure was too big to be worth the solves, and the
 caller has to shrink the user groups itself.
+
+`goal` puts the caller's fixed ask into every probe here as well, and widens the
+closure to cover the packages it names. A goal that is more than a presence ask
+also turns off the sub-instance's reachability and redundancy passes, which are
+not goal-safe (see [`prepare_goal_info`](@ref Resolver.prepare_goal_info)) — the
+sub-instance is then bigger, and the closure budget may decline it, which is the
+honest outcome rather than a wrong one.
 """
 function bound_story(
     info  :: Dict{P,PkgInfo{P,V}},
     prob  :: Problem{P},
     creqs :: Vector{P},
     users :: Vector{P},
-    by    :: Function,
+    by    :: Function;
+    goal  :: Union{Nothing,Goal{P}} = nothing,
 ) where {P,V}
     none = (Fact[], UpstreamFix{P,V}[], nothing)
-    keep = dep_closure(info, creqs)
+    # a `with` goal's packages are present by fiat, so they are requirements as
+    # far as the closure and its probes are concerned; a `without` goal's are in
+    # the closure because the story is about how they get pulled in
+    creqs = goal === nothing ? creqs :
+        sort!(unique!(P[creqs; P[p for (p, _) in goal.with]]))
+    roots = goal === nothing ? creqs :
+        sort!(unique!(P[creqs; goal.without]))
+    keep = dep_closure(info, roots)
     isempty(keep) && return none
     src = restrict_info(info, keep)
     userset = Set{P}(p for p in users if p ∈ keep)
@@ -257,7 +272,8 @@ function bound_story(
     # is left. Filtering with a subset of the requirements is licensed by the
     # requirement-monotonicity proposition, and doing it with every group in
     # force is what puts the result back under Theorem D1.
-    filter_pkg_info!(src, closure_problem(prob, creqs, userset))
+    filter_pkg_info!(src, closure_problem(prob, creqs, userset);
+                     reach = goal_reach_safe(goal))
     all(p -> haskey(src, p), creqs) || return none
     pairs = interacting_pairs(src)
     nvers = sum(length(i.versions) for i in values(src); init = 0)
@@ -272,7 +288,7 @@ function bound_story(
         for (k, (p, q)) in enumerate(pairs)
             set_pair!(work, src, p, q, on[k])
         end
-        sat = SAT(work, subprob)
+        sat = SAT(work, subprob, goal)
         try is_satisfiable(sat, creqs)
         finally
             finalize(sat)
@@ -319,7 +335,7 @@ function bound_story(
         on[k] || continue
         on[k] = false
         if probe(on, subprob)
-            sol = resolve_prepared(work, subprob; by, diagnose = false)
+            sol = resolve_prepared(work, subprob; by, diagnose = false, goal)
             sol === nothing ||
                 push!(ups, UpstreamFix{P,V}(pair_bound(src, p, q), sol))
         end
@@ -346,6 +362,12 @@ Two keys, in order:
    optimal layered solution, over the two packages named.
 
 Ties break on the package names, so the order is deterministic.
+
+`rank_upstream!(ups, d::Diagnosis)` reads the version lists off the diagnosis,
+which is the form a client that only has the report's structured data can use.
+Every `UpstreamFix` carries its `bound` and a verified `solution`, so a client
+with better knowledge — Pkg knows which packages are actively maintained — is
+free to filter first, or to sort by its own criteria and ignore this one.
 """
 function rank_upstream!(
     ups  :: Vector{UpstreamFix{P,V}},
@@ -364,3 +386,8 @@ function rank_upstream!(
     end
     return sort!(ups; by = key)
 end
+
+rank_upstream!(ups::Vector{UpstreamFix{P,V}}, d) where {P,V} =
+    rank_upstream!(ups, Dict{P,PkgInfo{P,V}}(
+        p => PkgInfo(vs, P[], Dict{P,Int}(), falses(length(vs), 1))
+        for (p, vs) in d.versions))

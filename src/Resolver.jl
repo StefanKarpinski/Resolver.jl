@@ -1,6 +1,7 @@
 module Resolver
 
-export resolve, Problem, Diagnosis, Holdback, holdbacks
+export resolve, issatisfiable,
+    Problem, Diagnosis, Holdback, holdbacks
 
 include("BitKernels.jl")
 include("DepsProvider.jl")
@@ -8,6 +9,7 @@ include("Problem.jl")
 include("PkgInfo.jl")
 include("PkgInfoFiles.jl")
 include("FilterPkgs.jl")
+include("Goal.jl")
 include("PicoSAT.jl")
 include("SAT.jl")
 include("Diagnose.jl")

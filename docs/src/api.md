@@ -2,6 +2,7 @@
 
 ```@docs
 resolve
+issatisfiable
 Problem
 ```
 
@@ -23,6 +24,7 @@ Resolver.UserCompat
 Resolver.Pin
 Resolver.Admission
 Resolver.Bound
+Resolver.Dependency
 ```
 
 ## Explaining a surprising success
@@ -46,6 +48,8 @@ Resolver.version_permutations
 Resolver.class_representatives
 Resolver.find_reachable
 Resolver.exclusion_masks
+Resolver.prepare_goal_info
+Resolver.Goal
 Resolver.diagnose
 Resolver.Relaxation
 Resolver.bound_story

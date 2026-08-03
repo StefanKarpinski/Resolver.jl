@@ -21,9 +21,13 @@ usage: $PROGRAM_FILE [options] [<project path>]
 
   --allow-pre[=<pkgs>]    allow prerelease versions
   --allow-yanked[=<pkgs>] allow yanked versions
-  --why[=<pkgs>]          explain packages that resolved below their newest
-                          version, all of them if given no list (julia is
-                          explained automatically)
+  --explain[=<targets>]   explain the resolution. Bare: every package that
+                          landed below its best version (julia is explained
+                          automatically either way). <targets> are <pkgs>,
+                          each answering the question that is not already
+                          answered -- what held it back if it is below its
+                          best version, whether you can have it at all if it
+                          is not -- or pkg@version to ask about a version
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
 
@@ -54,7 +58,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia allow-pre allow-yanked extra-deps prioritize why
+    julia allow-pre allow-yanked extra-deps prioritize explain
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -533,26 +537,27 @@ function yanked_notes(d::Diagnosis)
     return notes
 end
 
+const names = Dict{String,String}(string(JULIA_UUID) => "julia")
+for (u, entries) in packages, entry in entries
+    names[string(u)] = entry.name
+end
+for (_v, stdlib_set) in STDLIBS_BY_VERSION, (u, info) in stdlib_set
+    names[string(u)] = info.name
+end
+for (u, info) in UNREGISTERED_STDLIBS
+    names[string(u)] = info.name
+end
+const uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+named(s::AbstractString) = replace(s, uuid_re => m -> get(names, m, m))
+pkgname(u::UUID) = get(names, string(u), string(u))
+
 # an unsatisfiable resolve comes back explained: independent conflicts, the
 # facts behind each, and a menu of verified fixes. The diagnosis is keyed by
 # uuid, as everything here is, so substitute package names before printing it
 if sol isa Diagnosis
-    names = Dict{String,String}(string(JULIA_UUID) => "julia")
-    for (u, entries) in packages, entry in entries
-        names[string(u)] = entry.name
-    end
-    for (_v, stdlib_set) in STDLIBS_BY_VERSION, (u, info) in stdlib_set
-        names[string(u)] = info.name
-    end
-    for (u, info) in UNREGISTERED_STDLIBS
-        names[string(u)] = info.name
-    end
-    uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-    text = string(sprint(show, MIME("text/plain"), sol),
-                  join(("Note: $note.\n" for note in yanked_notes(sol))))
-    report = replace(text, uuid_re => m -> get(names, m, m))
     println(stderr, "Unresolvable. Diagnosis:\n")
-    println(stderr, report)
+    println(stderr, named(string(sprint(show, MIME("text/plain"), sol),
+        join(("Note: $note.\n" for note in yanked_notes(sol))))))
     exit(1)
 end
 
@@ -562,34 +567,46 @@ end
 # stale `LinearAlgebra = "~1.10"` quietly pins the whole toolchain to julia 1.10
 # -- correctly, and until now without a word. julia is explained whenever it did
 # not land on its newest admissible version, because that is the surprise nobody
-# asked for; `--why` covers the rest, which nobody needs by default.
-const why_pkgs = Set{UUID}((JULIA_UUID,))
+# asked for; `--explain` covers the rest, which nobody needs by default.
+const explain_pkgs = UUID[]
+const explain_vers = Pair{UUID,VersionSpec}[]
 const asked_why = Ref(false)
 const why_all = Ref(false)
 
-handle_opts(:why) do val::Union{String,Nothing}
+# split "Foo@1.2" into its package and its version, if it has one
+partition_at(s::AbstractString, c::Char) =
+    (i = findfirst(==(c), s); isnothing(i) ?
+        (s, "", "") : (s[1:prevind(s, i)], "@", s[nextind(s, i):end]))
+
+handle_opts(:explain) do val::Union{String,Nothing}
     asked_why[] = true
-    # bare `--why` means "everything that landed below its best version"; the
-    # probe budget bounds the cost, and the report says when it stopped short
-    isnothing(val) ? (why_all[] = true) : union!(why_pkgs, parse_packages(val))
+    # bare `--explain` means "everything that landed below its best version";
+    # the probe budget bounds the cost, and the report says when it stopped
+    # short. A named target may carry a version: `--explain=DataFrames@1.8.2`
+    isnothing(val) && return (why_all[] = true)
+    for target in split(val, ',')
+        name, sep, ver = partition_at(target, '@')
+        isempty(sep) ?
+            append!(explain_pkgs, parse_packages(name)) :
+            for u in parse_packages(name)
+                push!(explain_vers, u => semver_spec(String(ver)))
+            end
+    end
+end
+
+# holdbacks: julia always, plus whatever was asked about that is below its best
+# version. A package already at its best has no holdback to report, so asking
+# about it means the other question -- see `explain_goal` below.
+const held_pkgs = UUID[JULIA_UUID]
+for u in explain_pkgs
+    u in held_pkgs || push!(held_pkgs, u)
 end
 
 let hs = Resolver.holdbacks(pkg_info, problem, sol,
                             why_all[] ? keys(sol) :
-                                [u for u in why_pkgs if haskey(sol, u)];
+                                [u for u in held_pkgs if haskey(sol, u)];
                             by = sort_packages_by)
-    names = Dict{String,String}(string(JULIA_UUID) => "julia")
-    for (u, entries) in packages, entry in entries
-        names[string(u)] = entry.name
-    end
-    for (_v, stdlib_set) in STDLIBS_BY_VERSION, (u, info) in stdlib_set
-        names[string(u)] = info.name
-    end
-    for (u, info) in UNREGISTERED_STDLIBS
-        names[string(u)] = info.name
-    end
-    uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-    named(s) = replace(s, uuid_re => m -> get(names, m, m))
+    global const explained = Set{UUID}(h.pkg for h in hs)
     for h in hs
         # an unasked-for note stays to one line; what the user asked about gets
         # the reasoning
@@ -603,6 +620,37 @@ let hs = Resolver.holdbacks(pkg_info, problem, sol,
     # when it stopped short rather than quietly reporting a partial answer
     asked_why[] &&
         print(stderr, sprint(Resolver.render_unexamined, hs))
+end
+
+# The other half of `--explain=<target>`: the question a holdback did not
+# answer. If the package is not below its best version there is nothing holding
+# it back, so what the user must be asking is whether they can have it at all
+# (or at a named version) -- which is a goal, and `resolve` answers goals.
+function explain_goal(u::UUID, spec::Union{Nothing,VersionSpec})
+    want = spec === nothing ? "" : string(" at ", spec)
+    got = resolve(reg, problem; by = sort_packages_by, order = version_order,
+                  with = spec === nothing ? u : u => spec)
+    if got isa Diagnosis
+        println(stderr, "You cannot have ", pkgname(u), want, ":\n")
+        print(stderr, named(sprint(show, MIME("text/plain"), got)))
+        return
+    end
+    diff = Resolver.changes(sol, got)
+    isempty(diff) &&
+        return println(stderr, pkgname(u), want,
+                       " is what you already resolved to.")
+    println(stderr, "You can have ", pkgname(u), want, ", at this price:")
+    for c in diff
+        println(stderr, "  • ", named(sprint(show, c)))
+    end
+end
+
+for u in explain_pkgs
+    u in explained && continue          # the holdback above answered it
+    explain_goal(u, nothing)
+end
+for (u, spec) in explain_vers
+    explain_goal(u, spec)
 end
 
 ## output results

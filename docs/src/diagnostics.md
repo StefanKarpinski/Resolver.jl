@@ -145,7 +145,8 @@ Only *forced* edges appear: a path some other version choice could route
 around explains nothing, which is what separates this from `pkg> why
 FillArrays` printing every path there is. And when the package is avoidable,
 there is no conflict at all — `resolve` returns the optimal FillArrays-free
-solution.
+solution, and [`changes`](@ref Resolver.changes) against the plain resolve is
+how you price it.
 
 ### Three tiers of effort
 
@@ -173,6 +174,69 @@ page](theory/diagnostics.md#Goal-safety:-which-universe-answers-which-question)
 proves what survives — arc consistency and the interchangeability collapse are
 goal-safe, reachability and redundancy are not — and the counterexample above
 is a test.
+
+## Rendering your own reports
+
+The `Diagnosis` retains *everything*. Every opinionated choice in the output
+above is a documented function, and the default `show` is merely its first
+client — no policy parameter was passed into the resolver to produce it, which
+is the point of the design. Three tiers of control:
+
+**Tier 1 — the default.** `show(io, MIME("text/plain"), d)`. Zero
+configuration; what `bin/resolve.jl` prints.
+
+**Tier 2 — the knobs.** [`report`](@ref) is what `show` calls, with its choices
+as arguments:
+
+```julia
+report(io, d;
+       max_upstream = 3,          # cap + "(N more …)"; typemax(Int) for all
+       demote_incidental = true,  # fold the "likewise …" facts into an aside
+       trim_witnesses = true,     # "→ allows:" lists the contested packages
+       labels = Dict("DataFrames" => :requested))   # source wording
+```
+
+**Tier 3 — your own layout, our sentences** (or neither). The helpers `show`
+is built from are public:
+
+```julia
+result = resolve(info, prob)
+if result isa Diagnosis
+    for c in result.conflicts
+        print_header(c.reqs, c.goal)
+        for f in c.chain
+            f isa Resolver.Bound && f.incidental && continue  # drop, not demote
+            println(io, "  • ", sprint(Resolver.render_fact, f, result))
+        end
+    end
+    fixes = result.fixes                       # already verified, already optimal
+    ups = filter(u -> maintained(u.bound.pkg), result.upstream)  # your knowledge
+    Resolver.rank_upstream!(ups)
+end
+```
+
+  * [`render_fact`](@ref Resolver.render_fact) writes one bullet's sentence;
+    [`render_action`](@ref Resolver.render_action) writes a fix's imperative
+    ("relax your compat on B") and [`blame_phrase`](@ref Resolver.blame_phrase)
+    the same fact as a noun ("your compat on B"). A client that wants its own
+    sentences reads the `Fact` fields instead — they are everything the
+    sentences are generated from.
+  * [`rank_upstream!`](@ref Resolver.rank_upstream!) sorts suggestions by how
+    *current* the blamed versions are: a new release relaxing its latest bound
+    is plausible, resurrecting an ancient range is not. Every `UpstreamFix`
+    carries its `bound` and a verified `solution`, so a client with better
+    knowledge — Pkg knows which packages are maintained — re-sorts or filters
+    by its own criteria and ignores ours.
+  * `Bound.incidental` is set during MUS construction when every version on the
+    bound's own side is already excluded by the user's constraints: the fact's
+    only job is closing off versions they cannot have anyway. Minimality is
+    preserved by the remaining facts *for the versions that matter*, so a
+    renderer may drop them outright.
+  * [`superseded`](@ref Resolver.superseded) is the prerelease-supersession
+    predicate fix enumeration already consults; it is public so a client
+    filtering its own suggestion lists applies the same policy.
+  * [`changes`](@ref) diffs two solutions into `Change(pkg, from, to)`, which
+    is how a feasible goal query gets its price tag.
 
 ## Modelling platform packages
 
@@ -297,11 +361,26 @@ looking for — as a single note:
 Note: julia is held back to 1.10.11 by your compat on LinearAlgebra; relaxing it allows julia 1.12.6.
 ```
 
-`--why` gives the reasoning for everything that landed below its best version,
-and `--why=<pkgs>` for named packages. Explaining one costs several solves, so
-`max_probes` bounds how many are probed; the result carries how many candidates
-that left over and the report ends with `(N more packages resolved below their
-best version, not examined)` rather than quietly showing a partial answer.
+`--explain` gives the reasoning for everything that landed below its best
+version. Explaining one costs several solves, so `max_probes` bounds how many
+are probed; the result carries how many candidates that left over and the
+report ends with `(N more packages resolved below their best version, not
+examined)` rather than quietly showing a partial answer.
+
+`--explain=<pkg>` answers whichever question is not already answered. If the
+package is below its best version, that is the holdback above. If it is not —
+because it is at its best, or because it is not in the solution at all — the
+only question left is whether you can have it, which is the goal
+`with = pkg`, and the answer is a price:
+
+```
+$ resolve.jl --explain=Statistics
+You can have Statistics, at this price:
+  • Statistics 1.11.1 added
+```
+
+`--explain=<pkg>@<version>` asks the version goal instead, and an impossible
+one comes back as a full diagnosis rather than a bare refusal.
 
 ## Why this is trustworthy
 

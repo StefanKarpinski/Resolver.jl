@@ -652,9 +652,9 @@ end
     end
     @test got == promised
 
-    # `--why` asks for the reasoning, and for the other packages too
+    # `--explain` asks for the reasoning, and for the other packages too
     err3 = IOBuffer()
-    cmd3 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions --why`
+    cmd3 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions --explain`
     @test success(pipeline(cmd3; stdout = devnull, stderr = err3))
     why = String(take!(err3))
     @test occursin("julia resolved to $(vers[JULIA_UUID])", why)
@@ -662,13 +662,49 @@ end
     @test occursin(r"julia \S+ works with LinearAlgebra only at", why)
     @test occursin("⇒ held back by your compat on LinearAlgebra.", why)
     @test occursin("relax your compat on LinearAlgebra → allows: julia", why)
-    # JSON is held back by its own bound, and only `--why` mentions it
+    # JSON is held back by its own bound, and only `--explain` mentions it
     @test occursin("JSON resolved to", why)
     @test !occursin("JSON resolved to", note)
-    # bare `--why` covers everything, so the probe budget bites -- and says so
+    # bare `--explain` covers everything, so the probe budget bites -- and says so
     # rather than quietly reporting a partial answer
     @test occursin(r"\(\d+ more packages? resolved below their best version, not examined\)",
                    why)
+
+    # `--explain=<pkg>` answers whichever question is not already answered:
+    # what held the package back if it is below its best version ...
+    err5 = IOBuffer()
+    cmd5 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions
+            --explain=JSON`
+    @test success(pipeline(cmd5; stdout = devnull, stderr = err5))
+    one = String(take!(err5))
+    @test occursin("JSON resolved to", one)
+    @test !occursin("LinearAlgebra resolved to", one)   # not asked about
+
+    # ... and whether you can have it at all if it is not. Statistics is not in
+    # this project's solution, so the question is presence, and the answer is a
+    # price rather than a holdback.
+    err6 = IOBuffer()
+    cmd6 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions
+            --explain=Statistics`
+    @test success(pipeline(cmd6; stdout = devnull, stderr = err6))
+    presence = String(take!(err6))
+    @test occursin("You can have Statistics, at this price:", presence)
+    @test occursin(r"Statistics \S+ added", presence)
+
+    # a version target asks about a version, and an impossible one is
+    # explained rather than merely refused
+    err7 = IOBuffer()
+    cmd7 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions
+            --explain=JSON@0.21`
+    @test success(pipeline(cmd7; stdout = devnull, stderr = err7))
+    @test occursin("JSON at 0.21", String(take!(err7)))
+    err8 = IOBuffer()
+    cmd8 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions
+            --explain=JSON@99`
+    @test success(pipeline(cmd8; stdout = devnull, stderr = err8))
+    nope = String(take!(err8))
+    @test occursin("You cannot have JSON at 99", nope)
+    @test occursin("Conflict 1: the goal", nope)
 
     # a project with nothing stale says nothing
     err4 = IOBuffer()

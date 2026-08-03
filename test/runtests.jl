@@ -284,6 +284,7 @@ include("relaxation.jl")
 include("diagnose.jl")
 include("holdback.jl")
 include("goals.jl")
+include("toolkit.jl")
 
 @testset "registry resolve" begin
     rp = registry.provider()

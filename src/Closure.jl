@@ -373,21 +373,28 @@ function rank_upstream!(
     ups  :: Vector{UpstreamFix{P,V}},
     info :: Dict{P,PkgInfo{P,V}},
 ) where {P,V}
-    rank(p, v) = something(findfirst(==(v), info[p].versions), typemax(Int))
+    rank_upstream!(ups, Dict{P,Vector{V}}(p => i.versions for (p, i) in info))
+end
+
+# the version lists are all this needs, so a client holding only a `Diagnosis`
+# -- which carries exactly those -- can rank with the same function
+rank_upstream!(ups::Vector{UpstreamFix{P,V}}, d::Diagnosis{P,V}) where {P,V} =
+    rank_upstream!(ups, d.versions)
+
+function rank_upstream!(
+    ups      :: Vector{UpstreamFix{P,V}},
+    versions :: AbstractDict{P,<:AbstractVector{V}},
+) where {P,V}
+    vers(p) = get(versions, p, V[])
+    rank(p, v) = something(findfirst(==(v), vers(p)), typemax(Int))
     best(p, vs) = isempty(vs) ? typemax(Int) : minimum(rank(p, v) for v in vs)
     function key(u::UpstreamFix{P,V})
         b = u.bound
         blamed = min(best(b.pkg, b.versions),
-                     best(b.dep, V[v for v in info[b.dep].versions
-                                   if v ∉ b.allowed]))
+                     best(b.dep, V[v for v in vers(b.dep) if v ∉ b.allowed]))
         got = sum(haskey(u.solution, p) ? rank(p, u.solution[p]) : 0
                   for p in (b.pkg, b.dep))
         (blamed, got, b.pkg, b.dep)
     end
     return sort!(ups; by = key)
 end
-
-rank_upstream!(ups::Vector{UpstreamFix{P,V}}, d) where {P,V} =
-    rank_upstream!(ups, Dict{P,PkgInfo{P,V}}(
-        p => PkgInfo(vs, P[], Dict{P,Int}(), falses(length(vs), 1))
-        for (p, vs) in d.versions))

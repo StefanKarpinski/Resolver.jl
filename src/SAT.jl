@@ -6,6 +6,9 @@ mutable struct SAT{P,V}
     # diagnostics (the constraints are asserted as unit clauses inside a push
     # frame, so popping it relaxes all of them at once)
     sels :: Dict{Int,Tuple{Symbol,P}}
+    # the problem those selectors came from, so a diagnosis can say what each
+    # one actually forbids; nothing for a bare structural instance
+    prob :: Union{Nothing,Problem{P}}
 end
 
 function Base.show(io::IO, sat::SAT)
@@ -274,7 +277,7 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    finalizer(finalize, SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}()))
+    finalizer(finalize, SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}(), nothing))
 end
 
 # the structural SAT instance for `info`, plus `prob`'s constraints as
@@ -307,6 +310,7 @@ function add_exclusions!(
     sat  :: SAT{P,V},
     prob :: Problem{P},
 ) where {P,V}
+    sat.prob = prob
     is_constrained(prob) || return sat
     info = sat.info
     pico = sat.pico
@@ -367,13 +371,7 @@ function add_exclusions!(
         end
     end
     # assert the selectors in a push frame of their own
-    isempty(sat.sels) && return sat
-    sat_push(sat)
-    for sel in sort!(collect(keys(sat.sels)))
-        PicoSAT.add(pico, sel)
-        PicoSAT.add(pico, 0)
-    end
-    return sat
+    return assert_selectors!(sat)
 end
 
 function finalize(sat::SAT)
@@ -459,6 +457,32 @@ function with_temp_clauses(body::Function, sat::SAT)
     try body()
     finally
         sat_pop(sat)
+    end
+end
+
+# assert the user-constraint selectors as unit clauses in a frame of their own,
+# so production solves see them at level 0 and one pop relaxes them all
+function assert_selectors!(sat::SAT)
+    isempty(sat.sels) && return sat
+    sat_push(sat)
+    for sel in sort!(collect(keys(sat.sels)))
+        PicoSAT.add(sat.pico, sel)
+        PicoSAT.add(sat.pico, 0)
+    end
+    return sat
+end
+
+# run `body` with the user constraints relaxed: popping their frame turns every
+# selector back into an ordinary variable, so assumptions can switch the
+# constraints on and off one group at a time -- which is what diagnosis does.
+# The frame is re-asserted afterwards, so an instance that has been diagnosed
+# still resolves exactly as it did before.
+function with_relaxed_selectors(body::Function, sat::SAT)
+    isempty(sat.sels) && return body()
+    sat_pop(sat)
+    try body()
+    finally
+        assert_selectors!(sat)
     end
 end
 

@@ -29,7 +29,7 @@ Resolver.jl separates *what* to optimize from *how* to solve, handing the solvin
     - a version's dependencies must be present, and
     - conflicting versions cannot both be chosen.
 - Before solving, the problem is shrunk by **reachability analysis** (keeping only versions that could appear in a solution) and **redundancy elimination** (dropping versions that are strictly dominated by others).
-- The solution is optimized **lexicographically, one package at a time**, against a caller-supplied priority order — the resolver returns the unique optimal resolution that order determines (`nothing` if the requirements are unsatisfiable), and it is **Pareto-optimal**: no valid resolution is strictly better.
+- The solution is optimized **lexicographically, one package at a time**, against a caller-supplied priority order — the resolver returns the unique optimal resolution that order determines, and it is **Pareto-optimal**: no valid resolution is strictly better.
 - Because the preference order is supplied per package, different strategies — newest, oldest/downgrade, prefer-installed, keep-current — can be mixed **within a single resolve**.
 
 The core resolver in [`src/`](src/) is generic: it knows nothing about Julia versions or registries. The [`bin/resolve.jl`](bin/resolve.jl) command-line tool adapts it to Julia's real registries and can emit a `Manifest.toml`.
@@ -38,7 +38,9 @@ The core resolver in [`src/`](src/) is generic: it knows nothing about Julia ver
 
 Experimental and research-stage. Resolver.jl is a standalone package rather than a part of `Pkg`, but the core resolver is complete, and `bin/resolve.jl` resolves real projects against the General registry today — it already backs [`julia-downgrade-compat`](https://github.com/julia-actions/julia-downgrade-compat), which uses it to compute minimum-version manifests in CI.
 
-A major in-progress goal is providing much better diagnostics when a manifest is **unresolvable** (unsatisfiable). The rich theory behind SAT problems helps here: rather than a bare failure, the resolver can compute
+An **unresolvable** manifest is explained rather than merely reported. The rich theory behind SAT problems is what makes that possible: instead of a bare failure, `resolve` returns a diagnosis computed from
 
 - **MUSes (minimal unsatisfiable subsets)** — smallest sets of requirements that already conflict on their own, explaining *why* resolution failed; and
-- **MCSes (minimal correction sets)** — smallest sets of requirements whose removal would make the manifest resolvable, pointing at *what to change* to fix it.
+- **MCSes (minimal correction sets)** — smallest sets of constraints whose removal would make the manifest resolvable, pointing at *what to change* to fix it.
+
+Both are computed on the very SAT instance the resolve failed on, which takes a theorem to justify — the filter that shrank that instance ran with all of those constraints in force. See the [diagnostics guide](docs/src/diagnostics.md) and the [theory](docs/src/theory/diagnostics.md) behind it, including the granularity below which the justification provably fails.

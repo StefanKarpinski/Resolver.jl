@@ -112,8 +112,8 @@ end
 
 # grouping cannot change the answer, whatever the constraints or the ordering
 function test_collapse_invariance(data, prob; by::Function = identity)
-    @test resolve(data, prob; by, group = true) ==
-          resolve(data, prob; by, group = false)
+    @test resolve(data, prob; by, group = true, diagnose = false) ==
+          resolve(data, prob; by, group = false, diagnose = false)
 end
 
 # the constraints that split classes: forbid exactly one member of a
@@ -147,7 +147,7 @@ end
     info = test_classes(data)
     @test info[:A].classes == [1, 1, 1]
     @test info[:B].classes == [1, 1]
-    @test resolve(data, [:A, :B]) == Dict(:A => :v3, :B => :v2)
+    @test resolve(data, [:A, :B]; diagnose = false) == Dict(:A => :v3, :B => :v2)
 
     # differing dependency sets split
     data = Dict(
@@ -322,7 +322,7 @@ end
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_collapse_invariance(data, prob)
-                sol = resolve(data, prob)
+                sol = resolve(data, prob; diagnose = false)
                 sol === nothing && break
                 p = rand(collect(keys(sol)))
                 v = sol[p]
@@ -392,11 +392,11 @@ end
                 specific = pkg_info(deps, reqs) # T1 over the closure of reqs
                 compat, pins = random_constraints(m, n)
                 for prob in (Problem(reqs), Problem(reqs; compat, pins))
-                    @test resolve(all_reqs, prob) == resolve(specific, prob)
-                    @test resolve(all_reqs, prob) == resolve(data, prob)
+                    @test resolve(all_reqs, prob; diagnose = false) == resolve(specific, prob; diagnose = false)
+                    @test resolve(all_reqs, prob; diagnose = false) == resolve(data, prob; diagnose = false)
                     # the T1 artifacts are reusable: resolving does not
                     # consume them
-                    @test resolve(all_reqs, prob) == resolve(all_reqs, prob)
+                    @test resolve(all_reqs, prob; diagnose = false) == resolve(all_reqs, prob; diagnose = false)
                 end
             end
         end
@@ -416,7 +416,7 @@ end
     info = pkg_info(data)
     before = deepcopy(info)
     prob = Problem([:C]; compat = Dict(:B => [:v1]))
-    @test resolve(info, prob) == resolve(data, prob)
+    @test resolve(info, prob; diagnose = false) == resolve(data, prob; diagnose = false)
     @test info == before
     @test all(info[p].classes == before[p].classes for p in keys(info))
     # ... and preparing it explicitly yields a universe of its own

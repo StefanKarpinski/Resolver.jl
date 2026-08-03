@@ -91,14 +91,20 @@ function resolve_core(
 end
 
 """
-    resolve(data, prob::Problem; by = identity) -> Union{Dict{P,V}, Nothing}
-    resolve(data, reqs; by = identity, compat = ..., pins = ...)
+    resolve(data, prob::Problem; by = identity, diagnose = true)
+        -> Union{Dict{P,V}, Diagnosis{P,V}, Nothing}
+    resolve(data, reqs; by = identity, diagnose = true, compat = ..., pins = ...)
 
 Resolve the requirements `reqs` against the package universe described by
 `data`, returning the optimal solution as a dict mapping each needed package
-to its chosen version, or `nothing` when the requirements are not jointly
-satisfiable. The solution covers every requirement and is exactly the
+to its chosen version. The solution covers every requirement and is exactly the
 dependency closure of the requirements under its own chosen versions.
+
+When the requirements are not jointly satisfiable the result is a
+[`Diagnosis`](@ref) — the independent conflicts, the facts that tell each one's
+story, and a menu of verified fixes — which `show` renders as a report. Pass
+`diagnose = false` to skip computing it and get `nothing` instead, which is all
+a caller that only wants the verdict needs and costs nothing to produce.
 
 A [`Problem`](@ref) additionally constrains the admissible versions with user
 compat bounds and pins; the answer is the one the same universe with those
@@ -138,9 +144,16 @@ function resolve(
     reqs :: SetOrVec{P} = keys(sat.info);
     by   :: Function = identity, # priority ordering
     restore :: Bool = true, # restore the SAT instance's state before returning
+    diagnose :: Bool = true, # explain an unsatisfiable result
 ) where {P,V}
     sol = resolve_core(sat, reqs; by, restore)
-    sol === nothing && return nothing
+    if sol === nothing
+        # the failed check added no clauses, so the instance is still exactly
+        # the one that failed: diagnose it in place, before anything else
+        # touches it
+        diagnose || return nothing
+        return Resolver.diagnose(sat, P[p for p in reqs]; by)
+    end
     return Dict{P,V}(p => sat.info[p].versions[i] for (p, i) in sol)
 end
 
@@ -150,10 +163,12 @@ function resolve_prepared(
     info :: Dict{P,PkgInfo{P,V}},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
+    diagnose :: Bool = true,
 ) where {P,V}
     sat = SAT(info, prob)
-    # the instance is single-use, so don't bother restoring its state
-    try resolve(sat, prob.reqs; by, restore=false)
+    # the instance is single-use, so don't bother restoring its state -- but
+    # the diagnosis, if any, runs on it before it is freed
+    try resolve(sat, prob.reqs; by, restore=false, diagnose)
     finally
         finalize(sat)
     end
@@ -170,9 +185,11 @@ function resolve(
     by   :: Function = identity, # package ordering
     group :: Bool = true, # collapse interchangeable versions
     order = nothing, # version ordering
+    diagnose :: Bool = true,
 ) where {P}
     info = pkg_info(deps, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob;
+                     by, diagnose)
 end
 
 function resolve(
@@ -181,9 +198,11 @@ function resolve(
     by   :: Function = identity, # package ordering
     group :: Bool = true, # collapse interchangeable versions
     order = nothing, # version ordering
+    diagnose :: Bool = true,
 ) where {P}
     info = pkg_info(data, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob;
+                     by, diagnose)
 end
 
 # a caller-supplied info may be a reusable (or cached) T1 artifact, so this
@@ -194,8 +213,10 @@ function resolve(
     by   :: Function = identity, # package ordering
     group :: Bool = true, # collapse interchangeable versions
     order = nothing, # version ordering
+    diagnose :: Bool = true,
 ) where {P,V}
-    resolve_prepared(prepare_pkg_info(info, prob; group, order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob; group, order), prob;
+                     by, diagnose)
 end
 
 # convenience entry points: bare requirements, with the user constraints (if
@@ -209,7 +230,9 @@ resolve(
     by     :: Function = identity, # package ordering
     group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
-) where {P} = resolve(deps, Problem(reqs; compat, pins); by, group, order)
+    diagnose :: Bool = true,
+) where {P} = resolve(deps, Problem(reqs; compat, pins);
+                       by, group, order, diagnose)
 
 resolve(
     data :: AbstractDict{P,<:PkgData{P}},
@@ -219,7 +242,9 @@ resolve(
     by     :: Function = identity, # package ordering
     group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
-) where {P} = resolve(data, Problem(reqs; compat, pins); by, group, order)
+    diagnose :: Bool = true,
+) where {P} = resolve(data, Problem(reqs; compat, pins);
+                       by, group, order, diagnose)
 
 resolve(
     info :: AbstractDict{P,PkgInfo{P,V}},
@@ -229,4 +254,6 @@ resolve(
     by     :: Function = identity, # package ordering
     group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
-) where {P,V} = resolve(info, Problem(reqs; compat, pins); by, group, order)
+    diagnose :: Bool = true,
+) where {P,V} = resolve(info, Problem(reqs; compat, pins);
+                       by, group, order, diagnose)

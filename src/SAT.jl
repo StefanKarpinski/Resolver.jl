@@ -6,6 +6,14 @@ mutable struct SAT{P,V}
     # diagnostics (the constraints are asserted as unit clauses inside a push
     # frame, so popping it relaxes all of them at once)
     sels :: Dict{Int,Tuple{Symbol,P}}
+    # selector variables guarding the goal's clauses, if any. Separate from
+    # `sels` because a goal is the query's fixed ask, not one of the negotiable
+    # constraints: every probe holds these on and no fix may propose dropping
+    # one (see Goal.jl)
+    goals :: Vector{Int}
+    # the goal those clauses came from, so the descent knows which packages it
+    # has to reach and a diagnosis knows what to call them
+    goal :: Union{Nothing,Goal{P}}
     # the problem those selectors came from, so a diagnosis can say what each
     # one actually forbids; nothing for a bare structural instance
     prob :: Union{Nothing,Problem{P}}
@@ -277,7 +285,9 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    finalizer(finalize, SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}(), nothing))
+    finalizer(finalize,
+        SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}(), Int[],
+            nothing, nothing))
 end
 
 # the structural SAT instance for `info`, plus `prob`'s constraints as
@@ -296,12 +306,52 @@ end
 function SAT(
     info :: Dict{P,PkgInfo{P,V}},
     prob :: Problem{P},
+    goal :: Union{Nothing,Goal{P}} = nothing,
 ) where {P,V}
     sat = SAT(info)
-    try add_exclusions!(sat, prob)
+    try
+        goal === nothing || add_goal!(sat, goal)
+        add_exclusions!(sat, prob)
     catch
         finalize(sat)
         rethrow()
+    end
+    return sat
+end
+
+# the goal's clauses, one selector per term. A `with` term is a disjunction over
+# the versions it admits -- empty, hence unsatisfiable, when the universe has
+# none of them, which is the honest answer to "can I have a version that does
+# not exist here". A `without` term is a single negative literal, and one naming
+# a package the universe does not have is satisfied by having nothing to say.
+function add_goal!(sat::SAT{P,V}, goal::Goal{P}) where {P,V}
+    sat.goal = goal
+    info = sat.info
+    pico = sat.pico
+    _, vars, _ = sat_variables(info)
+    for (p, s) in goal.with
+        sel = PicoSAT.inc_max_var(pico)
+        push!(sat.goals, sel)
+        PicoSAT.add(pico, -sel)
+        if haskey(info, p)
+            if s === nothing
+                PicoSAT.add(pico, vars[p])
+            else
+                v_p = vars[p]
+                for (i, v) in enumerate(info[p].versions)
+                    matches_goal(v, s) && PicoSAT.add(pico, v_p + i)
+                end
+            end
+        end
+        PicoSAT.add(pico, 0)
+    end
+    for p in goal.without
+        haskey(info, p) || continue
+        sel = PicoSAT.inc_max_var(pico)
+        push!(sat.goals, sel)
+        PicoSAT.add(pico, -sel)
+        PicoSAT.add(pico, -vars[p])
+        PicoSAT.add(pico, 0)
     end
     return sat
 end
@@ -311,7 +361,7 @@ function add_exclusions!(
     prob :: Problem{P},
 ) where {P,V}
     sat.prob = prob
-    is_constrained(prob) || return sat
+    is_constrained(prob) || return assert_selectors!(sat)
     info = sat.info
     pico = sat.pico
     _, vars, lads = sat_variables(info)
@@ -460,12 +510,14 @@ function with_temp_clauses(body::Function, sat::SAT)
     end
 end
 
-# assert the user-constraint selectors as unit clauses in a frame of their own,
-# so production solves see them at level 0 and one pop relaxes them all
+# assert the user-constraint and goal selectors as unit clauses in a frame of
+# their own, so production solves see them at level 0 and one pop relaxes them
+# all. The goal's go in the same frame only so that a diagnosis can ask whether
+# a conflict *needed* the goal; every probe it runs holds them on regardless.
 function assert_selectors!(sat::SAT)
-    isempty(sat.sels) && return sat
+    isempty(sat.sels) && isempty(sat.goals) && return sat
     sat_push(sat)
-    for sel in sort!(collect(keys(sat.sels)))
+    for sel in sort!([collect(keys(sat.sels)); sat.goals])
         PicoSAT.add(sat.pico, sel)
         PicoSAT.add(sat.pico, 0)
     end
@@ -478,7 +530,7 @@ end
 # The frame is re-asserted afterwards, so an instance that has been diagnosed
 # still resolves exactly as it did before.
 function with_relaxed_selectors(body::Function, sat::SAT)
-    isempty(sat.sels) && return body()
+    isempty(sat.sels) && isempty(sat.goals) && return body()
     sat_pop(sat)
     try body()
     finally

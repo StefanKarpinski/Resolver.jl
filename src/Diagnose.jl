@@ -111,6 +111,27 @@ Bound{P,V}(pkg, versions, dep, allowed) where {P,V} =
 Bound(pkg::P, versions::Vector{V}, dep::P, allowed::Vector{V}) where {P,V} =
     Bound{P,V}(pkg, versions, dep, allowed, false)
 
+"""
+    Dependency(pkg, versions, dep, admissible)
+
+The listed `versions` of `pkg` all depend on `dep`, so choosing `pkg` at any of
+them drags `dep` in. `admissible` is true when `versions` is the subset the
+query's own constraints leave available rather than the whole list, which is
+the difference between "all versions" and "all admissible versions" in a report.
+
+This is the fact a `without` goal's story is made of: nothing conflicts with
+anything, the banned package is simply unavoidable. Only a chain of *forced*
+edges is ever emitted — a path some other version choice could route around
+explains nothing, which is what separates this from printing every dependency
+path.
+"""
+struct Dependency{P,V} <: Fact
+    pkg        :: P
+    versions   :: Vector{V}
+    dep        :: P
+    admissible :: Bool
+end
+
 fact_pkg(f::Fact) = f.pkg
 
 # value equality for facts (immutable, compared field-wise)
@@ -132,6 +153,7 @@ kind_rank(::Pin)           = 3
 kind_rank(::UserCompat)    = 4
 kind_rank(::Admission)     = 5
 kind_rank(::Bound)         = 6
+kind_rank(::Dependency)    = 7
 
 order_facts(fs::Vector{Fact}) =
     sort(fs; by = f -> (kind_rank(f), fact_pkg(f)))
@@ -160,18 +182,27 @@ struct UpstreamFix{P,V}
 end
 
 """
-    Conflict(reqs, chain, upstream)
+    Conflict(reqs, chain, upstream, goal = false)
 
 One independent reason the problem is unsatisfiable: `reqs` is a minimal set of
 requirements that cannot be satisfied together, `chain` tells the story as an
 ordered list of facts, and `upstream` lists bounds whose relaxation would
 resolve this conflict.
+
+`goal` says whether the caller's `with`/`without` ask is part of *this*
+conflict — true when `reqs` alone is satisfiable and only the goal makes it
+fail, which is what the report's header says out loud. A conflict with `goal`
+true and no `reqs` is the goal against the user's own constraints.
 """
 struct Conflict{P,V}
     reqs     :: Vector{P}
     chain    :: Vector{Fact}
     upstream :: Vector{UpstreamFix{P,V}}
+    goal     :: Bool
 end
+
+Conflict{P,V}(reqs, chain, upstream) where {P,V} =
+    Conflict{P,V}(reqs, chain, upstream, false)
 
 """
     Diagnosis(reqs, conflicts, fixes, versions)
@@ -283,18 +314,33 @@ licenses and the only one anything here asks for.
 No group is assumed implicitly: a group left out of an assumption set is
 *free*, and the solver will happily switch it off, so each caller names exactly
 the context its query means to hold.
+
+`goal` is the exception, and the only one: the goal's selector literals, which
+every probe holds on whether or not it says so. A goal is the query's fixed ask,
+so no MUS may shrink it away and no fix may propose dropping it — it is *not* a
+relaxable group, just an assumption the machinery carries.
 """
 struct Relaxation{P}
     rel  :: Vector{Relaxable{P}}
     reqs :: Vector{Int}
     user :: Vector{Int}
+    goal :: Vector{Int}
 end
 
+Relaxation{P}(rel, reqs, user) where {P} = Relaxation{P}(rel, reqs, user, Int[])
+
 # switch exactly the given groups on and test satisfiability; everything else is
-# free, and the solver may set it false
-function relax_sat(sat::SAT, R::Relaxation, on)
+# free, and the solver may set it false. The goal rides along unless a caller
+# explicitly asks what happens without it — which is how a conflict is told to
+# be the goal's doing rather than the requirements'.
+function relax_sat(sat::SAT, R::Relaxation, on; goal::Bool = true)
     for i in on, l in R.rel[i].lits
         sat_assume_var(sat, l)
+    end
+    if goal
+        for l in R.goal
+            sat_assume_var(sat, l)
+        end
     end
     is_satisfiable(sat)
 end
@@ -370,7 +416,14 @@ function fix_solution(
                 sat_add(sat)
             end
         end
-        sol = resolve_core(sat, sort!(reqs); by, restore = false)
+        # the goal holds over the fix's own resolve, so the witness is a
+        # solution the caller would actually accept
+        for l in R.goal
+            sat_add_var(sat, l)
+            sat_add(sat)
+        end
+        sol = resolve_core(sat, descent_roots(sat, sort!(reqs)); by,
+                           restore = false)
         sol === nothing ? Dict{P,V}() :
             Dict{P,V}(p => sat.info[p].versions[i] for (p, i) in sol)
     end
@@ -492,7 +545,7 @@ function relaxation(sat::SAT{P,V}, reqs::AbstractVector{P}) where {P,V}
         push!(rel, Relaxable{P}(:user, p, sort!(bypkg[p])))
         push!(uids, length(rel))
     end
-    return Relaxation{P}(rel, rids, uids)
+    return Relaxation{P}(rel, rids, uids, copy(sat.goals))
 end
 
 """
@@ -511,6 +564,7 @@ function diagnose(
     by   :: Function = identity,
     max_fixes :: Integer = 8,
 ) where {P,V}
+    goal = sat.goal
     # a requirement the filter dropped has no installable version at all, so it
     # is not in the instance and cannot be reasoned about there: it is its own
     # conflict, and every fix has to drop it
@@ -528,8 +582,18 @@ function diagnose(
         prob = something(sat.prob, Problem(P[]))
         # the whole-column group of each constrained package, for story facts
         bygroup = Dict{P,Int}(rel[i].pkg => i for i in R.user)
-        for cluster in cluster_reqs(sat, R, R.reqs)
+        clusters = cluster_reqs(sat, R, R.reqs)
+        # a goal can be unsatisfiable against the user's own constraints with no
+        # requirement involved at all, and requirement-level clustering has
+        # nothing to return for that: one conflict, no reqs, the goal's story
+        isempty(clusters) && !isempty(R.goal) && push!(clusters, Int[])
+        for cluster in clusters
             creqs = sort!(P[rel[i].pkg for i in cluster])
+            # did this conflict need the goal? with the goal off the same
+            # assumptions are satisfiable exactly when the goal is what breaks
+            # them -- the one thing the report's header turns on
+            ingoal = !isempty(R.goal) &&
+                relax_sat(sat, R, Int[cluster; R.user]; goal = false)
             # Phase B: which package-pair incompatibilities tell this story,
             # and which single upstream release would end it. Third-party
             # bounds are hard clauses here -- no selector overhead on the hot
@@ -537,7 +601,8 @@ function diagnose(
             # which also lets it shrink the user groups in the right order:
             # bounds first, so the actionable explanation survives
             bfacts, ups, kept = bound_story(
-                sat.info, prob, creqs, P[rel[i].pkg for i in R.user], by)
+                sat.info, prob, creqs, P[rel[i].pkg for i in R.user], by;
+                goal = ingoal ? goal : nothing)
             if kept === nothing
                 # the closure was too big to explore: shrink the columns
                 # against the production instance instead, without the bias
@@ -567,8 +632,14 @@ function diagnose(
                 append!(facts, group_facts(sat, rel[i]))
             end
             append!(facts, bfacts)
-            push!(conflicts,
-                  Conflict{P,V}(creqs, order_chain(facts, P, V), ups))
+            chain = order_chain(facts, P, V)
+            # a `without` goal's story is a chain of forced dependencies, not
+            # of incompatible pairs: nothing conflicts with anything, the
+            # package is simply unavoidable. It is already in story order, so
+            # it goes on the end rather than through `order_chain`
+            ingoal &&
+                append!(chain, forced_chain(sat.info, prob, creqs, goal))
+            push!(conflicts, Conflict{P,V}(creqs, chain, ups, ingoal))
         end
         order = Int[R.reqs; R.user]
         fixes = enumerate_fixes(sat, R, order, forced; max_fixes, by,
@@ -581,12 +652,62 @@ function diagnose(
             (vers[p] = copy(sat.info[p].versions))
         for c in conflicts, f in c.chain
             record(fact_pkg(f))
-            f isa Bound && record(f.dep)
+            f isa Union{Bound,Dependency} && record(f.dep)
         end
         fixes, vers
     end
     sort!(conflicts; by = c -> c.reqs)
     return Diagnosis{P,V}(sort!(collect(reqs)), conflicts, fixes, versions)
+end
+
+# One forcing chain from the requirements to a package a `without` goal bans:
+# a breadth-first walk over edges every admissible version of a package has, so
+# each step is "there is no version of this that does without it". Read off the
+# dependency columns, so it costs no solve and cannot be wrong — and when no
+# fully forced path exists it returns nothing at all, which is honest: the
+# package is avoidable somewhere along the way and the conflict is elsewhere.
+function forced_chain(
+    info  :: Dict{P,PkgInfo{P,V}},
+    prob  :: Problem{P},
+    creqs :: Vector{P},
+    goal  :: Union{Nothing,Goal{P}},
+) where {P,V}
+    (goal === nothing || isempty(goal.without)) && return Fact[]
+    banned = Set{P}(goal.without)
+    from = Dict{P,Dependency{P,V}}()
+    seen = Set{P}(creqs)
+    queue = copy(creqs)
+    target = nothing
+    while target === nothing && !isempty(queue)
+        p = popfirst!(queue)
+        haskey(info, p) || continue
+        info_p = info[p]
+        vers = info_p.versions
+        live = Int[i for (i, v) in enumerate(vers)
+                   if !is_excluded(prob, p, v)]
+        isempty(live) && continue
+        for (j, q) in enumerate(info_p.depends)
+            q ∈ seen && continue
+            all(info_p.conflicts[i, j] for i in live) || continue
+            push!(seen, q)
+            from[q] = Dependency{P,V}(p, V[vers[i] for i in live], q,
+                                      length(live) < length(vers))
+            if q ∈ banned
+                target = q
+                break
+            end
+            push!(queue, q)
+        end
+    end
+    target === nothing && return Fact[]
+    chain = Fact[]
+    q = target
+    while haskey(from, q)
+        f = from[q]
+        push!(chain, f)
+        q = f.pkg
+    end
+    return reverse!(chain)
 end
 
 """
@@ -666,6 +787,21 @@ end
 # rendering a fact needs the package's version list and nothing else
 versions_of(d, p) = get(d.versions, p, valtype(d.versions)())
 
+"""
+    render_fact(io, f::Fact, d)
+
+Write one story bullet's sentence for `f` — "you require A", "your compat
+restricts B to 1.7", "A (all versions) works with C only at 1". `d` is whatever
+carries the version lists to compress against: a [`Diagnosis`](@ref) or a
+[`Holdback`](@ref).
+
+One method per `Fact` kind, and the sentence layer of the default report. A
+client that wants these sentences under its own layout — Pkg's indentation, its
+own terminal markup — calls this per fact instead of
+[`report`](@ref Resolver.report); a client that wants its own sentences reads
+the `Fact` fields (`pkg`, `versions`, `dep`, `allowed`, `incidental`, …), which
+are everything the sentence is generated from.
+"""
 render_fact(io::IO, f::Requirement, d) =
     print(io, "you require ", f.pkg)
 render_fact(io::IO, f::Uninstallable, d) =
@@ -716,6 +852,22 @@ function render_fact(io::IO, f::Bound, d)
           format_versions(versions_of(d, f.dep), f.allowed))
 end
 
+function render_fact(io::IO, f::Dependency, d)
+    all_p = versions_of(d, f.pkg)
+    src = length(f.versions) == length(all_p) ? "(all versions)" :
+          f.admissible ? "(all admissible versions)" :
+          format_versions(all_p, f.versions)
+    print(io, f.pkg, " ", src, " requires ", f.dep)
+end
+
+"""
+    render_action(f::Fact) :: String
+
+The imperative form of relaxing `f`, as a fix's menu line reads it: "drop
+requirement A", "relax your compat on B", "unpin C", "allow prereleases of D".
+The counterpart of [`blame_phrase`](@ref Resolver.blame_phrase), which is the
+same fact as a noun.
+"""
 render_action(f::Requirement) = string("drop requirement ", f.pkg)
 render_action(f::UserCompat)  =
     f.label === :requested ? string("relax the version you requested for ", f.pkg) :
@@ -746,7 +898,7 @@ function story_pkgs(d::Diagnosis{P,V}) where {P,V}
     rel = Set{P}()
     for c in d.conflicts, f in c.chain
         push!(rel, fact_pkg(f))
-        f isa Bound && push!(rel, f.dep)
+        f isa Union{Bound,Dependency} && push!(rel, f.dep)
     end
     return rel
 end
@@ -786,6 +938,18 @@ function Base.show(io::IO, d::Diagnosis)
     print(io, "Diagnosis(", summary_counts(d), ")")
 end
 
+# "A, B cannot be satisfied together." -- and with the caller's `with`/`without`
+# ask in the conflict, "the goal and A". The goal is named rather than spelled
+# out: what it asked for is the one thing the caller already knows.
+function conflict_header(c::Conflict)
+    isempty(c.reqs) && !c.goal && return "the requirements cannot be satisfied."
+    isempty(c.reqs) && return "the goal cannot be satisfied."
+    rs = join(c.reqs, ", ")
+    c.goal && return string("the goal and ", rs, " cannot be satisfied together.")
+    string(rs, length(c.reqs) == 1 ? " cannot be satisfied." :
+               " cannot be satisfied together.")
+end
+
 # "1 conflict, 2 fixes" -- the shape of the answer, for either show
 function summary_counts(d::Diagnosis)
     nc = length(d.conflicts)
@@ -802,10 +966,7 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
             isempty(d.conflicts) ? "" : ":")
     for (n, c) in enumerate(d.conflicts)
         n > 1 && println(io)
-        rs = join(c.reqs, ", ")
-        println(io, "Conflict ", n, ": ", rs,
-                length(c.reqs) == 1 ? " cannot be satisfied." :
-                " cannot be satisfied together.")
+        println(io, "Conflict ", n, ": ", conflict_header(c))
         for f in c.chain
             f isa Bound && f.incidental && continue
             print(io, "  • ")
@@ -850,6 +1011,7 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
             " not shown)")
     end
 end
+
 
 # How many upstream suggestions a report prints. A tangled conflict can produce
 # a dozen, all true and most useless -- ten for one real project -- and

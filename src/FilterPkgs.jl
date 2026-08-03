@@ -68,6 +68,7 @@ function class_representatives(
     info  :: AbstractDict{P, PkgInfo{P,V}},
     prob  :: Problem{P} = Problem(P[]),
     perms :: Union{Nothing, AbstractDict{P, Vector{Int}}} = nothing,
+    named :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
 ) where {P,V}
     excl = exclusion_masks(info, prob)
     keep = Dict{P,BitVector}()
@@ -90,6 +91,11 @@ function class_representatives(
             seen[c] = true
             k[i] = true
         end
+        # a version some query names by *value* -- a `pkg => version` goal --
+        # has to survive as itself: its class siblings answer every constraint
+        # the same way, but they are not the version that was asked for
+        n = get(named, p, nothing)
+        n === nothing || (k .|= n)
         keep[p] = k
     end
     return keep
@@ -248,7 +254,8 @@ filter_pkg_info!(
 
 function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
-    prob :: Problem{P},
+    prob :: Problem{P};
+    reach :: Bool = true, # false: keep every route a goal might need
 ) where {P,V}
     reqs = prob.reqs
     # user constraints enter as the exclusion masks of the virtual package
@@ -275,7 +282,18 @@ function filter_pkg_info!(
     # can satisfy those — so the requirements remain valid across rounds.
     # rounds strictly shrink the total version count, so the loop
     # terminates
+    #
+    # `reach = false` runs only the arc-consistency pass: reachability and
+    # redundancy both preserve the *optimal* answer, which is a weaker thing
+    # than preserving the answer to an arbitrary goal, and either can delete
+    # the only version of a package that avoids (or reaches) the one a goal is
+    # about. Arc consistency deletes only versions no model contains at all,
+    # which can witness no goal either.
     mark_installable!(info)
+    if !reach
+        drop_unmarked!(info)
+        return info
+    end
     mark_necessary!(info, excl)
     drop_unmarked!(info)
     while true

@@ -25,6 +25,17 @@ Resolver.Admission
 Resolver.Bound
 ```
 
+## Explaining a surprising success
+
+A resolve can succeed and still leave a package below the best version its
+universe admits. [`holdbacks`](@ref Resolver.holdbacks) says what held it there.
+
+```@docs
+Resolver.holdbacks
+Holdback
+Resolver.Holdbacks
+```
+
 ## Internals
 
 ```@docs

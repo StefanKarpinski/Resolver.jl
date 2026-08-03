@@ -662,13 +662,15 @@ end
 
 # the version list to compress against; a package the diagnosis never recorded
 # (possible only for hand-built facts) falls back to the subset itself
-versions_of(d::Diagnosis{P,V}, p::P) where {P,V} = get(d.versions, p, V[])
+# `d` is anything carrying a `versions` table -- a `Diagnosis` or a `Holdback`;
+# rendering a fact needs the package's version list and nothing else
+versions_of(d, p) = get(d.versions, p, valtype(d.versions)())
 
-render_fact(io::IO, f::Requirement, d::Diagnosis) =
+render_fact(io::IO, f::Requirement, d) =
     print(io, "you require ", f.pkg)
-render_fact(io::IO, f::Uninstallable, d::Diagnosis) =
+render_fact(io::IO, f::Uninstallable, d) =
     print(io, "no version of ", f.pkg, " is installable")
-function render_fact(io::IO, f::UserCompat, d::Diagnosis)
+function render_fact(io::IO, f::UserCompat, d)
     vers = format_versions(versions_of(d, f.pkg), f.allowed)
     f.label === :requested ?
         print(io, "you requested ", f.pkg, " at ", vers) :
@@ -676,11 +678,11 @@ function render_fact(io::IO, f::UserCompat, d::Diagnosis)
         print(io, "your compat restricts ", f.pkg, " to ", vers) :
         print(io, f.label, " restricts ", f.pkg, " to ", vers)
 end
-render_fact(io::IO, f::Pin, d::Diagnosis) =
+render_fact(io::IO, f::Pin, d) =
     print(io, f.pkg, " is pinned at ", f.version)
 # admission knobs get a sentence apiece where one reads better than the
 # generic phrasing; an unknown kind still renders sensibly
-function render_fact(io::IO, f::Admission, d::Diagnosis)
+function render_fact(io::IO, f::Admission, d)
     whole = versions_of(d, f.pkg)
     n = length(f.forbidden)
     # "all versions" is what `format_versions` says when the set is everything,
@@ -706,7 +708,7 @@ function render_fact(io::IO, f::Admission, d::Diagnosis)
               " are not allowed (", vers, ")")
     end
 end
-function render_fact(io::IO, f::Bound, d::Diagnosis)
+function render_fact(io::IO, f::Bound, d)
     all_p = versions_of(d, f.pkg)
     src = length(f.versions) == length(all_p) ? "(all versions)" :
           format_versions(all_p, f.versions)

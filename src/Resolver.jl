@@ -1,6 +1,6 @@
 module Resolver
 
-export resolve, Problem, Diagnosis
+export resolve, Problem, Diagnosis, Holdback, holdbacks
 
 include("BitKernels.jl")
 include("DepsProvider.jl")
@@ -13,5 +13,6 @@ include("SAT.jl")
 include("Diagnose.jl")
 include("Resolve.jl")
 include("Closure.jl")
+include("Holdback.jl")
 
 end # module

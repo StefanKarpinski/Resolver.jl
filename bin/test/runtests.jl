@@ -594,6 +594,89 @@ end
     end
 end
 
+@testset "holdback diagnostics (bin/resolve.jl)" begin
+    # A resolution that *succeeded* and still surprises: a user compat bound on
+    # a non-upgradable stdlib steers the julia choice, so a stale
+    # `LinearAlgebra = "~1.10"` quietly pins the toolchain to julia 1.10 even
+    # though the project asks only for julia 1.6+. julia is explained without
+    # being asked, because that is the surprise nobody went looking for.
+    julia = Base.julia_cmd()[1]
+    dir = mktempdir()
+    write(joinpath(dir, "Project.toml"), """
+        [deps]
+        JSON = "$JSON"
+        LinearAlgebra = "$LINEAR_ALGEBRA"
+
+        [compat]
+        julia = "1.6"
+        LinearAlgebra = "~1.10"
+        JSON = "0.21"
+        """)
+
+    out = IOBuffer(); err = IOBuffer()
+    cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions`
+    @test success(pipeline(cmd; stdout = out, stderr = err))
+    note = String(take!(err))
+    vers = Dict{UUID,VersionNumber}()
+    for line in eachline(seekstart(out))
+        m = match(r"^(\S{36})\s+\S+\s+(\S+)", line)
+        isnothing(m) || (vers[UUID(m[1])] = VersionNumber(m[2]))
+    end
+    # the surprise itself, and the note naming its cause
+    @test vers[JULIA_UUID] < v"1.11"
+    @test occursin("Note: julia is held back to $(vers[JULIA_UUID])", note)
+    @test occursin("by your compat on LinearAlgebra", note)
+    m = match(r"relaxing it allows julia (\S+)", note)
+    @test m !== nothing
+    promised = VersionNumber(rstrip(m[1], '.'))
+    @test promised > vers[JULIA_UUID]
+    # ... and the promise is kept: dropping the bound really does get you that
+    same = mktempdir()
+    write(joinpath(same, "Project.toml"), """
+        [deps]
+        JSON = "$JSON"
+        LinearAlgebra = "$LINEAR_ALGEBRA"
+
+        [compat]
+        julia = "1.6"
+        JSON = "0.21"
+        """)
+    out2 = IOBuffer()
+    cmd2 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $same --print-versions`
+    @test success(pipeline(cmd2; stdout = out2, stderr = devnull))
+    got = nothing
+    for line in eachline(seekstart(out2))
+        m2 = match(r"^(\S{36})\s+\S+\s+(\S+)", line)
+        isnothing(m2) || UUID(m2[1]) != JULIA_UUID ||
+            (got = VersionNumber(m2[2]))
+    end
+    @test got == promised
+
+    # `--why` asks for the reasoning, and for the other packages too
+    err3 = IOBuffer()
+    cmd3 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions --why`
+    @test success(pipeline(cmd3; stdout = devnull, stderr = err3))
+    why = String(take!(err3))
+    @test occursin("julia resolved to $(vers[JULIA_UUID])", why)
+    @test occursin("your compat restricts LinearAlgebra", why)
+    @test occursin(r"julia \S+ works with LinearAlgebra only at", why)
+    @test occursin("⇒ held back by your compat on LinearAlgebra.", why)
+    @test occursin("relax your compat on LinearAlgebra → allows: julia", why)
+    # JSON is held back by its own bound, and only `--why` mentions it
+    @test occursin("JSON resolved to", why)
+    @test !occursin("JSON resolved to", note)
+    # bare `--why` covers everything, so the probe budget bites -- and says so
+    # rather than quietly reporting a partial answer
+    @test occursin(r"\(\d+ more packages? resolved below their best version, not examined\)",
+                   why)
+
+    # a project with nothing stale says nothing
+    err4 = IOBuffer()
+    cmd4 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $same --print-versions`
+    @test success(pipeline(cmd4; stdout = devnull, stderr = err4))
+    @test !occursin("held back", String(take!(err4)))
+end
+
 @testset "unsat diagnostics (bin/resolve.jl)" begin
     # bin/resolve.jl diagnoses an unsatisfiable resolve automatically: the
     # report comes back from `resolve` itself, so all the script does is

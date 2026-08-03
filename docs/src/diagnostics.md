@@ -171,6 +171,63 @@ a problem reaches the resolver's instance which side declared a bound is no
 longer recoverable; and per-declaration relaxation is not
 [column-closed](theory/diagnostics.md#Relaxation-stability) either.
 
+## When the resolve *succeeds* and still surprises
+
+A resolution can be correct and still not be what you expected. A user compat
+bound on a non-upgradable stdlib steers the julia choice — a julia release is
+compatible with exactly the stdlib versions it bundles — so a leftover
+`LinearAlgebra = "~1.10"` quietly pins the whole toolchain to julia 1.10, and
+nothing in a successful resolve says so.
+
+[`holdbacks`](@ref Resolver.holdbacks) explains that:
+
+```julia
+info = prepare_pkg_info(pkg_info(data, prob), prob)
+sol  = resolve_prepared(info, prob)
+for h in holdbacks(info, prob, sol, ["julia"])
+    show(stdout, MIME("text/plain"), h)
+end
+```
+
+```
+julia resolved to 1.10.11; 1.12.6 is available.
+  • you require LinearAlgebra
+  • your compat restricts LinearAlgebra to 1.10.0–1.10.11
+  • julia 1.12.6 works with LinearAlgebra only at 1.12.0
+  ⇒ held back by your compat on LinearAlgebra.
+  relax your compat on LinearAlgebra → allows: julia 1.12.6, LinearAlgebra 1.12.0
+```
+
+It is the satisfiable-side sibling of everything above, and reuses it: assume
+the better version on the instance, get an unsatisfiable answer, and the same
+biased group-MUS names the responsible constraints. The fix is verified by the
+same optimizing descent, so its versions are the ones you would really get —
+`Resolver.summarize` gives the same thing as one line.
+
+Three things it will not do. It does not report a package whose version is
+merely what the priority order settled on — if the better version was feasible
+all along there is no constraint to blame, and inventing one would be worse
+than silence. It measures "best" against the versions the problem *admits*, not
+against the raw universe: a prerelease this query would never accept is not an
+option being missed, and advertising it would bury the bound that is the real
+story. And when nothing the user set is to blame — the version is held back by a
+bound only an upstream release could move — it says `nothing you can change
+would move it` rather than manufacturing a fix.
+
+From the command line, `bin/resolve.jl` explains julia automatically whenever
+it lands below its best admissible version — that is the surprise nobody went
+looking for — as a single note:
+
+```
+Note: julia is held back to 1.10.11 by your compat on LinearAlgebra; relaxing it allows julia 1.12.6.
+```
+
+`--why` gives the reasoning for everything that landed below its best version,
+and `--why=<pkgs>` for named packages. Explaining one costs several solves, so
+`max_probes` bounds how many are probed; the result carries how many candidates
+that left over and the report ends with `(N more packages resolved below their
+best version, not examined)` rather than quietly showing a partial answer.
+
 ## Why this is trustworthy
 
 The diagnosis runs on the very SAT instance the resolve failed on — the

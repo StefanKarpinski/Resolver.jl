@@ -21,6 +21,9 @@ usage: $PROGRAM_FILE [options] [<project path>]
 
   --allow-pre[=<pkgs>]    allow prerelease versions
   --allow-yanked[=<pkgs>] allow yanked versions
+  --why[=<pkgs>]          explain packages that resolved below their newest
+                          version, all of them if given no list (julia is
+                          explained automatically)
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
 
@@ -51,7 +54,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia allow-pre allow-yanked extra-deps prioritize
+    julia allow-pre allow-yanked extra-deps prioritize why
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -500,8 +503,11 @@ const problem = Problem(reqs;
     excludes = [prerelease_exclusion(allow_pre)],
 )
 
-pkg_info = Resolver.pkg_info(reg, problem)
-sol = resolve(pkg_info, problem; by=sort_packages_by, order=version_order)
+# prepared explicitly rather than through `resolve`, because the holdback
+# explanations below want the same universe the solution came from
+pkg_info = Resolver.prepare_pkg_info(
+    Resolver.pkg_info(reg, problem), problem; order=version_order)
+sol = Resolver.resolve_prepared(pkg_info, problem; by=sort_packages_by)
 
 # Yanked versions were left out of the universe, so a bound that admits only
 # yanked ones reads as admitting nothing at all -- "no versions", where the real
@@ -548,6 +554,55 @@ if sol isa Diagnosis
     println(stderr, "Unresolvable. Diagnosis:\n")
     println(stderr, report)
     exit(1)
+end
+
+## explain a resolution that succeeded and may still surprise
+
+# A user compat bound on a non-upgradable stdlib steers the julia choice, so a
+# stale `LinearAlgebra = "~1.10"` quietly pins the whole toolchain to julia 1.10
+# -- correctly, and until now without a word. julia is explained whenever it did
+# not land on its newest admissible version, because that is the surprise nobody
+# asked for; `--why` covers the rest, which nobody needs by default.
+const why_pkgs = Set{UUID}((JULIA_UUID,))
+const asked_why = Ref(false)
+const why_all = Ref(false)
+
+handle_opts(:why) do val::Union{String,Nothing}
+    asked_why[] = true
+    # bare `--why` means "everything that landed below its best version"; the
+    # probe budget bounds the cost, and the report says when it stopped short
+    isnothing(val) ? (why_all[] = true) : union!(why_pkgs, parse_packages(val))
+end
+
+let hs = Resolver.holdbacks(pkg_info, problem, sol,
+                            why_all[] ? keys(sol) :
+                                [u for u in why_pkgs if haskey(sol, u)];
+                            by = sort_packages_by)
+    names = Dict{String,String}(string(JULIA_UUID) => "julia")
+    for (u, entries) in packages, entry in entries
+        names[string(u)] = entry.name
+    end
+    for (_v, stdlib_set) in STDLIBS_BY_VERSION, (u, info) in stdlib_set
+        names[string(u)] = info.name
+    end
+    for (u, info) in UNREGISTERED_STDLIBS
+        names[string(u)] = info.name
+    end
+    uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    named(s) = replace(s, uuid_re => m -> get(names, m, m))
+    for h in hs
+        # an unasked-for note stays to one line; what the user asked about gets
+        # the reasoning
+        if asked_why[]
+            print(stderr, named(sprint(show, MIME("text/plain"), h)))
+        else
+            println(stderr, "Note: ", named(Resolver.summarize(h)), ".")
+        end
+    end
+    # explaining a package costs solves, so the probe budget is real -- say
+    # when it stopped short rather than quietly reporting a partial answer
+    asked_why[] &&
+        print(stderr, sprint(Resolver.render_unexamined, hs))
 end
 
 ## output results

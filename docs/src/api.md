@@ -27,6 +27,28 @@ Resolver.Bound
 Resolver.Dependency
 ```
 
+## Rendering a report yourself
+
+The `Diagnosis` retains everything; every opinionated choice in the default
+output is a documented function, with `show` as merely its first client. See
+the [guide](diagnostics.md#Rendering-your-own-reports).
+
+```@docs
+report
+Resolver.render_fact
+Resolver.render_action
+Resolver.blame_phrase
+Resolver.rank_upstream!
+Resolver.superseded
+```
+
+## Comparing solutions
+
+```@docs
+changes
+Resolver.Change
+```
+
 ## Explaining a surprising success
 
 A resolve can succeed and still leave a package below the best version its
@@ -53,6 +75,4 @@ Resolver.Goal
 Resolver.diagnose
 Resolver.Relaxation
 Resolver.bound_story
-Resolver.rank_upstream!
-Resolver.superseded
 ```

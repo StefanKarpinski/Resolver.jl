@@ -619,12 +619,10 @@ function diagnose(
                 f isa Bound && push!(told, f.dep)
             end
             facts = Fact[Requirement(p) for p in creqs]
-            # A package the story already blames shows every source that rules a
-            # version of it out, the firm ones included: "the version that would
-            # have worked is yanked" explains something, it just cannot be
-            # offered as a fix. A package the story does *not* mention shows
-            # nothing -- there are plenty of yanked versions in a registry and
-            # none of them are news. Emitted once per package, since
+            # A package the story already blames shows every source that rules
+            # a version of it out -- a prerelease ban explains something even
+            # where relaxing it is not the fix on offer. A package the story
+            # does *not* mention shows nothing. Emitted once per package, since
             # `group_facts` enumerates all of a package's sources at once.
             for p in sort!(collect(told))
                 i = get(bygroup, p, 0)
@@ -958,24 +956,66 @@ function summary_counts(d::Diagnosis)
            nf, nf == 1 ? " fix" : " fixes")
 end
 
-# full report. It opens by saying what it is: a `Diagnosis` *is* the answer
-# `resolve` gives to requirements it cannot satisfy, so one showing up at the
-# REPL has to read as that answer and not as a stray object.
-function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
+"""
+    report(io, d::Diagnosis; max_upstream = 3, demote_incidental = true,
+                             trim_witnesses = true, labels = nothing)
+
+Render `d` as the report `show` prints, with the opinionated parts turned into
+arguments. `show(io, MIME("text/plain"), d)` is `report(io, d)` and nothing
+else, so every default here is a documented choice rather than a hidden one.
+
+  * `max_upstream` — how many upstream suggestions to print before the
+    "(N more …)" line. They are ranked (see
+    [`rank_upstream!`](@ref Resolver.rank_upstream!)), so the tail is the least
+    plausible; `typemax(Int)` prints all of them.
+  * `demote_incidental` — fold the [`Bound`](@ref Resolver.Bound)s whose
+    `incidental` flag is set into the one-line "(likewise for …)" aside instead
+    of giving each a bullet. They are needed for the conflict to be *minimal*
+    but they only close off versions the query already excludes.
+  * `trim_witnesses` — restrict each "→ allows:" line to the requirements and
+    the packages some story names. A verified solution is the whole transitive
+    closure; the contested packages are what a fix meaningfully changes, and
+    the complete assignment is on `Fix.solution` either way.
+  * `labels` — override the source wording per package, as
+    [`Problem`](@ref)'s `labels` does at diagnosis time: `:requested` reads
+    "you requested X at 1.7", `:compat` (the default) "your compat restricts X
+    to 1.7". Unknown labels render neutrally. Pass this when the wording is a
+    property of the caller rather than of the problem.
+
+A client that wants a different layout entirely builds it from the structured
+`Diagnosis` with the same sentence helpers this uses —
+[`render_fact`](@ref Resolver.render_fact),
+[`render_action`](@ref Resolver.render_action) and
+[`blame_phrase`](@ref Resolver.blame_phrase) — or reads the `Fact` fields and
+writes its own sentences.
+"""
+function report(
+    io :: IO,
+    d  :: Diagnosis;
+    max_upstream :: Integer = MAX_UPSTREAM_SHOWN,
+    demote_incidental :: Bool = true,
+    trim_witnesses :: Bool = true,
+    labels = nothing,
+)
+    lab(f) = relabel(f, labels)
+    sol_str(sol) = trim_witnesses ? render_solution(d, sol) :
+        (isempty(sol) ? "nothing" :
+         join((string(p, " ", sol[p]) for p in sort!(collect(keys(sol)))), ", "))
     println(io, "Unsatisfiable — ", summary_counts(d),
             isempty(d.conflicts) ? "" : ":")
     for (n, c) in enumerate(d.conflicts)
         n > 1 && println(io)
         println(io, "Conflict ", n, ": ", conflict_header(c))
         for f in c.chain
-            f isa Bound && f.incidental && continue
+            demote_incidental && f isa Bound && f.incidental && continue
             print(io, "  • ")
-            render_fact(io, f, d)
+            render_fact(io, lab(f), d)
             println(io)
         end
         # the facts that only close off versions the query already excludes:
         # one summary line per package, rather than a bullet apiece competing
         # with the lines that name versions the reader could actually get
+        demote_incidental || continue
         for (p, vs) in incidental_versions(c)
             println(io, "    (likewise for ", p, " ",
                     format_versions(versions_of(d, p), vs),
@@ -988,8 +1028,8 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
         println(io, "Verified fixes:")
         for (n, fix) in enumerate(d.fixes)
             println(io, "  ", n, ". ",
-                    join(map(render_action, fix.actions), " and "))
-            println(io, "     → allows: ", render_solution(d, fix.solution))
+                    join(map(render_action ∘ lab, fix.actions), " and "))
+            println(io, "     → allows: ", sol_str(fix.solution))
         end
     elseif !isempty(d.conflicts)
         println(io)
@@ -1000,21 +1040,79 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
     if !isempty(ups)
         println(io)
         println(io, "Upstream fixes:")
-        for u in Iterators.take(ups, MAX_UPSTREAM_SHOWN)
+        for u in Iterators.take(ups, max_upstream)
             println(io, "  • a release of ", u.bound.pkg, " or ", u.bound.dep,
                     " relaxing their compat on each other")
-            println(io, "    → allows: ", render_solution(d, u.solution))
+            println(io, "    → allows: ", sol_str(u.solution))
         end
-        extra = length(ups) - MAX_UPSTREAM_SHOWN
+        extra = length(ups) - max_upstream
         extra > 0 && println(io, "  (", extra,
             " more possible upstream fix", extra == 1 ? "" : "es",
             " not shown)")
     end
 end
 
+# a report-time `labels` override, applied to the one fact kind that carries a
+# source flavour; everything else passes through untouched
+relabel(f::Fact, labels) = f
+relabel(f::UserCompat{P,V}, labels::AbstractDict) where {P,V} =
+    haskey(labels, f.pkg) ?
+        UserCompat{P,V}(f.pkg, f.allowed, Symbol(labels[f.pkg])) : f
+relabel(f::UserCompat, ::Nothing) = f
+
+# full report. It opens by saying what it is: a `Diagnosis` *is* the answer
+# `resolve` gives to requirements it cannot satisfy, so one showing up at the
+# REPL has to read as that answer and not as a stray object.
+Base.show(io::IO, ::MIME"text/plain", d::Diagnosis) = report(io, d)
 
 # How many upstream suggestions a report prints. A tangled conflict can produce
 # a dozen, all true and most useless -- ten for one real project -- and
 # they are ranked (see `rank_upstream!`), so the tail is the least plausible.
 # The structured `Diagnosis` keeps every one of them.
 const MAX_UPSTREAM_SHOWN = 3
+
+## solution diffs
+
+"""
+    Change(pkg, from, to)
+
+One package's difference between two solutions: `from` is `nothing` when the
+package is new, `to` is `nothing` when it is gone, and otherwise both are
+versions and they differ.
+"""
+struct Change{P,V}
+    pkg  :: P
+    from :: Union{Nothing,V}
+    to   :: Union{Nothing,V}
+end
+
+function Base.show(io::IO, c::Change)
+    c.from === nothing && return print(io, c.pkg, " ", c.to, " added")
+    c.to === nothing && return print(io, c.pkg, " ", c.from, " removed")
+    print(io, c.pkg, " ", c.from, " → ", c.to)
+end
+
+"""
+    changes(sol₁, sol₂) :: Vector{Change}
+
+What `sol₂` does differently from `sol₁`, one [`Change`](@ref Resolver.Change)
+per package that moved, appeared or disappeared, sorted by package.
+
+This is how a feasible goal query gets its price tag: `resolve` answers
+`without = "TranscodingStreams"` with a `Dict` rather than a complaint, and the
+"avoidable, but it costs you CSV 0.10.15 → 0.5.26" rendering is this diff
+against the plain resolve. Both solutions are the caller's already; nothing
+here needs the resolver.
+"""
+function changes(
+    a :: AbstractDict{P,V},
+    b :: AbstractDict{P,V},
+) where {P,V}
+    out = Change{P,V}[]
+    for p in sort!(collect(union(keys(a), keys(b))))
+        u = get(a, p, nothing)
+        w = get(b, p, nothing)
+        u == w || push!(out, Change{P,V}(p, u, w))
+    end
+    return out
+end

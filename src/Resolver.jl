@@ -1,6 +1,6 @@
 module Resolver
 
-export resolve, issatisfiable,
+export resolve, issatisfiable, report, changes,
     Problem, Diagnosis, Holdback, holdbacks
 
 include("BitKernels.jl")

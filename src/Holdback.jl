@@ -324,7 +324,14 @@ function Base.show(io::IO, ::MIME"text/plain", h::Holdback)
             " → allows: ", holdback_solution(h))
 end
 
-# "your compat on Statistics", the noun form of the action a fix would take
+"""
+    blame_phrase(f::Fact) :: String
+
+The noun form of the change `f` stands for — "your compat on Statistics", "your
+pin on Foo" — for sentences that name a culprit rather than issue an
+instruction ("held back by *your compat on Statistics*"). The counterpart of
+[`render_action`](@ref Resolver.render_action).
+"""
 blame_phrase(f::UserCompat) =
     f.label === :requested ? string("the version you requested for ", f.pkg) :
     f.label === :compat    ? string("your compat on ", f.pkg) :

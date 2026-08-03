@@ -2,13 +2,20 @@ using Resolver
 using Random
 using Test
 
+# `resolve` without the diagnosis of an unsatisfiable result. Most of the suite
+# compares against a brute-force reference that has no diagnosis to offer, and
+# resolves in tight loops where computing one per failure would dominate the
+# runtime; the diagnostics have their own tests. Named for what it asks for, so
+# that a call site says why it is not asking for the explanation.
+bare_resolve(args...; kws...) = resolve(args...; diagnose = false, kws...)
+
 @isdefined(includet) ? includet("tiny_data.jl") : include("tiny_data.jl")
 @isdefined(includet) ? includet("registry.jl")  : include("registry.jl")
 
 module TestResolver
 
-using Resolver: resolve, DepsProvider, PkgData, PkgInfo, pkg_data, pkg_info,
-    filter_pkg_info!
+using Resolver: resolve, DepsProvider, PkgData, PkgInfo,
+    filter_pkg_info!, pkg_data, pkg_info
 using Test
 
 export test_resolver, ref_resolve
@@ -28,7 +35,7 @@ function test_resolver(
     reqs :: AbstractVector{P},
 ) where {P,V}
     # resolve: a single optimal solution, or nothing when unsatisfiable
-    sol = resolve(data, reqs)
+    sol = resolve(data, reqs; diagnose = false)
 
     if sol === nothing
         # verify that no valid solution covers all the requirements

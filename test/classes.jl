@@ -112,8 +112,8 @@ end
 
 # grouping cannot change the answer, whatever the constraints or the ordering
 function test_collapse_invariance(data, prob; by::Function = identity)
-    @test resolve(data, prob; by, group = true) ==
-          resolve(data, prob; by, group = false)
+    @test bare_resolve(data, prob; by, group = true) ==
+          bare_resolve(data, prob; by, group = false)
 end
 
 # the constraints that split classes: forbid exactly one member of a
@@ -147,7 +147,7 @@ end
     info = test_classes(data)
     @test info[:A].classes == [1, 1, 1]
     @test info[:B].classes == [1, 1]
-    @test resolve(data, [:A, :B]) == Dict(:A => :v3, :B => :v2)
+    @test bare_resolve(data, [:A, :B]) == Dict(:A => :v3, :B => :v2)
 
     # differing dependency sets split
     data = Dict(
@@ -322,7 +322,7 @@ end
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_collapse_invariance(data, prob)
-                sol = resolve(data, prob)
+                sol = bare_resolve(data, prob)
                 sol === nothing && break
                 p = rand(collect(keys(sol)))
                 v = sol[p]
@@ -392,11 +392,11 @@ end
                 specific = pkg_info(deps, reqs) # T1 over the closure of reqs
                 compat, pins = random_constraints(m, n)
                 for prob in (Problem(reqs), Problem(reqs; compat, pins))
-                    @test resolve(all_reqs, prob) == resolve(specific, prob)
-                    @test resolve(all_reqs, prob) == resolve(data, prob)
+                    @test bare_resolve(all_reqs, prob) == bare_resolve(specific, prob)
+                    @test bare_resolve(all_reqs, prob) == bare_resolve(data, prob)
                     # the T1 artifacts are reusable: resolving does not
                     # consume them
-                    @test resolve(all_reqs, prob) == resolve(all_reqs, prob)
+                    @test bare_resolve(all_reqs, prob) == bare_resolve(all_reqs, prob)
                 end
             end
         end
@@ -416,7 +416,7 @@ end
     info = pkg_info(data)
     before = deepcopy(info)
     prob = Problem([:C]; compat = Dict(:B => [:v1]))
-    @test resolve(info, prob) == resolve(data, prob)
+    @test bare_resolve(info, prob) == bare_resolve(data, prob)
     @test info == before
     @test all(info[p].classes == before[p].classes for p in keys(info))
     # ... and preparing it explicitly yields a universe of its own

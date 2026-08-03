@@ -110,7 +110,7 @@ end
 @testset "resolve: single solution" begin
     for ex in tiny_data.examples
         data, reqs = ex.data, ex.reqs
-        sol = resolve(data, reqs)
+        sol = bare_resolve(data, reqs)
         # a package => version dict covering the requirements, or nothing
         if sol !== nothing
             @test sol isa Dict{Int,Int}
@@ -118,8 +118,8 @@ end
         end
         # deterministic: resolving again, and with the requirements supplied
         # in a different order, yields the same solution
-        @test resolve(data, reqs) == sol
-        @test resolve(data, reverse(collect(reqs))) == sol
+        @test bare_resolve(data, reqs) == sol
+        @test bare_resolve(data, reverse(collect(reqs))) == sol
     end
 end
 
@@ -135,7 +135,7 @@ end
             fill_data!(m, n, deps, comp, data)
             for reqs_bits = 0:2^m-1, by in (hi, lo)
                 reqs = collect(make_reqs(reqs_bits))
-                @test resolve(data, reqs; by) == ref_resolve(data, reqs; by)
+                @test bare_resolve(data, reqs; by) == ref_resolve(data, reqs; by)
             end
         end
     end
@@ -155,7 +155,7 @@ using Resolver: PkgData
         :PkgA => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict(:v1 => Dict(:MissingCompat => Any[]))),
         :PkgB => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), Dict{Symbol,Dict{Symbol,Any}}())
     )
-    sol = resolve(data, [:PkgA])
+    sol = bare_resolve(data, [:PkgA])
     @test sol !== nothing && haskey(sol, :PkgA)
 
     # Test missing required package
@@ -208,8 +208,8 @@ end
         :A => PkgData(Symbol[], nodeps, nocomp),
         :B => PkgData([:v1], nodeps, nocomp),
     )
-    @test resolve(data, [:A]) === nothing
-    @test resolve(data, [:A, :B]) === nothing
+    @test bare_resolve(data, [:A]) === nothing
+    @test bare_resolve(data, [:A, :B]) === nothing
     @test resolve(data, [:B]) == Dict(:B => :v1)
     @test isempty(resolve(data, Symbol[]))
     @test !haskey(pkg_info(data, [:A]), :A)
@@ -221,7 +221,7 @@ end
         :A => PkgData([:v1], Dict(:v1 => [:B]), nocomp),
         :B => PkgData(Symbol[], nodeps, nocomp),
     )
-    @test resolve(data, [:A]) === nothing
+    @test bare_resolve(data, [:A]) === nothing
     @test isempty(resolve(data, Symbol[]))
     @test isempty(pkg_info(data, [:A]))
     @test isempty(pkg_info(data, Symbol[]))
@@ -237,7 +237,7 @@ end
         :B => PkgData(Symbol[], nodeps, nocomp),
         :C => PkgData([:v1], Dict(:v1 => [:A]), nocomp),
     )
-    @test resolve(data, [:C]) === nothing
+    @test bare_resolve(data, [:C]) === nothing
     @test isempty(pkg_info(data, [:C]))
     test_resolver(data, [:C])
 
@@ -265,8 +265,8 @@ end
         :B => PkgData(Symbol[], nodeps, nocomp),
     )
     info = pkg_info(data, [:A]; filter = false)
-    @test resolve(info, [:A]) === nothing
-    @test resolve(info, [:A]; group = false) === nothing
+    @test bare_resolve(info, [:A]) === nothing
+    @test bare_resolve(info, [:A]; group = false) === nothing
     data = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B]), nocomp),
         :B => PkgData(Symbol[], nodeps, nocomp),
@@ -280,6 +280,8 @@ end
 include("problem.jl")
 include("classes.jl")
 include("ordering.jl")
+include("relaxation.jl")
+include("diagnose.jl")
 
 @testset "registry resolve" begin
     rp = registry.provider()

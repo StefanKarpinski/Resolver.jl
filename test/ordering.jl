@@ -48,8 +48,8 @@ end
 function test_order_equivalence(data, prob, order; by::Function = identity)
     baked = bake_order(data, order)
     for group in (true, false)
-        @test resolve(data, prob; by, order, group) ==
-              resolve(baked, prob; by, group)
+        @test bare_resolve(data, prob; by, order, group) ==
+              bare_resolve(baked, prob; by, group)
     end
 end
 
@@ -91,8 +91,8 @@ end
           BitVector([0, 1, 1]) # reversed: :v1 now represents the class
 
     # and the answer follows the order: ascending picks the worst versions
-    @test resolve(data, [:A, :B]) == Dict(:A => :v3, :B => :v2)
-    @test resolve(data, [:A, :B]; order = up) == Dict(:A => :v1, :B => :v1)
+    @test bare_resolve(data, [:A, :B]) == Dict(:A => :v3, :B => :v2)
+    @test bare_resolve(data, [:A, :B]; order = up) == Dict(:A => :v1, :B => :v1)
 end
 
 @testset "ordering: comparator vs. baked, complete data grids" begin
@@ -140,8 +140,8 @@ end
                 # ... and the ordering must not disturb the bake-equivalence of
                 # the user constraints either
                 prob = Problem(reqs; compat, pins)
-                @test resolve(data, prob; by, order) ==
-                      resolve(bake(bake_order(data, order), prob), reqs; by)
+                @test bare_resolve(data, prob; by, order) ==
+                      bare_resolve(bake(bake_order(data, order), prob), reqs; by)
             end
         end
     end
@@ -190,10 +190,10 @@ end
                 for prob in (Problem(reqs), Problem(reqs; compat, pins)),
                     order in (CANONICAL, reversed(m, n), shuffled(m, n))
                     baked = bake_order(data, order)
-                    @test resolve(all_reqs, prob; order) == resolve(baked, prob)
+                    @test bare_resolve(all_reqs, prob; order) == bare_resolve(baked, prob)
                     # ... and the same artifact answers the next query too
-                    @test resolve(all_reqs, prob; order) ==
-                          resolve(all_reqs, prob; order)
+                    @test bare_resolve(all_reqs, prob; order) ==
+                          bare_resolve(all_reqs, prob; order)
                 end
             end
             @test all_reqs == before

@@ -20,6 +20,7 @@ usage: $PROGRAM_FILE [options] [<project path>]
                           use registry compat syntax, not semver
 
   --allow-pre[=<pkgs>]    allow prerelease versions
+  --allow-yanked[=<pkgs>] allow yanked versions
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
 
@@ -50,7 +51,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia allow-pre extra-deps prioritize
+    julia allow-pre allow-yanked extra-deps prioritize
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -92,7 +93,7 @@ end
 import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_info!, reachable_registries
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
-import Resolver: Resolver, DepsProvider, PkgData, Problem, resolve
+import Resolver: Resolver, DepsProvider, PkgData, Problem, Diagnosis, resolve
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
 
@@ -128,7 +129,6 @@ let proj = env.project
     global const project_names = merge(proj.deps, proj.weakdeps, proj.extras)
     project_names["julia"] = JULIA_UUID
     global const project_deps = collect(values(proj.deps))
-    push!(project_deps, JULIA_UUID)
     global const project_weakdeps = collect(values(proj.weakdeps))
     global const project_compat = Dict{UUID,VersionSpec}()
     for (name, comp) in proj.compat
@@ -310,6 +310,14 @@ function parse_packages(str::AbstractString)
 end
 
 ## options: additional requirements
+#
+# `julia` is deliberately *not* among them. Every package version the provider
+# offers depends on julia, so julia is in the solution because things need it --
+# which is the modelling convention the diagnostics ask for: a platform package
+# nobody chose should not be a requirement, or a report ends up offering to drop
+# it, and naming it on every "→ allows:" line as though the user had picked it.
+# The one project with no dependencies at all still needs a julia to write a
+# manifest for, so it gets one below.
 
 global const reqs = copy(project_deps)
 
@@ -323,6 +331,7 @@ const ZERO_UUID = UUID(0)
 
 # zero UUID used for defaults
 const allow_pre = Dict(ZERO_UUID => false)
+const allow_yanked = Dict(ZERO_UUID => false)
 const FIX_PATCH = Dict(ZERO_UUID => false)
 const FIX_MINOR = Dict(ZERO_UUID => false)
 const FIX_MAJOR = Dict(ZERO_UUID => false)
@@ -331,11 +340,15 @@ const ORDER_MAP = Dict(ZERO_UUID => :max)
 # list of all fixed packages
 const FIXED = UUID[]
 
-handle_opts(r"^(allow_pre|(un)?fix|max|min)") do opt, val
+handle_opts(r"^(allow_pre|allow_yanked|(un)?fix|max|min)") do opt, val
     pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
     if opt == :allow_pre
         for uuid in pkgs
             allow_pre[uuid] = true
+        end
+    elseif opt == :allow_yanked
+        for uuid in pkgs
+            allow_yanked[uuid] = true
         end
     elseif opt == :fix
         for uuid in pkgs
@@ -457,7 +470,13 @@ end
 
 ## do an actual resolve
 
-reg = registry_provider(packages; workspace_pkgs)
+# the versions the provider withheld as yanked, per package: not a constraint,
+# just what the reporting layer needs to say "the versions your compat admits
+# are yanked" where it would otherwise say nothing at all
+const yanked_versions = Dict{UUID,Vector{VersionNumber}}()
+
+reg = registry_provider(packages;
+                        workspace_pkgs, allow_yanked, yanked = yanked_versions)
 
 # the project's compat bounds are user constraints, not part of the package
 # universe: they go into the `Problem`, which forbids the versions they exclude
@@ -472,25 +491,74 @@ reg = registry_provider(packages; workspace_pkgs)
 # admits, and no registry version fits either, the requirements really are
 # unsatisfiable and saying so beats silently ignoring the bound.
 #
-# the admission knobs ride along as exclusion kinds: `--allow-pre` says which
-# packages' prereleases the query accepts, and yanked versions are forbidden
-# outright (there is no option to accept one yet), each the same way a compat
-# bound forbids a version.
+# prerelease admission rides along as an exclusion kind: the versions exist
+# either way and `--allow-pre` says which of them this query accepts, the same
+# way a compat bound says which it accepts. Yankedness is not a kind at all --
+# the provider above left those versions out of the universe.
 const problem = Problem(reqs;
     compat = project_compat,
-    excludes = [
-        prerelease_exclusion(allow_pre),
-        yanked_exclusion(packages),
-    ],
+    excludes = [prerelease_exclusion(allow_pre)],
 )
 
 pkg_info = Resolver.pkg_info(reg, problem)
 sol = resolve(pkg_info, problem; by=sort_packages_by, order=version_order)
-sol === nothing && error("Unsatisfiable")
+
+# Yanked versions were left out of the universe, so a bound that admits only
+# yanked ones reads as admitting nothing at all -- "no versions", where the real
+# answer is "the ones you asked for were withdrawn". The provider kept the set
+# it dropped for exactly this: the story is recovered at the rendering layer,
+# from explanation data, without a constraint object anywhere.
+function yanked_notes(d::Diagnosis)
+    notes = String[]
+    seen = Set{UUID}()
+    for c in d.conflicts, f in c.chain
+        f isa Resolver.UserCompat && isempty(f.allowed) || continue
+        f.pkg in seen && continue
+        push!(seen, f.pkg)
+        spec = get(project_compat, f.pkg, nothing)
+        spec === nothing && continue
+        vers = [v for v in get(yanked_versions, f.pkg, VersionNumber[])
+                if v ∈ spec]
+        isempty(vers) && continue
+        push!(notes, string("the versions your compat on ", f.pkg,
+                            " admits are yanked (", join(vers, ", "),
+                            "); --allow-yanked accepts them anyway"))
+    end
+    return notes
+end
+
+# an unsatisfiable resolve comes back explained: independent conflicts, the
+# facts behind each, and a menu of verified fixes. The diagnosis is keyed by
+# uuid, as everything here is, so substitute package names before printing it
+if sol isa Diagnosis
+    names = Dict{String,String}(string(JULIA_UUID) => "julia")
+    for (u, entries) in packages, entry in entries
+        names[string(u)] = entry.name
+    end
+    for (_v, stdlib_set) in STDLIBS_BY_VERSION, (u, info) in stdlib_set
+        names[string(u)] = info.name
+    end
+    for (u, info) in UNREGISTERED_STDLIBS
+        names[string(u)] = info.name
+    end
+    uuid_re = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    text = string(sprint(show, MIME("text/plain"), sol),
+                  join(("Note: $note.\n" for note in yanked_notes(sol))))
+    report = replace(text, uuid_re => m -> get(names, m, m))
+    println(stderr, "Unresolvable. Diagnosis:\n")
+    println(stderr, report)
+    exit(1)
+end
 
 ## output results
 
-const julia_version = sol[JULIA_UUID]
+# a project that requires nothing pulls in no julia either, and still has to
+# be written out against one: take the newest the constraints admit
+const julia_version = get(sol, JULIA_UUID) do
+    vers = pkg_info[JULIA_UUID].versions
+    i = findfirst(v -> !Resolver.is_excluded(problem, JULIA_UUID, v), vers)
+    i === nothing ? error("no admissible julia version") : vers[i]
+end
 const stdlibs = let last_stdlibs = UNREGISTERED_STDLIBS
     for (v, this_stdlibs) in STDLIBS_BY_VERSION
         v > Base.thispatch(julia_version) && break

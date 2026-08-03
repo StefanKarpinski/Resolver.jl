@@ -10,11 +10,13 @@ makedocs(
     ),
     pages = [
         "Home" => "index.md",
+        "Diagnostics" => "diagnostics.md",
         "API" => "api.md",
         "Theory" => [
             "Setting" => "theory/setting.md",
             "The layered solution & filtering" => "theory/layered.md",
             "Pareto front optimality" => "theory/front.md",
+            "Diagnosing unsatisfiability" => "theory/diagnostics.md",
         ],
     ],
 )

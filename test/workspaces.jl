@@ -275,7 +275,12 @@ end
         ws = make_shadow_ws("99.0.0")
         ok, out, err = resolve_workspace_manifest(ws)
         @test !ok
-        @test occursin("Unsatisfiable", err)
+        # ... and explained: the workspace copy of JSON is fixed at a version
+        # Conda's compat rules out, so the only fix is to stop requiring Conda
+        @test occursin("Unresolvable", err)
+        @test occursin("Conflict 1: Conda cannot be satisfied.", err)
+        @test occursin("works with Conda only at no versions", err)
+        @test occursin("drop requirement Conda", err)
     end
 
     @testset "compat excluding a workspace package's local version" begin

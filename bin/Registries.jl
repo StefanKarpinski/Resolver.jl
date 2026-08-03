@@ -1,7 +1,7 @@
 module Registries
 
 export registry_provider, package_info, bundled_versions,
-    prerelease_exclusion, yanked_exclusion, is_yanked, is_registered, is_bundled,
+    prerelease_exclusion, is_yanked, is_registered, is_bundled,
     UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
@@ -262,12 +262,14 @@ prerelease_exclusion(allow_pre::Dict{UUID,Bool}) =
 
 ## yanked versions
 #
-# Yankedness is the same shape of fact as prerelease-ness: a property of a version
-# that a query may or may not be willing to accept. Nothing offers the user a way
-# to accept one yet -- this kind is always in force -- but modeling it as a
-# constraint rather than a deletion is what keeps the package universe shared, and
-# is what lets a diagnostic eventually say "the only version that satisfies this
-# is yanked" instead of "no such version".
+# Unlike prerelease-ness, yankedness is *not* a query knob: a yanked version is
+# one the registry has withdrawn, and the resolver must never produce one and
+# never propose one. Both are true by construction if the version is simply not
+# in the universe, so the provider filters yanked versions out (and
+# `--allow-yanked` rebuilds without the filter, which is rare and cheap). What
+# is lost that way is only the *story* -- "no such version" where "the versions
+# your compat admits are yanked" is the real answer -- so the provider records
+# the versions it dropped, as explanation data rather than as a constraint.
 #
 # A version is offered when *some* registry entry has it un-yanked, so it counts
 # as yanked only when every entry that has it says so -- and a version that no
@@ -289,8 +291,12 @@ function is_yanked(
     return found
 end
 
-yanked_exclusion(packages::Dict{UUID,Vector{PkgEntry}}) =
-    :yanked => (uuid::UUID, v::VersionNumber) -> is_yanked(packages, uuid, v)
+# `allow_yanked` mirrors `allow_pre`: keyed by package uuid with the zero uuid
+# holding the default, so `--allow-yanked` and `--allow-yanked=Foo` both work.
+# Accepting a yanked version is the user's call to make, and the way to make it
+# is to build a universe that has them in it.
+allows_yanked(allow_yanked::Dict{UUID,Bool}, uuid::UUID) =
+    get(allow_yanked, uuid, get(allow_yanked, UUID(0), false))
 
 # Do the registries have this version, as opposed to it existing only because
 # some Julia bundles it? (the provider's `bundled_only`, from the outside.) Only
@@ -314,10 +320,20 @@ end
 # (`workspace_pkgs` is not a query knob: a workspace's member packages are part of
 # the environment's package universe, fixed at their local versions, the way a
 # registry's packages are part of it at their registered versions.)
+#
+# `allow_yanked` is the one parameter that changes which versions *exist*: a
+# yanked version is withdrawn, not merely unwanted, so the universe leaves it out
+# unless asked (see "yanked versions" above). `yanked` is filled in as the
+# provider goes with the versions it dropped, per package — explanation data for
+# the reporting layer, which is where the difference between "no such version"
+# and "the versions your compat admits are yanked" is worth having.
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
+    allow_yanked   :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
+    yanked         :: Dict{UUID,Vector{VersionNumber}} =
+                      Dict{UUID,Vector{VersionNumber}}(),
 )
     stdlibs, bundlers, by_patch = STDLIB_VERSIONS, BUNDLERS, BUNDLERS_BY_PATCH
 
@@ -434,6 +450,21 @@ function registry_provider(
                 push!(vers, v)
                 push!(bundled_only, v)
                 deps[v] = info.deps
+            end
+        end
+        # drop the yanked versions from the universe, recording what was
+        # dropped. A version some Julia bundles is not the registry's to
+        # withdraw, so it stays whatever the registry says.
+        if uuid in keys(packages) && !allows_yanked(allow_yanked, uuid)
+            dropped = [v for v in vers
+                       if !is_bundled(uuid, v) && is_yanked(packages, uuid, v)]
+            if !isempty(dropped)
+                yanked[uuid] = sort!(dropped; rev = true)
+                setdiff!(vers, dropped)
+                for v in dropped
+                    delete!(deps, v)
+                    delete!(comp, v)
+                end
             end
         end
         # widen a stdlib package's `julia` compat to admit the Julias that bundle it

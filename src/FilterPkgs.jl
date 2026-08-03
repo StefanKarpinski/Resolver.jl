@@ -519,6 +519,37 @@ function mark_installable!(
     end
 end
 
+# one sweep of the domination candidates against an exclusion column: every
+# still-tracked version the column excludes has its candidates restricted to
+# the versions the column also excludes, and drops out of the sweep when none
+# are left. A named function rather than a closure in `mark_necessary!`'s
+# per-package loop, which is the filter's hot path.
+function exclude_column!(
+    D    :: Vector{UInt64}, # per-version candidate masks
+    T    :: Vector{UInt64}, # versions still tracked
+    E    :: Vector{UInt64}, # scratch: the column, padded to the column width
+    mask :: BitVector,
+    W    :: Int,
+)
+    resize!(E, W)
+    fill!(E, 0)
+    copyto!(E, 1, mask.chunks, 1, min(W, length(mask.chunks)))
+    @inbounds for w = 1:W
+        c = E[w] & T[w]
+        while !iszero(c)
+            i = ((w - 1) << 6) + trailing_zeros(c) + 1
+            c &= c - 1
+            o = (i - 1) * W
+            live = UInt64(0)
+            for w′ = 1:W
+                live |= (D[o + w′] &= E[w′])
+            end
+            iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
+        end
+    end
+    return T
+end
+
 function mark_necessary!(
     info :: Dict{P, PkgInfo{P,V}},
     excl :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
@@ -674,29 +705,12 @@ function mark_necessary!(
                 end
             end
         end
-        # the virtual package representing the user constraints contributes
-        # one more conflict column — the exclusion mask. its version is
-        # always present, so the column is always active: an excluded
-        # version must not dominate a non-excluded one
+        # the virtual package representing the constraints contributes one
+        # more conflict column -- the exclusion mask. its version is always
+        # present, so the column is always active: an excluded version must not
+        # dominate a non-excluded one
         excl_p = excls[p]
-        if excl_p !== nothing
-            resize!(E, W)
-            fill!(E, 0)
-            copyto!(E, 1, excl_p.chunks, 1, min(W, length(excl_p.chunks)))
-            @inbounds for w = 1:W
-                c = E[w] & T[w]
-                while !iszero(c)
-                    i = ((w - 1) << 6) + trailing_zeros(c) + 1
-                    c &= c - 1
-                    o = (i - 1) * W
-                    live = UInt64(0)
-                    for w′ = 1:W
-                        live |= (D[o + w′] &= E[w′])
-                    end
-                    iszero(live) && (T[w] &= ~(UInt64(1) << ((i - 1) & 63)))
-                end
-            end
-        end
+        excl_p === nothing || exclude_column!(D, T, E, excl_p, W)
         # union of all candidate sets = the dominated versions
         fill!(T, UInt64(0)) # reuse as the union accumulator
         @inbounds for w = 1:W

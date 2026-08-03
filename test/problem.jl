@@ -95,7 +95,8 @@ end
 # `resolve(data, prob)` must agree with the unconstrained resolve of the baked
 # data — including when both are `nothing`
 function test_bake_equivalence(data, prob; by::Function = identity)
-    @test resolve(data, prob; by) == resolve(bake(data, prob), prob.reqs; by)
+    @test bare_resolve(data, prob; by) ==
+        bare_resolve(bake(data, prob), prob.reqs; by)
 end
 
 @testset "Problem: construction & masks" begin
@@ -171,11 +172,11 @@ end
     compat = Dict(:B => [:v1])
     pins = Dict(:A => :v1)
     prob = Problem([:A]; compat, pins)
-    @test resolve(data, [:A]; compat, pins) == resolve(data, prob)
-    @test resolve(data, [:A]; compat) == resolve(data, Problem([:A]; compat))
-    @test resolve(data, [:A]) == resolve(data, Problem([:A]))
+    @test bare_resolve(data, [:A]; compat, pins) == bare_resolve(data, prob)
+    @test bare_resolve(data, [:A]; compat) == bare_resolve(data, Problem([:A]; compat))
+    @test bare_resolve(data, [:A]) == bare_resolve(data, Problem([:A]))
     info = pkg_info(data, prob)
-    @test resolve(info, [:A]; compat, pins) == resolve(info, prob)
+    @test bare_resolve(info, [:A]; compat, pins) == bare_resolve(info, prob)
 end
 
 @testset "Problem: exclusions constrain, they don't delete" begin
@@ -191,7 +192,7 @@ end
     prob = Problem([:A]; compat = Dict(:B => [:v1]))
     info = pkg_info(data, prob)
     @test info[:B].versions == [:v2, :v1] # :v2 forbidden but kept
-    @test resolve(data, prob) == Dict(:A => :v1, :B => :v1)
+    @test bare_resolve(data, prob) == Dict(:A => :v1, :B => :v1)
     test_bake_equivalence(data, prob)
 
     # every version of B forbidden: B saturates, so it keeps all its versions
@@ -206,7 +207,7 @@ end
     # -- though redundancy collapses it, since versions that are all excluded
     # alike all dominate each other
     @test haskey(info, :B)
-    @test resolve(data, prob) == Dict(:A => :v1)
+    @test bare_resolve(data, prob) == Dict(:A => :v1)
     test_bake_equivalence(data, prob)
     # ... and if the dependent can't degrade, the problem is unsatisfiable
     data = Dict(
@@ -214,7 +215,7 @@ end
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
     prob = Problem([:A]; compat = Dict(:B => Symbol[]))
-    @test resolve(data, prob) === nothing
+    @test bare_resolve(data, prob) === nothing
     test_bake_equivalence(data, prob)
 
     # an excluded version must not dominate a non-excluded one: B@v2 has no
@@ -229,7 +230,7 @@ end
     prob = Problem([:A, :B]; pins = Dict(:B => :v1))
     info = pkg_info(data, prob)
     @test info[:B].versions == [:v2, :v1]
-    @test resolve(data, prob) == Dict(:A => :v1, :B => :v1)
+    @test bare_resolve(data, prob) == Dict(:A => :v1, :B => :v1)
     test_bake_equivalence(data, prob)
 end
 
@@ -330,7 +331,7 @@ end
     # ... and it is the same problem as the equivalent compat bounds
     both = Problem([:A]; compat = Dict(:A => [:v1], :B => [:v1]))
     @test exclusion_masks(info, both) == excl
-    @test resolve(data, prob) == resolve(data, both)
+    @test bare_resolve(data, prob) == bare_resolve(data, both)
     test_bake_equivalence(data, prob)
 
     # one selector per source, so a kind, a compat bound and a pin on the same
@@ -374,16 +375,16 @@ end
                 as_compat = Problem(reqs;
                     compat = mergewith!(∩, Dict(compat), Dict(allowed)), pins)
                 for by in (identity, p -> -p)
-                    @test resolve(data, as_kind; by) ==
-                          resolve(data, as_compat; by)
+                    @test bare_resolve(data, as_kind; by) ==
+                          bare_resolve(data, as_compat; by)
                     test_bake_equivalence(data, as_kind; by)
                 end
                 # ... and the collapse and the ordering stay orthogonal to it
-                @test resolve(data, as_kind; group = false) ==
-                      resolve(data, as_kind; group = true)
+                @test bare_resolve(data, as_kind; group = false) ==
+                      bare_resolve(data, as_kind; group = true)
                 order = p -> (u, v) -> u > v
-                @test resolve(data, as_kind; order) ==
-                      resolve(bake(data, as_kind), reqs; order)
+                @test bare_resolve(data, as_kind; order) ==
+                      bare_resolve(bake(data, as_kind), reqs; order)
             end
         end
     end
@@ -424,7 +425,7 @@ end
     lo = p -> -Int(first(string(p))) # reverse alphabetical priority
     for (data, prob) in cases, by in (identity, lo)
         baked = bake(data, prob)
-        @test resolve(data, prob; by) == ref_resolve(baked, prob.reqs; by)
+        @test bare_resolve(data, prob; by) == ref_resolve(baked, prob.reqs; by)
         test_bake_equivalence(data, prob; by)
     end
     for (data, prob) in cases
@@ -519,7 +520,7 @@ end
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_bake_equivalence(data, prob)
-                sol = resolve(data, prob)
+                sol = bare_resolve(data, prob)
                 sol === nothing && break
                 p = rand(collect(keys(sol)))
                 v = sol[p]

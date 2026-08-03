@@ -51,9 +51,11 @@ for reg in reachable_registries()
     end
 end
 
-# The one package universe: `registry_provider` has no query-dependent parameters
-# left, so there is nothing to vary here.
-const reg = registry_provider(packages)
+# The one package universe. `allow_yanked` is the only parameter left, and it is
+# not a query knob: a yanked version is withdrawn, so the default universe simply
+# does not contain one, and `yanked` collects what was left out.
+const yanked = Dict{UUID,Vector{VersionNumber}}()
+const reg = registry_provider(packages; yanked)
 
 # `--allow-pre`'s dictionary: the zero uuid holds the default
 no_pre = Dict(UUID(0) => false)
@@ -69,10 +71,8 @@ function make_problem(
 )
     c = Dict{UUID,Any}(compat)
     c[JULIA_UUID] = julia
-    Resolver.Problem(reqs; compat = c, excludes = [
-        prerelease_exclusion(allow_pre),
-        yanked_exclusion(packages),
-    ])
+    Resolver.Problem(reqs; compat = c,
+        excludes = [prerelease_exclusion(allow_pre)])
 end
 
 # The old baked path, for the knobs that used to be applied by deleting versions
@@ -89,11 +89,18 @@ function bake(data::AbstractDict{P}, prob::Resolver.Problem{P}) where {P}
     return baked
 end
 
+# `Resolver.resolve`, with the diagnosis of an unsatisfiable result skipped and
+# the result mapped back to `nothing`. These tests compare resolves against one
+# another and against baked-data references, which wants a value that compares
+# by content -- a `Diagnosis` is freshly built each time, and two of those are
+# not the same object. The diagnostics have their own tests below.
+bare_resolve(args...; kws...) = Resolver.resolve(args...; diagnose = false, kws...)
+
 # Is the requirement set resolvable for the given Julia spec?
 function resolves(reqs::Vector{UUID}; julia::VersionSpec)
     prob = make_problem(reqs; julia)
     info = Resolver.pkg_info(reg, prob)
-    Resolver.resolve(info, prob) !== nothing
+    bare_resolve(info, prob) !== nothing
 end
 
 # Resolve a project with the given dependencies, `[compat]` body and command
@@ -127,7 +134,7 @@ function resolve_versions(
     cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions $flags`
     if !success(pipeline(cmd; stdout = out, stderr = err))
         # tell "no solution" apart from "the script broke"
-        occursin("Unsatisfiable", String(take!(err))) ||
+        occursin("Unresolvable", String(take!(err))) ||
             error("failed: $cmd")
         return nothing
     end
@@ -228,7 +235,7 @@ end
         prob = make_problem([JSON, JULIA_UUID]; julia = VersionSpec("1.10"),
             compat = Dict(JSON => VersionSpec("0.20")))
         info = Resolver.pkg_info(reg, prob)
-        sol = Resolver.resolve(info, prob)
+        sol = bare_resolve(info, prob)
         @test sol !== nothing
         @test sol[JSON] ∈ VersionSpec("0.20")
         # the provider still offers the newer versions and the filter keeps
@@ -260,20 +267,20 @@ end
             baked = Dict(u => Resolver.PkgData(
                             sort(collect(d.versions); lt), d.depends, d.compat)
                          for (u, d) in data)
-            @test Resolver.resolve(data, prob; order) ==
-                  Resolver.resolve(baked, prob)
+            @test bare_resolve(data, prob; order) ==
+                  bare_resolve(baked, prob)
             # ... and the one T1 artifact answers under any of them
-            @test Resolver.resolve(info, prob; order) ==
-                  Resolver.resolve(baked, prob)
+            @test bare_resolve(info, prob; order) ==
+                  bare_resolve(baked, prob)
         end
         # a per-package ordering: only julia reversed, everything else canonical
         order = u -> u == JULIA_UUID ? (<) : (>)
         baked = Dict(u => Resolver.PkgData(
                         sort(collect(d.versions); lt = order(u)),
                         d.depends, d.compat) for (u, d) in data)
-        @test Resolver.resolve(info, prob; order) == Resolver.resolve(baked, prob)
-        @test Resolver.resolve(info, prob; order)[JULIA_UUID] <
-              Resolver.resolve(info, prob)[JULIA_UUID]
+        @test bare_resolve(info, prob; order) == bare_resolve(baked, prob)
+        @test bare_resolve(info, prob; order)[JULIA_UUID] <
+              bare_resolve(info, prob)[JULIA_UUID]
     end
 
     # Prerelease admission is a query constraint, not a property of the package
@@ -296,8 +303,8 @@ end
             excludes = [prerelease_exclusion(allow_pre)]
             prob = Resolver.Problem(reqs; excludes)
             old = bake(data, prob) # the versions deleted, as the provider used to
-            @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
-            @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
+            @test bare_resolve(data, prob) == bare_resolve(old, reqs)
+            @test bare_resolve(info, prob) == bare_resolve(old, reqs)
         end
 
         # and it is not inert: every Wine_jll in the registry is a prerelease, so
@@ -313,60 +320,65 @@ end
                                       deps = wine)
     end
 
-    # Yankedness is the same shape of fact as prerelease-ness -- a property of a
-    # version that a query may or may not accept -- so it is modeled the same
-    # way, as an exclusion kind, even though nothing yet offers the user a way to
-    # turn it off. The oracle is the old path, where the provider deleted yanked
-    # versions outright.
-    @testset "yanked versions are constrained, not deleted" begin
+    # Unlike prerelease-ness, yankedness is not a query knob: a yanked version is
+    # withdrawn, and the resolver must neither produce one nor propose one. Both
+    # hold by construction once the version is not in the universe, so the
+    # provider filters yanked versions out -- and records what it dropped, since
+    # "the versions your compat admits are yanked" is a story the filtering would
+    # otherwise lose.
+    @testset "yanked versions are pre-filtered from the universe" begin
         reqs = sort([COMPAT, LIBSODIUM_JLL, JULIA_UUID])
-        data = Resolver.pkg_data(reg, reqs)
-        yanked = yanked_exclusion(packages)
-        forbids = last(yanked)
 
         # `is_yanked` reads the registries, not the version number: Compat 4.0.0
         # is yanked from General and libsodium_jll's newest version is too
-        @test forbids(COMPAT, v"4.0.0")
-        @test !forbids(COMPAT, v"4.1.0")
-        @test forbids(LIBSODIUM_JLL, v"1.0.22+0")
-        @test !forbids(LIBSODIUM_JLL, v"1.0.21+0")
-        @test !forbids(JSON, v"0.21.4")
-        @test !forbids(JULIA_UUID, v"1.10.0") # not a registered package at all
-        @test !forbids(COMPAT, v"99.0.0")     # no such version
+        @test is_yanked(packages, COMPAT, v"4.0.0")
+        @test !is_yanked(packages, COMPAT, v"4.1.0")
+        @test is_yanked(packages, LIBSODIUM_JLL, v"1.0.22+0")
+        @test !is_yanked(packages, LIBSODIUM_JLL, v"1.0.21+0")
+        @test !is_yanked(packages, JSON, v"0.21.4")
+        @test !is_yanked(packages, JULIA_UUID, v"1.10.0") # not registered at all
+        @test !is_yanked(packages, COMPAT, v"99.0.0")     # no such version
 
-        # the provider offers them and the one artifact keeps them
-        @test v"4.0.0" in data[COMPAT].versions
+        # so the provider does not offer them, and the T1 artifact has none
+        data = Resolver.pkg_data(reg, reqs)
+        @test v"4.0.0" ∉ data[COMPAT].versions
+        @test v"1.0.22+0" ∉ data[LIBSODIUM_JLL].versions
         info = Resolver.pkg_info(reg, reqs)
-        @test v"4.0.0" in info[COMPAT].versions
+        @test v"4.0.0" ∉ info[COMPAT].versions
+        @test v"1.0.22+0" ∉ info[LIBSODIUM_JLL].versions
 
-        prob = Resolver.Problem(reqs; excludes = [yanked])
-        old = bake(data, prob) # the versions deleted, as the provider used to
-        @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
-        @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
-        # ... together with the prerelease kind, and under a reversed ordering
+        # ... and what it dropped is recorded, as explanation data
+        @test v"4.0.0" in yanked[COMPAT]
+        @test v"1.0.22+0" in yanked[LIBSODIUM_JLL]
+        @test !haskey(yanked, JSON)
+
+        # `--allow-yanked` is not a constraint being lifted, it is a different
+        # universe: the same provider built with it has the versions back
+        loose = registry_provider(packages;
+                                  allow_yanked = Dict(UUID(0) => true))
+        @test v"4.0.0" in Resolver.pkg_data(loose, [COMPAT])[COMPAT].versions
+        # and per package, exactly as `--allow-yanked=Compat` parses
+        one = registry_provider(packages; allow_yanked = Dict(COMPAT => true))
+        @test v"4.0.0" in Resolver.pkg_data(one, [COMPAT])[COMPAT].versions
+        @test v"1.0.22+0" ∉
+              Resolver.pkg_data(one, [LIBSODIUM_JLL])[LIBSODIUM_JLL].versions
+
+        # the filtered universe is exactly the old constrained one: resolving
+        # with yankedness as an exclusion kind over the unfiltered data gives
+        # what resolving the filtered data gives, prereleases and orderings and
+        # all
+        raw = Resolver.pkg_data(loose, reqs)
+        excl = Pair{Symbol,Any}[
+            :yanked => (u, v) -> !is_bundled(u, v) && is_yanked(packages, u, v)]
+        prob = Resolver.Problem(reqs; excludes = excl)
+        @test bare_resolve(raw, prob) == bare_resolve(data, reqs)
         both = Resolver.Problem(reqs;
-            excludes = [yanked, prerelease_exclusion(no_pre)])
-        @test Resolver.resolve(info, both) ==
-              Resolver.resolve(bake(data, both), reqs)
+            excludes = [excl[1], prerelease_exclusion(no_pre)])
+        plain = Resolver.Problem(reqs; excludes = [prerelease_exclusion(no_pre)])
+        @test bare_resolve(raw, both) == bare_resolve(data, plain)
         order = u -> (<)
-        @test Resolver.resolve(info, both; order) ==
-              Resolver.resolve(bake(data, both), reqs; order)
-
-        # The selector map names the kind, so a diagnostic could one day say
-        # "the only version that satisfies this is yanked". libsodium_jll's
-        # yanked version is its *newest*, so nothing dominates it and the filter
-        # has to keep it -- it is ruled out by clause. Compat's is not, so
-        # redundancy elimination deletes it, which is the filter subsuming the
-        # deletion the provider used to do.
-        work = Resolver.prepare_pkg_info(info, prob)
-        sat = Resolver.SAT(work, prob)
-        try
-            @test (:yanked, LIBSODIUM_JLL) in values(sat.sels)
-            @test v"1.0.22+0" in work[LIBSODIUM_JLL].versions
-            @test v"4.0.0" ∉ work[COMPAT].versions
-        finally
-            Resolver.finalize(sat)
-        end
+        @test bare_resolve(raw, both; order) ==
+              bare_resolve(data, plain; order)
 
         # end to end: libsodium_jll's newest registered version is yanked, so the
         # resolve must land on the one below it
@@ -468,14 +480,14 @@ end
         for julia in (VersionSpec("1.9"), VersionSpec("1.10"), VersionSpec("1.11"),
                       VersionSpec("1"), VersionSpec("1.10.8"))
             prob = make_problem(reqs; julia)
-            sol = Resolver.resolve(info, prob)
+            sol = bare_resolve(info, prob)
             @test !isnothing(sol)
             @test sol[JULIA_UUID] ∈ julia
             @test isempty(sol[JULIA_UUID].prerelease)
-            @test sol == Resolver.resolve(reg, prob)
+            @test sol == bare_resolve(reg, prob)
         end
         # and a bound no Julia satisfies is unsatisfiable, not silently widened
-        @test isnothing(Resolver.resolve(info,
+        @test isnothing(bare_resolve(info,
             make_problem(reqs; julia = VersionSpec("99"))))
     end
 
@@ -580,4 +592,144 @@ end
         @test tilde[STATISTICS] ∈ bundled_versions(VersionSpec("1.10"))[STATISTICS]
         @test tilde[JULIA_UUID] ∈ VersionSpec("1.10")
     end
+end
+
+@testset "unsat diagnostics (bin/resolve.jl)" begin
+    # bin/resolve.jl diagnoses an unsatisfiable resolve automatically: the
+    # report comes back from `resolve` itself, so all the script does is
+    # substitute package names for uuids and print it. BulkSMS (HTTP 0.x) and
+    # AnthropicClient (HTTP 1.x) require disjoint majors of HTTP.
+    julia = Base.julia_cmd()[1]
+    dir = mktempdir()
+    write(joinpath(dir, "Project.toml"), "[deps]\n")
+
+    err = IOBuffer()
+    cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir
+           --extra-deps=BulkSMS,AnthropicClient --julia=1.11`
+    ok = success(pipeline(cmd; stderr = err))
+    report = String(take!(err))
+    @test !ok                            # unsatisfiable -> nonzero exit
+    @test occursin("Unresolvable", report)
+    @test occursin("cannot be satisfied together", report)
+    # uuids are substituted for names, and the contested dependency is named
+    @test occursin("BulkSMS", report)
+    @test occursin("AnthropicClient", report)
+    @test occursin("HTTP", report)
+    @test !occursin(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    report)
+    @test occursin("Verified fixes:", report)
+    @test occursin("drop requirement", report)
+    @test occursin("Upstream fixes:", report)
+
+    # a project compat bound nothing can satisfy is blamed on the bound, and
+    # relaxing it is offered as a fix
+    dir2 = mktempdir()
+    write(joinpath(dir2, "Project.toml"), """
+        [deps]
+        JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+
+        [compat]
+        JSON = "0.10"
+        """)
+    err2 = IOBuffer()
+    cmd2 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir2 --julia=1.11`
+    ok2 = success(pipeline(cmd2; stderr = err2))
+    report2 = String(take!(err2))
+    @test !ok2
+    @test occursin("your compat restricts JSON", report2)
+    @test occursin("relax your compat on JSON", report2)
+
+    # the admission knobs are constraints like any other, so they get facts
+    # and fixes like any other. Wine_jll has never had a non-prerelease
+    # release, so requiring it fails on the prerelease knob alone -- and
+    # `--allow-pre` is exactly the fix the report names.
+    err3 = IOBuffer()
+    cmd3 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir
+            --extra-deps=Wine_jll --julia=1.11`
+    ok3 = success(pipeline(cmd3; stderr = err3))
+    report3 = String(take!(err3))
+    @test !ok3
+    @test occursin("every version of Wine_jll is a prerelease", report3)
+    @test occursin("allow prereleases of Wine_jll", report3)
+    # ... and passing it really does resolve, to the version the fix promised
+    m = match(r"allow prereleases of Wine_jll\n\s*→ allows: ([^\n]*)", report3)
+    @test m !== nothing
+    @test occursin("Wine_jll", m[1])
+    vers = resolve_versions("", ["--allow-pre", "--julia=1.11"];
+                            deps = ["Wine_jll" => WINE_JLL])
+    @test vers !== nothing && haskey(vers, WINE_JLL)
+    @test occursin(string(vers[WINE_JLL]), m[1])
+
+    # Yanked versions are not in the universe at all, so no fix can ever propose
+    # accepting one -- by construction, with no policy flag anywhere. What that
+    # costs is the story: a bound admitting only yanked versions admits nothing,
+    # and "no versions" is not the answer. The provider kept the set it dropped,
+    # so the reporting layer says what really happened. libsodium_jll's newest
+    # release is yanked, and `=1.0.22` admits only it.
+    dir4 = mktempdir()
+    write(joinpath(dir4, "Project.toml"), """
+        [deps]
+        libsodium_jll = "$LIBSODIUM_JLL"
+
+        [compat]
+        libsodium_jll = "=1.0.22"
+        """)
+    err4 = IOBuffer()
+    cmd4 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir4 --julia=1.11`
+    ok4 = success(pipeline(cmd4; stderr = err4))
+    report4 = String(take!(err4))
+    @test !ok4
+    @test occursin(
+        r"the versions your compat on libsodium_jll admits are yanked \(1\.0\.22\S*\)",
+        report4)
+    @test !occursin("allow the yanked", report4)
+    # what it does offer is relaxing the bound, whose witness is then a version
+    # that is not yanked
+    @test occursin("relax your compat on libsodium_jll", report4)
+    @test occursin(r"→ allows:.*libsodium_jll 1\.0\.21", report4)
+
+    # ... and `--allow-yanked` is there for the user to reach for themselves:
+    # not a constraint lifted, a universe rebuilt with the versions back in
+    vers4 = resolve_versions("libsodium_jll = \"=1.0.22\"",
+                             ["--allow-yanked", "--julia=1.11"];
+                             deps = ["libsodium_jll" => LIBSODIUM_JLL])
+    @test vers4 !== nothing
+    @test vers4[LIBSODIUM_JLL] == v"1.0.22+0"
+    # the per-package shape of the flag works the same way, and is not global:
+    # allowing another package's yanked versions leaves this one unresolvable
+    @test resolve_versions("libsodium_jll = \"=1.0.22\"",
+                           ["--allow-yanked=libsodium_jll", "--julia=1.11"];
+                           deps = ["libsodium_jll" => LIBSODIUM_JLL]) == vers4
+    @test isnothing(
+        resolve_versions("libsodium_jll = \"=1.0.22\"",
+                         ["--allow-yanked=Compat", "--julia=1.11"];
+                         deps = ["libsodium_jll" => LIBSODIUM_JLL]))
+
+    # julia is modelled as a dependency edge, never a requirement: it is in
+    # every solution because packages need it, so no fix can offer to drop it
+    # and no witness list names it unless a story blamed it
+    dir5 = mktempdir()
+    write(joinpath(dir5, "Project.toml"), """
+        [deps]
+        Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+
+        [extras]
+        ColorTypes = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
+
+        [compat]
+        ColorTypes = "0.9"
+        """)
+    err5 = IOBuffer()
+    cmd5 = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir5 --julia=1.11`
+    ok5 = success(pipeline(cmd5; stderr = err5))
+    report5 = String(take!(err5))
+    @test !ok5
+    # the right fix, named first, at versions from this decade
+    @test occursin("1. relax your compat on ColorTypes", report5)
+    @test occursin(r"1\. relax your compat on ColorTypes\n\s*→ allows:[^\n]*Makie 0\.2",
+                   report5)
+    # julia appears in the story, since its bound really is part of why ...
+    @test occursin("restricts julia", report5)
+    # ... but is never something a fix offers to drop
+    @test !occursin("drop requirement julia", report5)
 end

@@ -50,6 +50,9 @@ struct Problem{P,V,S}
     # admission knobs: per kind, a predicate `(p, v) -> Bool` that is true for
     # the versions that kind forbids
     excludes :: Vector{Pair{Symbol,Any}}
+    # how to describe a package's compat bound in a report, when "your compat"
+    # would be wrong
+    labels :: AbstractDict{P,Symbol}
 end
 
 function Problem(
@@ -57,15 +60,18 @@ function Problem(
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     excludes = NoKinds,
+    labels :: AbstractDict{P} = EmptyDict{P,Symbol}(),
 ) where {P}
     Problem{P, valtype(pins), valtype(compat)}(
-        P[p for p in reqs], adopt(compat), adopt(pins), adopt_kinds(excludes))
+        P[p for p in reqs], adopt(compat), adopt(pins), adopt_kinds(excludes),
+        adopt(labels))
 end
 
 # a caller's dictionary is copied, so later mutation can't change the problem;
 # the shared empties are immutable and shared on purpose
 adopt(d::AbstractDict) = Dict(d)
 adopt(d::EmptyDict) = d
+
 
 adopt_kinds(kinds) = isempty(kinds) ? NoKinds :
     Pair{Symbol,Any}[Symbol(kind) => forbids for (kind, forbids) in kinds]
@@ -74,6 +80,7 @@ adopt_kinds(kinds) = isempty(kinds) ? NoKinds :
 # an unconstrained resolve must not do any per-version work
 is_constrained(prob::Problem) =
     !isempty(prob.compat) || !isempty(prob.pins) || !isempty(prob.excludes)
+
 
 # The user constraints are read as a *virtual package*: one always-required
 # version, no dependencies, whose conflict rows are exactly the exclusions

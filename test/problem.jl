@@ -306,9 +306,9 @@ end
 end
 
 @testset "Problem: exclusion kinds" begin
-    # `excludes` carries the *admission* knobs — "no prereleases", "no yanked
-    # versions" — which are stated about versions rather than about packages, so
-    # they come as `kind => predicate` pairs instead of per-package entries.
+    # `excludes` carries the *admission* knobs — "no prereleases" and the like —
+    # which are stated about versions rather than about packages, so they come as
+    # `kind => predicate` pairs instead of per-package entries.
     # Semantically a kind is nothing but another constraint source: forbidding
     # exactly the versions a compat entry forbids must be the same problem.
     nodeps = Dict{Symbol,Vector{Symbol}}()

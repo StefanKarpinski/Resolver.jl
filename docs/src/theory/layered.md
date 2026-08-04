@@ -405,12 +405,27 @@ The ordering is a `resolve` parameter rather than part of the problem,
 which is what makes one artifact serve every query: it selects among
 the valid solutions instead of changing which solutions are valid. What
 *does* change the model set — the user's compat bounds and pins, and
-the admission of prerelease and yanked versions — is a `Problem`, and
-enters as constraints on the artifact's versions rather than as
-deletions from it (see `exclusion_masks`). So there is one T1 artifact
-per registry state, full stop: every version the registry state offers
-is in it, in canonical order, and each query says which of them it will
-accept and in what order it prefers them.
+the admission of prerelease versions — is a `Problem`, and enters as
+constraints on the artifact's versions rather than as deletions from it
+(see `exclusion_masks`). So there is one T1 artifact per registry
+state, full stop: every version the registry state offers is in it, in
+canonical order, and each query says which of them it will accept and
+in what order it prefers them.
+
+"Every version the registry state offers" is meant strictly, and it is
+where yanked versions come in. Yankedness is not a query fact but part
+of what the registry state says — a yanked version is one the registry
+has struck, so it is not on offer — and the default artifact is built
+with those versions filtered out at the provider (see
+`bin/Registries.jl`). That is a deletion, not a constraint, and it is
+the right shape: a resolve then cannot produce a yanked version or
+suggest one as an alternative, with nothing left to enforce per query.
+The cost is that `--allow-yanked`, the query that wants them back, is
+the one query the baked artifact does not serve: it asks for a universe
+the registry state does not describe, and so rebuilds T1. That is rare
+and cheap next to the alternative, which is carrying struck versions
+through every layer and every diagnostic in order to forbid them again
+at the end.
 
 !!! warning "Formalization boundary"
     Theorems 2, 3, 5, and 6 are proved against the rule set as stated

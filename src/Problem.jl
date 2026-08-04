@@ -27,10 +27,11 @@ Three kinds of constraint, in two shapes:
 
   * `compat`: per package, the set of allowed versions (queried with `in`).
   * `pins`: per package, the one version it is held at.
-  * `excludes`: the *admission* knobs — "no prereleases", "no yanked versions" —
-    which say something about versions rather than about particular packages, and
-    so come as `kind => predicate` pairs, where `predicate(p, v)` is true for the
-    versions that source forbids and `kind` is a symbol naming it.
+  * `excludes`: the *admission* knobs — "no prereleases" is the one the resolver's
+    own tooling uses — which say something about versions rather than about
+    particular packages, and so come as `kind => predicate` pairs, where
+    `predicate(p, v)` is true for the versions that source forbids and `kind` is a
+    symbol naming it.
 
 Constraints for packages that don't exist, and constraints that exclude nothing,
 are allowed and have no effect.
@@ -48,7 +49,7 @@ struct Problem{P,V,S}
     compat :: AbstractDict{P,S}
     pins   :: AbstractDict{P,V}
     # admission knobs: per kind, a predicate `(p, v) -> Bool` that is true for
-    # the versions that kind forbids
+    # the versions that kind forbids ("no prereleases", say)
     excludes :: Vector{Pair{Symbol,Any}}
 end
 

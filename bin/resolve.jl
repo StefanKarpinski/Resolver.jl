@@ -20,6 +20,7 @@ usage: $PROGRAM_FILE [options] [<project path>]
                           use registry compat syntax, not semver
 
   --allow-pre[=<pkgs>]    allow prerelease versions
+  --allow-yanked[=<pkgs>] allow yanked versions
   --extra-deps=<pkgs>     extra packages to require
   --prioritize=<pkgs>     package names/uuids to prioritize
 
@@ -50,7 +51,7 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
 
 parse_opts!(ARGS, split("""
     print-manifest print-versions
-    julia allow-pre extra-deps prioritize
+    julia allow-pre allow-yanked extra-deps prioritize
     fix fix-minor fix-major unfix
     max max-minor max-major
     min min-minor min-major
@@ -323,6 +324,7 @@ const ZERO_UUID = UUID(0)
 
 # zero UUID used for defaults
 const allow_pre = Dict(ZERO_UUID => false)
+const allow_yanked = Dict(ZERO_UUID => false)
 const FIX_PATCH = Dict(ZERO_UUID => false)
 const FIX_MINOR = Dict(ZERO_UUID => false)
 const FIX_MAJOR = Dict(ZERO_UUID => false)
@@ -331,11 +333,15 @@ const ORDER_MAP = Dict(ZERO_UUID => :max)
 # list of all fixed packages
 const FIXED = UUID[]
 
-handle_opts(r"^(allow_pre|(un)?fix|max|min)") do opt, val
+handle_opts(r"^(allow_(pre|yanked)|(un)?fix|max|min)") do opt, val
     pkgs = isnothing(val) ? [ZERO_UUID] : parse_packages(val)
     if opt == :allow_pre
         for uuid in pkgs
             allow_pre[uuid] = true
+        end
+    elseif opt == :allow_yanked
+        for uuid in pkgs
+            allow_yanked[uuid] = true
         end
     elseif opt == :fix
         for uuid in pkgs
@@ -457,7 +463,16 @@ end
 
 ## do an actual resolve
 
-reg = registry_provider(packages; workspace_pkgs)
+# The versions the yanked filter dropped, per package, filled in by the provider
+# as it is asked for packages. Yankedness is registry-derived, not a query knob:
+# the universe is built without the versions the registries have struck, so a
+# resolve can neither produce one nor suggest one. `--allow-yanked` asks for them
+# back -- for the named packages, or for all of them when given bare -- which
+# builds a universe that keeps them.
+const yanked_dropped = Dict{UUID,Set{VersionNumber}}()
+
+reg = registry_provider(packages;
+    workspace_pkgs, allow_yanked, yanked = yanked_dropped)
 
 # the project's compat bounds are user constraints, not part of the package
 # universe: they go into the `Problem`, which forbids the versions they exclude
@@ -472,21 +487,51 @@ reg = registry_provider(packages; workspace_pkgs)
 # admits, and no registry version fits either, the requirements really are
 # unsatisfiable and saying so beats silently ignoring the bound.
 #
-# the admission knobs ride along as exclusion kinds: `--allow-pre` says which
-# packages' prereleases the query accepts, and yanked versions are forbidden
-# outright (there is no option to accept one yet), each the same way a compat
-# bound forbids a version.
+# prerelease admission rides along as an exclusion kind: `--allow-pre` says which
+# packages' prereleases the query accepts, the same way a compat bound forbids a
+# version. (Yankedness is not one of these: it is a property of the registry state,
+# so the struck versions are not in the universe to begin with -- see the provider.)
 const problem = Problem(reqs;
     compat = project_compat,
     excludes = [
         prerelease_exclusion(allow_pre),
-        yanked_exclusion(packages),
     ],
 )
 
 pkg_info = Resolver.pkg_info(reg, problem)
 sol = resolve(pkg_info, problem; by=sort_packages_by, order=version_order)
-sol === nothing && error("Unsatisfiable")
+
+# The one unsatisfiable shape the universe cannot explain for itself: a bound
+# whose only admissible versions are ones the yanked filter dropped. Those
+# versions are plainly there in the registry, so "unsatisfiable" on its own reads
+# as a lie -- name them, and name the flag that brings them back.
+function yanked_notes()
+    notes = String[]
+    for uuid in sort!(collect(keys(project_compat)))
+        uuid in keys(packages) || continue
+        spec = project_compat[uuid]
+        # asking the provider for the package both fills in what it dropped and
+        # says what it kept, so the note doesn't depend on whether the resolve
+        # happened to reach this package
+        kept = Resolver.pkg_data(reg, uuid).versions
+        dropped = get(yanked_dropped, uuid, nothing)
+        dropped === nothing && continue
+        admitted = sort!([v for v in dropped if v ∈ spec])
+        isempty(admitted) && continue
+        # only when nothing that survived the filter is admissible either:
+        # otherwise the bound is satisfiable and the yank is not the problem
+        any(v -> v ∈ spec, kept) && continue
+        name = first(packages[uuid]).name
+        push!(notes, "note: the versions your compat on $name admits are " *
+            "yanked ($(join(admitted, ", "))); --allow-yanked accepts them anyway")
+    end
+    return notes
+end
+
+if sol === nothing
+    notes = yanked_notes()
+    error(join(["Unsatisfiable"; notes], "\n"))
+end
 
 ## output results
 

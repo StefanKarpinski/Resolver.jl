@@ -95,7 +95,10 @@ end
 # `resolve(data, prob)` must agree with the unconstrained resolve of the baked
 # data — including when both are `nothing`
 function test_bake_equivalence(data, prob; by::Function = identity)
-    @test resolve(data, prob; by) == resolve(bake(data, prob), prob.reqs; by)
+    sol = resolve(data, prob; by)
+    @test sol == resolve(bake(data, prob), prob.reqs; by)
+    # and the cheap verdict agrees with the descent's, constraints and all
+    @test issatisfiable(data, prob) == (sol !== nothing)
 end
 
 @testset "Problem: construction & masks" begin

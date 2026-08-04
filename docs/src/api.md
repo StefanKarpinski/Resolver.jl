@@ -2,6 +2,7 @@
 
 ```@docs
 resolve
+issatisfiable
 Problem
 ```
 

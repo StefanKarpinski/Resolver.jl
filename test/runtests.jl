@@ -278,6 +278,7 @@ end
 end
 
 include("problem.jl")
+include("satisfiable.jl")
 include("classes.jl")
 include("ordering.jl")
 
@@ -297,6 +298,14 @@ include("ordering.jl")
     sol = resolve(rp, String[])
     @test sol isa Dict{String,VersionNumber}
     @test isempty(sol)
+    # the cheap verdict on a real registry, straight from the provider
+    @test issatisfiable(rp, ["JSON"])
+    @test issatisfiable(rp, ["DataFrames", "JSON"])
+    @test issatisfiable(rp, String[])
+    # ... including through the convenience keywords: no version of JSON can
+    # satisfy a pin at a version that doesn't exist
+    @test !issatisfiable(rp, ["JSON"]; pins = Dict("JSON" => v"0.0.0"))
+    @test resolve(rp, ["JSON"]; pins = Dict("JSON" => v"0.0.0")) === nothing
 end
 
 @testset "yanked packages" begin

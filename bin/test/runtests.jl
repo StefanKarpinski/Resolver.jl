@@ -93,7 +93,12 @@ end
 function resolves(reqs::Vector{UUID}; julia::VersionSpec)
     prob = make_problem(reqs; julia)
     info = Resolver.pkg_info(reg, prob)
-    Resolver.resolve(info, prob) !== nothing
+    verdict = Resolver.resolve(info, prob) !== nothing
+    # this is exactly what `issatisfiable` answers on its own, so it must agree
+    # with the descent's verdict here -- on real registry data, with the Julia
+    # bound and the admission kinds in force
+    @test Resolver.issatisfiable(info, prob) == verdict
+    return verdict
 end
 
 # Resolve a project with the given dependencies, `[compat]` body and command
@@ -477,6 +482,8 @@ end
         # and a bound no Julia satisfies is unsatisfiable, not silently widened
         @test isnothing(Resolver.resolve(info,
             make_problem(reqs; julia = VersionSpec("99"))))
+        @test !Resolver.issatisfiable(info,
+            make_problem(reqs; julia = VersionSpec("99")))
     end
 
     # The Julia versions to resolve for come from `--julia` if given, otherwise

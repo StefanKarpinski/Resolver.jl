@@ -230,3 +230,92 @@ resolve(
     group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
 ) where {P,V} = resolve(info, Problem(reqs; compat, pins); by, group, order)
+
+"""
+    issatisfiable(data, reqs; compat = ..., pins = ...) -> Bool
+
+Compute `resolve(data, reqs; ...) !== nothing` more efficiently, with a single
+satisfiability check instead of a full optimizing resolve. Use this when you
+want to know whether the requirements can be satisfied but don't need an
+actual solution.
+
+`data` may be a `DepsProvider`, a dict of `PkgData`, a dict of `PkgInfo`, or a
+`SAT` instance, and a `Problem` may be passed in place of the requirements and
+keywords, as with `resolve`. The `by`, `order` and `group` keywords are not
+accepted since they affect which solution `resolve` picks, not whether one
+exists. The `SAT` method leaves the instance unchanged, so it can be reused.
+"""
+function issatisfiable(
+    sat  :: SAT{P},
+    reqs :: SetOrVec{P} = keys(sat.info),
+) where {P}
+    # a requirement the instance doesn't know has no installable version —
+    # the filter drops such packages — so it cannot be satisfied
+    all(p -> haskey(sat.info, p), reqs) || return false
+    # the requirements are satisfiable iff this one solve says so; it only
+    # assumes, so the instance is left exactly as it was found
+    return is_satisfiable(sat, reqs)
+end
+
+# check a universe that `prepare_pkg_info` has already laid out, collapsed
+# & filtered
+function issatisfiable_prepared(
+    info :: Dict{P,PkgInfo{P,V}},
+    prob :: Problem{P},
+) where {P,V}
+    sat = SAT(info, prob)
+    try issatisfiable(sat, prob.reqs)
+    finally
+        finalize(sat)
+    end
+end
+
+# primary entry points, mirroring `resolve`'s: a Problem against each shape of
+# package data, each building the T1 artifact and preparing it the same way
+
+function issatisfiable(
+    deps :: DepsProvider{P},
+    prob :: Problem{P},
+) where {P}
+    info = pkg_info(deps, prob)
+    issatisfiable_prepared(prepare_pkg_info(info, prob, info), prob)
+end
+
+function issatisfiable(
+    data :: AbstractDict{P,<:PkgData{P}},
+    prob :: Problem{P},
+) where {P}
+    info = pkg_info(data, prob)
+    issatisfiable_prepared(prepare_pkg_info(info, prob, info), prob)
+end
+
+# a caller-supplied info may be a reusable (or cached) T1 artifact, so this
+# method prepares into a dict of its own and leaves the argument alone
+issatisfiable(
+    info :: AbstractDict{P,PkgInfo{P,V}},
+    prob :: Problem{P},
+) where {P,V} = issatisfiable_prepared(prepare_pkg_info(info, prob), prob)
+
+# convenience entry points: bare requirements, with the user constraints (if
+# any) given as keywords instead of a `Problem`
+
+issatisfiable(
+    deps :: DepsProvider{P},
+    reqs :: SetOrVec{P} = deps.packages;
+    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
+    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
+) where {P} = issatisfiable(deps, Problem(reqs; compat, pins))
+
+issatisfiable(
+    data :: AbstractDict{P,<:PkgData{P}},
+    reqs :: SetOrVec{P} = keys(data);
+    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
+    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
+) where {P} = issatisfiable(data, Problem(reqs; compat, pins))
+
+issatisfiable(
+    info :: AbstractDict{P,PkgInfo{P,V}},
+    reqs :: SetOrVec{P} = keys(info);
+    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
+    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
+) where {P,V} = issatisfiable(info, Problem(reqs; compat, pins))

@@ -1,6 +1,6 @@
 module Resolver
 
-export resolve, Problem
+export resolve, issatisfiable, Problem
 
 include("BitKernels.jl")
 include("DepsProvider.jl")

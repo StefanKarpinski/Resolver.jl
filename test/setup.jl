@@ -7,8 +7,8 @@ using Test
 
 module TestResolver
 
-using Resolver: resolve, DepsProvider, PkgData, PkgInfo, pkg_data, pkg_info,
-    filter_pkg_info!
+using Resolver: resolve, issatisfiable, DepsProvider, PkgData, PkgInfo,
+    pkg_data, pkg_info, filter_pkg_info!
 using Test
 
 export test_resolver, ref_resolve
@@ -29,6 +29,10 @@ function test_resolver(
 ) where {P,V}
     # resolve: a single optimal solution, or nothing when unsatisfiable
     sol = resolve(data, reqs)
+
+    # the cheap feasibility check must reach the same verdict as the descent:
+    # this is `issatisfiable`'s whole contract, so every sweep checks it
+    @test issatisfiable(data, reqs) == (sol !== nothing)
 
     if sol === nothing
         # verify that no valid solution covers all the requirements

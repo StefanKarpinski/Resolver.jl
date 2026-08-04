@@ -51,9 +51,12 @@ for reg in reachable_registries()
     end
 end
 
-# The one package universe: `registry_provider` has no query-dependent parameters
-# left, so there is nothing to vary here.
-const reg = registry_provider(packages)
+# The one package universe: the only parameter `registry_provider` has left is
+# `allow_yanked`, and the default universe -- the one every query but
+# `--allow-yanked` resolves against -- is built without the versions the
+# registries have struck.
+const yanked_dropped = Dict{UUID,Set{VersionNumber}}()
+const reg = registry_provider(packages; yanked = yanked_dropped)
 
 # `--allow-pre`'s dictionary: the zero uuid holds the default
 no_pre = Dict(UUID(0) => false)
@@ -71,7 +74,6 @@ function make_problem(
     c[JULIA_UUID] = julia
     Resolver.Problem(reqs; compat = c, excludes = [
         prerelease_exclusion(allow_pre),
-        yanked_exclusion(packages),
     ])
 end
 
@@ -115,6 +117,7 @@ function resolve_versions(
     compat :: AbstractString,
     flags  :: Vector{String} = String[];
     deps   :: Vector{Pair{String,UUID}} = ["JSON" => JSON],
+    err    :: IOBuffer = IOBuffer(), # the script's stderr, for tests that read it
 )
     dir = mktempdir()
     open(joinpath(dir, "Project.toml"), "w") do io
@@ -127,13 +130,14 @@ function resolve_versions(
         println(io, compat)
     end
     out = IOBuffer()
-    err = IOBuffer()
     julia = Base.julia_cmd()[1]
     cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions $flags`
     if !success(pipeline(cmd; stdout = out, stderr = err))
-        # tell "no solution" apart from "the script broke"
-        occursin("Unsatisfiable", String(take!(err))) ||
-            error("failed: $cmd")
+        # tell "no solution" apart from "the script broke", putting the message
+        # back so a caller that passed `err` in can read it too
+        msg = String(take!(err))
+        print(err, msg)
+        occursin("Unsatisfiable", msg) || error("failed: $cmd")
         return nothing
     end
     vers = Dict{UUID,VersionNumber}()
@@ -318,67 +322,141 @@ end
                                       deps = wine)
     end
 
-    # Yankedness is the same shape of fact as prerelease-ness -- a property of a
-    # version that a query may or may not accept -- so it is modeled the same
-    # way, as an exclusion kind, even though nothing yet offers the user a way to
-    # turn it off. The oracle is the old path, where the provider deleted yanked
-    # versions outright.
-    @testset "yanked versions are constrained, not deleted" begin
+    # Yankedness is *not* the same shape of fact as prerelease-ness: a yanked
+    # version is one the registry has struck, so it is not on offer at all. The
+    # provider filters those versions out, which is what makes "the resolver
+    # never produces a yanked version and never suggests one" true by
+    # construction rather than by a constraint every query must remember to
+    # carry. `--allow-yanked` is the one query that asks for a different
+    # universe.
+    @testset "yanked versions are filtered out of the universe" begin
         reqs = sort([COMPAT, LIBSODIUM_JLL, JULIA_UUID])
+
+        # `yanked_versions` reads the registries, not the version number: Compat
+        # 4.0.0 is yanked from General and libsodium_jll's newest version is too
+        @test v"4.0.0" in yanked_versions(packages, COMPAT)
+        @test v"4.1.0" ∉ yanked_versions(packages, COMPAT)
+        @test v"99.0.0" ∉ yanked_versions(packages, COMPAT) # no such version
+        @test v"1.0.22+0" in yanked_versions(packages, LIBSODIUM_JLL)
+        @test v"1.0.21+0" ∉ yanked_versions(packages, LIBSODIUM_JLL)
+        @test v"0.21.4" ∉ yanked_versions(packages, JSON)
+        # not a registered package at all, so nothing of it is struck
+        @test isempty(yanked_versions(packages, JULIA_UUID))
+
+        # The multi-registry rule: a version yanked by *any* entry that carries
+        # it is yanked, because one registry cannot undo another's yank -- which
+        # is often a security action, so a registry that still lists the version
+        # must not launder it back into the universe. No two installed registries
+        # carry the same package with different yank flags (General is the only
+        # one carrying any of these), so the rule cannot be exercised end to end
+        # on real data; test it where it is stated, over the per-entry sets.
+        none = Set{VersionNumber}()
+        @test Registries.struck_versions([Set([v"1.0.0"]), none]) == Set([v"1.0.0"])
+        @test Registries.struck_versions([none, Set([v"1.0.0"])]) == Set([v"1.0.0"])
+        @test Registries.struck_versions([Set([v"1.0.0"]), Set([v"1.0.0"])]) ==
+              Set([v"1.0.0"])
+        @test isempty(Registries.struck_versions([none, none]))
+        # each entry contributes its own, and only versions some entry yanks
+        # appear at all -- which is why a version no registry has is never struck
+        @test Registries.struck_versions([Set([v"1.0.0"]), Set([v"2.0.0"])]) ==
+              Set([v"1.0.0", v"2.0.0"])
+        @test isempty(Registries.struck_versions(Set{VersionNumber}[]))
+
+        # the provider does not offer them, so the one artifact does not have
+        # them either -- and the versions beside them are untouched
         data = Resolver.pkg_data(reg, reqs)
-        yanked = yanked_exclusion(packages)
-        forbids = last(yanked)
-
-        # `is_yanked` reads the registries, not the version number: Compat 4.0.0
-        # is yanked from General and libsodium_jll's newest version is too
-        @test forbids(COMPAT, v"4.0.0")
-        @test !forbids(COMPAT, v"4.1.0")
-        @test forbids(LIBSODIUM_JLL, v"1.0.22+0")
-        @test !forbids(LIBSODIUM_JLL, v"1.0.21+0")
-        @test !forbids(JSON, v"0.21.4")
-        @test !forbids(JULIA_UUID, v"1.10.0") # not a registered package at all
-        @test !forbids(COMPAT, v"99.0.0")     # no such version
-
-        # the provider offers them and the one artifact keeps them
-        @test v"4.0.0" in data[COMPAT].versions
         info = Resolver.pkg_info(reg, reqs)
-        @test v"4.0.0" in info[COMPAT].versions
+        @test v"4.0.0" ∉ data[COMPAT].versions
+        @test v"4.1.0" in data[COMPAT].versions
+        @test v"4.0.0" ∉ info[COMPAT].versions
+        @test v"1.0.22+0" ∉ data[LIBSODIUM_JLL].versions
+        @test v"1.0.21+0" in data[LIBSODIUM_JLL].versions
+        # ... and the provider says what it dropped, which is what lets
+        # bin/resolve.jl name the versions a bound admits that no longer exist
+        @test v"4.0.0" in yanked_dropped[COMPAT]
+        @test v"1.0.22+0" in yanked_dropped[LIBSODIUM_JLL]
+        @test !haskey(yanked_dropped, JULIA_UUID)
 
-        prob = Resolver.Problem(reqs; excludes = [yanked])
-        old = bake(data, prob) # the versions deleted, as the provider used to
-        @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
-        @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
-        # ... together with the prerelease kind, and under a reversed ordering
-        both = Resolver.Problem(reqs;
-            excludes = [yanked, prerelease_exclusion(no_pre)])
-        @test Resolver.resolve(info, both) ==
-              Resolver.resolve(bake(data, both), reqs)
-        order = u -> (<)
-        @test Resolver.resolve(info, both; order) ==
-              Resolver.resolve(bake(data, both), reqs; order)
+        # `--allow-yanked` keeps them: same universe otherwise
+        kept = registry_provider(packages; allow_yanked = Dict(UUID(0) => true))
+        kept_data = Resolver.pkg_data(kept, reqs)
+        @test v"4.0.0" in kept_data[COMPAT].versions
+        @test v"1.0.22+0" in kept_data[LIBSODIUM_JLL].versions
+        # per package: only the named package gets its struck versions back
+        one = Resolver.pkg_data(
+            registry_provider(packages;
+                allow_yanked = Dict(UUID(0) => false, COMPAT => true)), reqs)
+        @test v"4.0.0" in one[COMPAT].versions
+        @test v"1.0.22+0" ∉ one[LIBSODIUM_JLL].versions
 
-        # The selector map names the kind, so a diagnostic could one day say
-        # "the only version that satisfies this is yanked". libsodium_jll's
-        # yanked version is its *newest*, so nothing dominates it and the filter
-        # has to keep it -- it is ruled out by clause. Compat's is not, so
-        # redundancy elimination deletes it, which is the filter subsuming the
-        # deletion the provider used to do.
-        work = Resolver.prepare_pkg_info(info, prob)
-        sat = Resolver.SAT(work, prob)
-        try
-            @test (:yanked, LIBSODIUM_JLL) in values(sat.sels)
-            @test v"1.0.22+0" in work[LIBSODIUM_JLL].versions
-            @test v"4.0.0" ∉ work[COMPAT].versions
-        finally
-            Resolver.finalize(sat)
+        # The mechanism this replaced: the unfiltered universe plus an exclusion
+        # kind forbidding exactly the struck versions. Filtering must give the
+        # same answers -- that is the whole claim of the change -- for the plain
+        # problem, alongside the prerelease kind, and under a reversed ordering.
+        struck = Dict{UUID,Set{VersionNumber}}() # per package, memoized
+        yanked_of(u::UUID) = get!(() -> yanked_versions(packages, u), struck, u)
+        # a kind reaches every package in the universe, not just the required
+        # ones, so this has to answer for any uuid it is handed
+        kind = Pair{Symbol,Any}(:yanked,
+            (u::UUID, v::VersionNumber) -> v in yanked_of(u))
+        for pre in (Pair{Symbol,Any}[],
+                    Pair{Symbol,Any}[prerelease_exclusion(no_pre)])
+            old = Resolver.Problem(reqs; excludes = [kind, pre...])
+            new = Resolver.Problem(reqs; excludes = pre)
+            @test Resolver.resolve(reg, new) == Resolver.resolve(kept, old)
+            @test Resolver.resolve(info, new) == Resolver.resolve(kept, old)
+            order = u -> (<)
+            @test Resolver.resolve(info, new; order) ==
+                  Resolver.resolve(kept, old; order)
         end
 
-        # end to end: libsodium_jll's newest registered version is yanked, so the
-        # resolve must land on the one below it
-        sol = resolve_versions("", ["--julia=1.10"];
-                               deps = ["libsodium_jll" => LIBSODIUM_JLL])
+        # end to end: libsodium_jll's newest registered version is yanked, so
+        # the default resolve lands on the one below it
+        libsodium = ["libsodium_jll" => LIBSODIUM_JLL]
+        sol = resolve_versions("", ["--julia=1.10"]; deps = libsodium)
         @test !isnothing(sol)
         @test sol[LIBSODIUM_JLL] == v"1.0.21+0"
+
+        # ... and `--allow-yanked` takes it, bare or naming the package
+        yes = resolve_versions("", ["--julia=1.10", "--allow-yanked"];
+                               deps = libsodium)
+        @test !isnothing(yes)
+        @test yes[LIBSODIUM_JLL] == v"1.0.22+0"
+        @test yes == resolve_versions(
+            "", ["--julia=1.10", "--allow-yanked=libsodium_jll"]; deps = libsodium)
+
+        # ... while naming some *other* package leaves it filtered
+        other = resolve_versions("", ["--julia=1.10", "--allow-yanked=$COMPAT"];
+                                 deps = libsodium)
+        @test !isnothing(other)
+        @test other[LIBSODIUM_JLL] == v"1.0.21+0"
+
+        # The one failure the filtered universe cannot explain for itself: a
+        # bound whose only admissible versions are struck ones. They are plainly
+        # there in the registry, so bare "Unsatisfiable" would read as a lie --
+        # the note names them and names the flag that brings them back.
+        compat_pkg = ["Compat" => COMPAT]
+        err = IOBuffer()
+        @test isnothing(resolve_versions("Compat = \"=4.0.0\"", ["--julia=1.10"];
+                                         deps = compat_pkg, err))
+        msg = String(take!(err))
+        @test occursin("Unsatisfiable", msg)
+        @test occursin("compat on Compat", msg)
+        @test occursin("yanked (4.0.0)", msg)
+        @test occursin("--allow-yanked", msg)
+
+        # ... and the flag really does accept them
+        sol = resolve_versions("Compat = \"=4.0.0\"",
+            ["--julia=1.10", "--allow-yanked"]; deps = compat_pkg)
+        @test !isnothing(sol)
+        @test sol[COMPAT] == v"4.0.0"
+
+        # no note when a bound admits versions that survived: then the yank is
+        # not what makes the requirements unsatisfiable
+        err = IOBuffer()
+        @test isnothing(resolve_versions("Compat = \"99\"", ["--julia=1.10"];
+                                         deps = compat_pkg, err))
+        @test !occursin("--allow-yanked", String(take!(err)))
     end
 
     # HistoricalStdlibVersions gives one stdlib version number to entries with

@@ -316,6 +316,13 @@ end
     # To test this, we use the same commands as the
     # `julia-downgrade-compat` action to resolve a project
     # depending on Compat with "4.0" compatibility requirement.
+    #
+    # The struck version is not in the package universe at all: bin/Registries.jl
+    # filters yanked versions out at the provider, so the resolve below cannot
+    # produce v4.0.0 or offer it as an alternative (`--allow-yanked` is what asks
+    # for a universe that keeps them). What this testset checks is the outcome --
+    # the version the action ends up with -- which is the same whichever
+    # mechanism enforces it; the mechanism itself is covered in bin/test/.
 
     julia = Base.julia_cmd()[1]
     project = pkgdir(Resolver, "bin")

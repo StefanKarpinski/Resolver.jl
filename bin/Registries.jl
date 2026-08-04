@@ -1,7 +1,7 @@
 module Registries
 
 export registry_provider, package_info, bundled_versions,
-    prerelease_exclusion, yanked_exclusion, is_yanked, is_registered, is_bundled,
+    prerelease_exclusion, yanked_versions, is_registered, is_bundled,
     UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
@@ -262,35 +262,54 @@ prerelease_exclusion(allow_pre::Dict{UUID,Bool}) =
 
 ## yanked versions
 #
-# Yankedness is the same shape of fact as prerelease-ness: a property of a version
-# that a query may or may not be willing to accept. Nothing offers the user a way
-# to accept one yet -- this kind is always in force -- but modeling it as a
-# constraint rather than a deletion is what keeps the package universe shared, and
-# is what lets a diagnostic eventually say "the only version that satisfies this
-# is yanked" instead of "no such version".
+# Yankedness is not the same shape of fact as prerelease-ness. A prerelease is a
+# version you can install and a query says whether it wants one; a yanked version
+# is one the registry has struck, so nothing should install it and nothing should
+# be told to. That makes it a property of the registry state rather than a query
+# knob, and the universe the registries describe is the one with the struck
+# versions taken out -- so the resolver can neither produce a yanked version nor
+# suggest one, by construction, with nothing left to enforce downstream.
 #
-# A version is offered when *some* registry entry has it un-yanked, so it counts
-# as yanked only when every entry that has it says so -- and a version that no
-# registry has at all (a bundled stdlib) is not a registry version to yank.
-function is_yanked(
-    packages :: Dict{UUID,Vector{PkgEntry}},
-    uuid     :: UUID,
-    v        :: VersionNumber,
-)
-    entries = get(packages, uuid, nothing)
-    entries === nothing && return false
-    found = false
-    for entry in entries
-        info = package_info(entry)
-        haskey(info.version_info, v) || continue
-        isyanked(info, v) || return false
-        found = true
+# The multi-registry rule, stated over what each entry that carries the package
+# says: a version yanked by *any* of them is yanked, i.e. the union of their
+# yanked sets. Yanking is often a security action, and one registry cannot undo
+# another's -- a version some registry has struck must not be laundered back into
+# the universe by a registry that still lists it. Only versions some entry has can
+# appear in any of these sets, so a version no registry has at all (a stdlib
+# version that exists only because some Julia bundles it) is never yanked.
+#
+# Kept as its own function because it is the whole semantics and no installed
+# registry pair disagrees about a version today, so this is the only place the
+# rule can be tested directly (see bin/test/runtests.jl).
+function struck_versions(yanked_by_entry)
+    struck = Set{VersionNumber}()
+    for yanked in yanked_by_entry
+        union!(struck, yanked)
     end
-    return found
+    return struck
 end
 
-yanked_exclusion(packages::Dict{UUID,Vector{PkgEntry}}) =
-    :yanked => (uuid::UUID, v::VersionNumber) -> is_yanked(packages, uuid, v)
+# The versions of `uuid` the registries have struck, by that rule.
+function yanked_versions(
+    packages :: Dict{UUID,Vector{PkgEntry}},
+    uuid     :: UUID,
+)
+    entries = get(packages, uuid, nothing)
+    entries === nothing && return Set{VersionNumber}()
+    struck_versions(
+        begin
+            info = package_info(entry)
+            Set{VersionNumber}(v for v in keys(info.version_info) if isyanked(info, v))
+        end
+        for entry in entries
+    )
+end
+
+# Does the query accept `uuid`'s yanked versions? `--allow-yanked` parses into
+# this dictionary exactly as `--allow-pre` parses into its own: keyed by package
+# uuid with the zero uuid holding the default.
+allows_yanked(allow_yanked::Dict{UUID,Bool}, uuid::UUID) =
+    get(allow_yanked, uuid, get(allow_yanked, UUID(0), false))
 
 # Do the registries have this version, as opposed to it existing only because
 # some Julia bundles it? (the provider's `bundled_only`, from the outside.) Only
@@ -307,17 +326,31 @@ function is_registered(
 end
 
 # The package universe the registries and Julia's history describe: every version
-# of every package, every Julia version, and every stdlib version any Julia
-# bundles. It has no query-dependent parameters, which is the point -- one
-# universe per registry state, and every query is a `Problem` over it.
+# of every package the registries offer, every Julia version, and every stdlib
+# version any Julia bundles. It has no query-dependent parameters, which is the
+# point -- one universe per registry state, and every query is a `Problem` over it.
 #
 # (`workspace_pkgs` is not a query knob: a workspace's member packages are part of
 # the environment's package universe, fixed at their local versions, the way a
 # registry's packages are part of it at their registered versions.)
+#
+# `allow_yanked` is not a query knob either, though a flag sets it: yankedness is
+# registry-derived, so what it selects is a *different universe* -- the one that
+# keeps the versions the registries have struck -- rather than a different query
+# over the same one. That is why it belongs here and not in the `Problem`, and
+# rebuilding for it is rare and cheap next to being unable to trust that a resolve
+# never names a yanked version.
+#
+# `yanked` is an out-parameter: pass a dictionary and the provider records, per
+# package, the versions the filter dropped -- which is what lets the caller say
+# "the versions your bound admits are yanked" rather than "no such version".
 function registry_provider(
     packages       :: Dict{UUID,Vector{PkgEntry}};
     workspace_pkgs :: Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}} =
                       Dict{UUID,Tuple{String,VersionNumber,Vector{UUID}}}(),
+    allow_yanked   :: Dict{UUID,Bool} = Dict{UUID,Bool}(),
+    yanked         :: Dict{UUID,Set{VersionNumber}} =
+                      Dict{UUID,Set{VersionNumber}}(),
 )
     stdlibs, bundlers, by_patch = STDLIB_VERSIONS, BUNDLERS, BUNDLERS_BY_PATCH
 
@@ -342,6 +375,12 @@ function registry_provider(
         # versions that exist only because a Julia bundles them (no registry
         # entry); the widening below bounds them to their bundling Julias
         bundled_only = Set{VersionNumber}()
+        # the registry versions the yanked filter struck: left out of `vers`
+        # below, and not restored by the stdlib patch-in either -- a version the
+        # registries have struck is gone from the universe whether or not some
+        # Julia also ships it (that Julia's pin then has nothing to pin to, the
+        # same as any other version the registries do not offer)
+        struck = Set{VersionNumber}()
         if uuid == JULIA_UUID
             union!(vers, JULIA_VERSIONS)
             for v in vers
@@ -368,16 +407,24 @@ function registry_provider(
                 end
             end
         elseif uuid in keys(packages)
+            # the versions the registries have struck, unless this query asked
+            # for them back; recorded so the caller can report what went missing
+            if !allows_yanked(allow_yanked, uuid)
+                union!(struck, yanked_versions(packages, uuid))
+                isempty(struck) || (yanked[uuid] = struck)
+            end
             for entry in packages[uuid]
                 info = package_info(entry)
                 # every version this registry has
                 new_vers = collect(keys(info.version_info))
-                # nothing is filtered out here: the project's own compat,
-                # prerelease admission and yankedness are all query constraints,
-                # and they reach the resolver as part of the `Problem` (see
-                # bin/resolve.jl). the provider only decides which versions exist
+                # yanked versions aside, nothing is filtered out here: the
+                # project's own compat and prerelease admission are query
+                # constraints, and they reach the resolver as part of the
+                # `Problem` (see bin/resolve.jl). the provider decides which
+                # versions exist, and a struck version does not
                 # scan versions and populate deps & compat data
                 for v in new_vers
+                    v in struck && continue
                     # NOTE: we probably won't support the same name meaning
                     # different things in deps vs weakdeps, but here we can
                     # allow it, so we defensively do allow it
@@ -431,6 +478,7 @@ function registry_provider(
         if uuid in keys(stdlibs)
             for (v, info) in stdlibs[uuid]
                 v in vers && continue # prefer real registry data
+                v in struck && continue # struck by the registries
                 push!(vers, v)
                 push!(bundled_only, v)
                 deps[v] = info.deps

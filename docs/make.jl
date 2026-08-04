@@ -4,6 +4,11 @@ using Resolver
 makedocs(
     sitename = "Resolver.jl",
     modules = [Resolver],
+    # the UnsatCores submodule is internal machinery for the diagnostics: its
+    # docstrings document its own API for the code that consumes it, and belong
+    # no more in this manual than the rest of src/ does. without this, checkdocs
+    # demands an @docs block for every one of them
+    checkdocs_ignored_modules = [Resolver.UnsatCores],
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
         canonical = "https://karpinski.org/Resolver.jl",

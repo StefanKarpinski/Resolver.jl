@@ -277,6 +277,7 @@ end
     @test resolve(info, [:C]; group = false) == Dict(:C => :v1, :A => :v1)
 end
 
+include("unsat_cores.jl")
 include("problem.jl")
 include("satisfiable.jl")
 include("classes.jl")

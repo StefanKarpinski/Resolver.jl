@@ -105,6 +105,44 @@ function is_excluded(prob::Problem{P}, p::P, v) where {P}
     return false
 end
 
+# Which of the problem's constraints forbid version `v` of package `p`: one
+# symbol per source that does — `:compat` for an allowed-version set the version
+# is not in, `:pin` for a pin at another version, and its own symbol for each
+# admission kind whose predicate holds — in that order, and empty when the
+# problem admits the version. Every source is named, where `is_excluded` stops
+# at the first: lifting one source leaves the others in force, so what a
+# question about lifting one needs is all of them.
+function exclusion_sources(prob::Problem{P}, p::P, v) where {P}
+    srcs = Symbol[]
+    s = get(prob.compat, p, nothing)
+    s === nothing || v ∈ s || push!(srcs, :compat)
+    w = get(prob.pins, p, nothing)
+    w === nothing || v == w || push!(srcs, :pin)
+    for (kind, forbids) in prob.excludes
+        forbids(p, v)::Bool && push!(srcs, kind)
+    end
+    return srcs
+end
+
+# Why class `c` of package `p` holds nothing this problem admits: the class's
+# members in version order, each paired with the sources that exclude it
+# (`exclusion_sources`). A constraint forbids versions, and a class is empty
+# when every member of it is forbidden — so the class is empty exactly when no
+# pair here has an empty source list, and these pairs are then the whole of what
+# emptied it: which versions the class holds, and what rules each one out.
+#
+# Constraints and the partition are all this reads; no solver is involved.
+function class_exclusions(
+    prob   :: Problem{P},
+    p      :: P,
+    info_p,        # `p`'s PkgInfo (declared after this file)
+    c      :: Integer,
+) where {P}
+    vers = info_p.versions
+    return [vers[i] => exclusion_sources(prob, p, vers[i])
+            for i in info_p.members[c]]
+end
+
 # the packages a constraint could forbid a version of. Compat bounds and pins
 # name their packages, and only a handful of packages are named, which is what
 # makes constraining cheap; an admission knob is stated about versions instead, so

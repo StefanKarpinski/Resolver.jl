@@ -311,7 +311,8 @@ SAT(info :: Dict{P,PkgInfo{P,V}}) where {P,V} = SAT(Universe(info))
 # level 0 (no assumptions) while a single `sat_pop` reactivates every class at
 # once — after which any subset can be deactivated again by assuming its
 # literal, with no clause rewritten. Nothing pops the frame in production; the
-# frame exists so that what is built on top of this can.
+# frame exists so that what is built on top of this can, which is
+# `with_classes_relaxed`.
 function deactivate_classes!(sat::SAT{P,V}) where {P,V}
     pico = sat.pico
     for (p, reps_p) in sat.reps
@@ -319,7 +320,7 @@ function deactivate_classes!(sat::SAT{P,V}) where {P,V}
         best = 0
         for (i, r) in enumerate(reps_p)
             if iszero(r)
-                push!(sat.deact, -(v_p + i))
+                push!(sat.deact, forbidden_lit(sat, p, i))
             elseif best == 0
                 best = i
             end
@@ -336,12 +337,44 @@ function deactivate_classes!(sat::SAT{P,V}) where {P,V}
     end
     isempty(sat.deact) && return sat
     sort!(sat.deact; by = abs) # dict order must not reach the solver
+    return push_deactivations!(sat)
+end
+
+# Assert `sat.deact` as unit clauses in a push frame of its own: one `sat_pop`
+# retracts all of them at once, and asserting them again is what puts the frame
+# back (`with_classes_relaxed`). Which classes are forbidden and where each
+# package's phase hint points are properties of the query, true whether or not
+# the frame is in force, so `deactivate_classes!` settles them once, around this.
+function push_deactivations!(sat::SAT)
+    isempty(sat.deact) && return sat
     sat_push(sat)
     for l in sat.deact
-        PicoSAT.add(pico, l)
-        PicoSAT.add(pico, 0)
+        PicoSAT.add(sat.pico, l)
+        PicoSAT.add(sat.pico, 0)
     end
     return sat
+end
+
+# Run `body` with every class of the universe choosable — the deactivating
+# clauses retracted — and put the frame back afterwards, whatever `body` does,
+# so the instance is as reusable as it was. Returns `body`'s value.
+#
+# Inside, activation is entirely a matter of assumption: assuming
+# `forbidden_lit(sat, p, c)` forbids class `c` of `p` for one solve, and
+# assuming all of `sat.deact` states exactly what the frame stated, so any
+# subset of the query's deactivations can be imposed one solve at a time with no
+# clause added and none rewritten. Restoring re-asserts the same unit clauses,
+# because popping a frame discards the clauses asserted in it.
+#
+# The deactivation frame has to be the innermost one, since `sat_pop` retracts
+# whatever was pushed last: this cannot run inside `with_temp_clauses`.
+function with_classes_relaxed(body::Function, sat::SAT)
+    isempty(sat.deact) && return body() # no frame to lift: nothing is forbidden
+    sat_pop(sat)
+    try body()
+    finally
+        push_deactivations!(sat)
+    end
 end
 
 function finalize(sat::SAT)
@@ -368,6 +401,17 @@ sat_assume(sat::SAT{P}, d::Dict{P,<:Integer}) where {P} =
     for (p, i) in d
         sat_assume(sat, p, i)
     end
+
+# The two facts about this instance a caller can put to it as a raw literal, in
+# the `Int` form `sat_assume_var` and the UnsatCores primitives take:
+
+# "package p is installed"
+installed_lit(sat::SAT{P}, p::P) where {P} = sat.vars[p]
+
+# "class c of package p is forbidden" — the same literal `deactivate_classes!`
+# asserts as a unit clause for a class this query admits no member of, so
+# assuming it says what that clause says, for one solve
+forbidden_lit(sat::SAT{P}, p::P, c::Integer) where {P} = -(sat.vars[p] + c)
 
 is_satisfiable(sat::SAT) =
     PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE

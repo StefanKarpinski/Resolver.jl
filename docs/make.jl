@@ -20,6 +20,7 @@ makedocs(
             "Setting" => "theory/setting.md",
             "The layered solution & filtering" => "theory/layered.md",
             "Pareto front optimality" => "theory/front.md",
+            "Diagnosing an unsatisfiable resolve" => "theory/diagnostics.md",
         ],
     ],
 )

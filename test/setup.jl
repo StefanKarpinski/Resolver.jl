@@ -27,8 +27,10 @@ function test_resolver(
     data :: AbstractDict{P,<:PkgData{P,V}},
     reqs :: AbstractVector{P},
 ) where {P,V}
-    # resolve: a single optimal solution, or nothing when unsatisfiable
-    sol = resolve(data, reqs)
+    # resolve: a single optimal solution, or nothing when unsatisfiable. what
+    # this checks is the answer, so it asks for the verdict rather than the
+    # report an unsatisfiable resolve otherwise returns (see test/diagnostics.jl)
+    sol = resolve(data, reqs; diagnose = false)
 
     # the cheap feasibility check must reach the same verdict as the descent:
     # this is `issatisfiable`'s whole contract, so every sweep checks it

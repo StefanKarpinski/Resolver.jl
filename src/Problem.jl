@@ -27,10 +27,10 @@ Three kinds of constraint, in two shapes:
 
   * `compat`: per package, the set of allowed versions (queried with `in`).
   * `pins`: per package, the one version it is held at.
-  * `excludes`: the *admission* knobs — "no prereleases" is the one the resolver's
-    own tooling uses — which say something about versions rather than about
-    particular packages, and so come as `kind => predicate` pairs, where
-    `predicate(p, v)` is true for the versions that source forbids and `kind` is a
+  * `excludes`: the *exclusion kinds* — "no prereleases" is the one the resolver's
+    own tooling uses. An exclusion kind says something about versions rather than
+    about particular packages, and so comes as a `kind => predicate` pair, where
+    `predicate(p, v)` is true for the versions that kind forbids and `kind` is a
     symbol naming it.
 
 Constraints for packages that don't exist, and constraints that exclude nothing,
@@ -48,7 +48,7 @@ struct Problem{P,V,S}
     # empty dictionary instead of allocating two per problem
     compat :: AbstractDict{P,S}
     pins   :: AbstractDict{P,V}
-    # admission knobs: per kind, a predicate `(p, v) -> Bool` that is true for
+    # exclusion kinds: per kind, a predicate `(p, v) -> Bool` that is true for
     # the versions that kind forbids ("no prereleases", say)
     excludes :: Vector{Pair{Symbol,Any}}
 end
@@ -108,7 +108,7 @@ end
 # Which of the problem's constraints forbid version `v` of package `p`: one
 # symbol per source that does — `:compat` for an allowed-version set the version
 # is not in, `:pin` for a pin at another version, and its own symbol for each
-# admission kind whose predicate holds — in that order, and empty when the
+# exclusion kind whose predicate holds — in that order, and empty when the
 # problem admits the version. Every source is named, where `is_excluded` stops
 # at the first: lifting one source leaves the others in force, so what a
 # question about lifting one needs is all of them.
@@ -145,7 +145,7 @@ end
 
 # the packages a constraint could forbid a version of. Compat bounds and pins
 # name their packages, and only a handful of packages are named, which is what
-# makes constraining cheap; an admission knob is stated about versions instead, so
+# makes constraining cheap; an exclusion kind is stated about versions instead, so
 # it reaches every package in the universe.
 exclusion_candidates(info::AbstractDict{P}, prob::Problem{P}) where {P} =
     isempty(prob.excludes) ?
@@ -157,7 +157,7 @@ exclusion_candidates(info::AbstractDict{P}, prob::Problem{P}) where {P} =
 The versions of each package that `prob`'s constraints forbid, as a mask over
 that package's version list in `info`. Only packages with a constraint that
 actually excludes something get an entry, so packages nothing constrains — the
-overwhelming majority, absent an admission knob — cost nothing downstream.
+overwhelming majority, absent an exclusion kind — cost nothing downstream.
 
 This is the only place a constraint is ever evaluated, and what reads it is
 [`class_ranking`](@ref Resolver.class_ranking), which turns it into

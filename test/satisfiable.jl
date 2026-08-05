@@ -64,7 +64,8 @@ end
                      Problem([:A]; pins = Dict(:B => :v9)),
                      Problem([:A, :B]; compat = Dict(:Z => Symbol[])),
                      Problem(Symbol[]))
-            @test issatisfiable(src, prob) == (resolve(src, prob) !== nothing)
+            @test issatisfiable(src, prob) ==
+                  (resolve(src, prob; diagnose = false) !== nothing)
         end
         # the keyword forms are the same calls as the `Problem` ones
         @test issatisfiable(src, [:A]) == issatisfiable(src, Problem([:A]))
@@ -75,7 +76,7 @@ end
         # requirements may be a set as well as a vector, and default to the
         # whole universe
         @test issatisfiable(src, Set([:A])) == issatisfiable(src, [:A])
-        @test issatisfiable(src) == (resolve(src) !== nothing)
+        @test issatisfiable(src) == (resolve(src; diagnose = false) !== nothing)
     end
 
     # ... and a SAT instance, the shape the others build internally
@@ -161,7 +162,8 @@ end
     try
         counts = solve_count(sat) !== nothing
         clauses = PicoSAT.clause_count(sat.pico)
-        @test resolve(sat, reqs; restore = false) == resolve(data, reqs)
+        @test resolve(sat, reqs; restore = false) ==
+              resolve(data, reqs; diagnose = false)
         @test !counts || solve_count(sat) > 1
         @test PicoSAT.clause_count(sat.pico) > clauses
     finally
@@ -189,8 +191,8 @@ end
                 prob = Problem(reqs; compat, pins)
                 verdict = issatisfiable(data, prob)
                 for by in (hi, lo), order in (nothing, up)
-                    @test verdict ==
-                        (resolve(data, prob; by, order) !== nothing)
+                    @test verdict == (resolve(data, prob;
+                        by, order, diagnose = false) !== nothing)
                 end
             end
         end

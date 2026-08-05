@@ -134,7 +134,7 @@ end
 @testset "precondition 2c: redundancy never deletes a dead class" begin
     # :P's classes are {:v3, :v1} (no constraints at all) and {:v2} (conflicts
     # with :Q@:w2), so the first dominates the second outright. Two different
-    # sources empty them: the compat bound takes the dominator, an admission
+    # sources empty them: the compat bound takes the dominator, an exclusion
     # kind takes the dominated one. Deleting the dominated class for being
     # dominated would make relaxing the kind alone unanswerable, because the
     # class it would return is the one that was deleted.
@@ -310,7 +310,7 @@ end
     # the two sources empty that one class between them
     univ = rank_pkg_info(info, prob)
     @test univ.reps[:A] == [0]
-    @test resolve(data, prob) === nothing
+    @test resolve(data, prob; diagnose = false) === nothing
 
     # relaxing either source reactivates the same single class — there is no
     # "half" of this constraint set to be unsound about, and nothing that could

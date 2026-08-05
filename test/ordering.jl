@@ -46,7 +46,8 @@ end
 # passing a comparator == baking the same order into the data
 function test_order_equivalence(data, prob, order; by::Function = identity)
     baked = bake_order(data, order)
-    @test resolve(data, prob; by, order) == resolve(baked, prob; by)
+    @test resolve(data, prob; by, order, diagnose = false) ==
+          resolve(baked, prob; by, diagnose = false)
 end
 
 @testset "ordering: permutations and identity" begin
@@ -146,8 +147,9 @@ end
                 # ... and the ordering must not disturb the bake-equivalence of
                 # the user constraints either
                 prob = Problem(reqs; compat, pins)
-                @test resolve(data, prob; by, order) ==
-                      resolve(bake(bake_order(data, order), prob), reqs; by)
+                @test resolve(data, prob; by, order, diagnose = false) ==
+                      resolve(bake(bake_order(data, order), prob), reqs;
+                              by, diagnose = false)
             end
         end
     end
@@ -196,10 +198,11 @@ end
                 for prob in (Problem(reqs), Problem(reqs; compat, pins)),
                     order in (CANONICAL, reversed(m, n), shuffled(m, n))
                     baked = bake_order(data, order)
-                    @test resolve(all_reqs, prob; order) == resolve(baked, prob)
+                    @test resolve(all_reqs, prob; order, diagnose = false) ==
+                          resolve(baked, prob; diagnose = false)
                     # ... and the same artifact answers the next query too
-                    @test resolve(all_reqs, prob; order) ==
-                          resolve(all_reqs, prob; order)
+                    @test resolve(all_reqs, prob; order, diagnose = false) ==
+                          resolve(all_reqs, prob; order, diagnose = false)
                 end
             end
             @test all_reqs == before

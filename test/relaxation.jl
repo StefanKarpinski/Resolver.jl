@@ -12,7 +12,7 @@
 # Attribution is a statement about constraints and versions, deactivation is a
 # statement about the instance, and the sweeps below are that they are the same
 # statement — checked over the tiny data grids crossed with randomized compat
-# bounds, pins, an admission kind, and every combination of the three.
+# bounds, pins, an exclusion kind, and every combination of the three.
 
 using Resolver: PkgData, Problem, SAT, PicoSAT, pkg_info, nclasses, NoKinds,
     rank_pkg_info, finalize, is_satisfiable, is_excluded,
@@ -51,7 +51,7 @@ one_source(prob::Problem, src::Symbol) =
 
 # a random constraint set of the requested shape over `m` packages with `n`
 # versions each. `random_constraints` (problem.jl) draws the compat bounds and
-# pins, including entries for a package that is not in the data; the admission
+# pins, including entries for a package that is not in the data; the exclusion
 # kind forbids a random set of (package, version) pairs, reaching every package
 # at once the way a kind does
 function random_problem(reqs, m::Int, n::Int, shape::Symbol)
@@ -127,7 +127,7 @@ end
 @testset "attribution: why a class is empty" begin
     # nothing in the registry tells :A's :v2 and :v1 apart, so they are one
     # class of two members, and two sources empty it between them: the compat
-    # bound takes one member, the admission kind the other
+    # bound takes one member, the exclusion kind the other
     data = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]), NO_COMP),
         :B => PkgData([:w1], NO_DEPS, NO_COMP),
@@ -286,7 +286,7 @@ end
 
 @testset "the lift is scoped, and selective inside" begin
     # :P's two classes are emptied by two different sources: the compat bound
-    # takes the class holding :v3 and :v1, the admission kind the one holding
+    # takes the class holding :v3 and :v1, the exclusion kind the one holding
     # :v2 (which is a class of its own because it conflicts with :Q@:w2)
     data = Dict(
         :P => PkgData([:v3, :v2, :v1], NO_DEPS, Dict(:v2 => Dict(:Q => [:w1]))),

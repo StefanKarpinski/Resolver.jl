@@ -296,6 +296,7 @@ include("problem.jl")
 include("satisfiable.jl")
 include("classes.jl")
 include("class_space.jl")
+include("relaxation.jl")
 include("ordering.jl")
 
 @testset "registry resolve" begin

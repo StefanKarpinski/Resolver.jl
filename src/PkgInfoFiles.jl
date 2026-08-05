@@ -14,6 +14,10 @@ function save_pkg_info_file(
         for p in pv
             d = info[p]
             write_vals(io, d.versions)
+            # the matrix is indexed by the partition, so the partition has to
+            # be in the file: without it there is no saying which version a row
+            # stands for
+            write_ints(io, d.classes)
             write_vals(io, pm, d.depends)
             write_vals(io, pm, sort!(collect(keys(d.interacts))))
             write_bits(io, d.conflicts)
@@ -40,21 +44,19 @@ function load_pkg_info_file(
         info = Dict{P,PkgInfo{P,V}}()
         for p in pv
             versions  = read_vals(io, V)
+            classes   = read_ints(io)
             depends   = read_vals(io, pv)
             interacts = read_vals(io, pv)
-            conflicts = read_bits(io, padded_rows(length(versions)))
+            conflicts = read_bits(io, padded_rows(maximum(classes; init = 0)))
             interacts = Dict{P, Int}(q => 0 for q in interacts)
-            # the interchangeability classes are a function of the conflicts
-            # matrix, so the file need not carry them: the four-argument
-            # constructor recomputes them
-            info[p] = PkgInfo(versions, depends, interacts, conflicts)
+            info[p] = PkgInfo(versions, classes, depends, interacts, conflicts)
         end
-        # compute interacts dict values
+        # compute interacts dict values: one column block per partner *class*
         for (p, d) in info
             b = length(d.depends)
             for q in sort!(collect(keys(d.interacts)))
                 d.interacts[q] = b
-                b += length(info[q].versions)
+                b += nclasses(info[q])
             end
         end
         return info :: Dict{P,PkgInfo{P,V}} where {P<:P⁺,V<:V⁺}
@@ -63,7 +65,7 @@ end
 
 ## bespoke de/serialization functions ##
 
-const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v2\0"
+const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v3\0"
 
 function write_magic(io::IO)
     write(io, magic)
@@ -101,6 +103,18 @@ function read_int(io::IO, ::Type{T} = Int) where {T<:Integer}
         s += 7
     end
     return n
+end
+
+function write_ints(io::IO, v::Vector{<:Integer})
+    write_int(io, length(v))
+    for x in v
+        write_int(io, x)
+    end
+end
+
+function read_ints(io::IO)
+    n = read_int(io, Int)
+    return Int[read_int(io, Int) for _ = 1:n]
 end
 
 function write_vals(io::IO, v::Vector)

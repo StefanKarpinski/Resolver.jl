@@ -12,7 +12,7 @@
 # down to the partner blocks of every conflicts matrix.
 
 using Resolver: PkgData, PkgInfo, DepsProvider, Problem, pkg_info,
-    prepare_pkg_info, version_permutations, class_representatives
+    prepare_pkg_info, version_permutations, class_ranking
 
 # a comparator over the tiny data's integer versions, from a ranking: `ranks[v]`
 # is how good v is, lower being better
@@ -43,14 +43,10 @@ function bake_order(data::AbstractDict{P}, order) where {P}
          for (p, data_p) in data)
 end
 
-# passing a comparator == baking the same order into the data, for both the
-# grouped and the ungrouped path
+# passing a comparator == baking the same order into the data
 function test_order_equivalence(data, prob, order; by::Function = identity)
     baked = bake_order(data, order)
-    for group in (true, false)
-        @test resolve(data, prob; by, order, group) ==
-              resolve(baked, prob; by, group)
-    end
+    @test resolve(data, prob; by, order) == resolve(baked, prob; by)
 end
 
 @testset "ordering: permutations and identity" begin
@@ -85,10 +81,20 @@ end
     info = pkg_info(data, keys(data); filter = false)
     @test info[:A].classes == [1, 2, 1] # :v3 and :v1 are interchangeable
     prob = Problem([:A])
-    @test class_representatives(info, prob)[:A] == BitVector([1, 1, 0])
+    reps, cperms = class_ranking(info, prob)
+    @test reps[:A] == [1, 2] # class 1 stands at :v3, class 2 at :v2
+    @test cperms === nothing # ... which is the order the artifact has
     up_perms = version_permutations(info, up)
-    @test class_representatives(info, prob, up_perms)[:A] ==
-          BitVector([0, 1, 1]) # reversed: :v1 now represents the class
+    reps, cperms = class_ranking(info, prob, up_perms)
+    @test reps[:A] == [3, 2]     # reversed: :v1 now represents the class
+    @test !haskey(cperms, :A)    # ... and it still outranks :v2
+    @test cperms[:B] == [2, 1]   # :B's own two classes do swap, though
+    # a constraint on the best member moves the class it is in: with :v3 out,
+    # class 1 competes at :v1 and falls behind the class holding :v2
+    prob = Problem([:A]; compat = Dict(:A => [:v2, :v1]))
+    reps, cperms = class_ranking(info, prob)
+    @test reps[:A] == [3, 2]
+    @test cperms[:A] == [2, 1]
 
     # and the answer follows the order: ascending picks the worst versions
     @test resolve(data, [:A, :B]) == Dict(:A => :v3, :B => :v2)

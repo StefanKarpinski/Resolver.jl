@@ -8,7 +8,8 @@
 # used to mean.
 
 using Resolver: Problem, PkgData, PkgInfo, pkg_info, SAT, PicoSAT,
-    exclusion_masks, is_excluded, finalize, sat_assume, sat_pop, is_satisfiable
+    exclusion_masks, is_excluded, finalize, sat_assume, sat_pop,
+    is_satisfiable, rank_pkg_info, prepare_pkg_info
 
 # delete the versions `prob` excludes from each package's data, old-style
 function bake(
@@ -236,61 +237,83 @@ end
     test_bake_equivalence(data, prob)
 end
 
-@testset "Problem: SAT selectors" begin
+@testset "Problem: constraints reach SAT as deactivated classes" begin
     nodeps = Dict{Symbol,Vector{Symbol}}()
     nocomp = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
     data = Dict(
         :A => PkgData([:v2, :v1], nodeps, nocomp),
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
+    # nothing distinguishes either package's versions, so each package is one
+    # class of two members -- which is exactly why a constraint sparing one
+    # member has nothing to say to the solver
     info = pkg_info(data, keys(data); filter = false)
+    @test info[:A].classes == info[:B].classes == [1, 1]
 
     # no constraints at all: exactly the structural instance
     plain = SAT(info)
-    same  = SAT(info, Problem([:A]))
+    same  = SAT(rank_pkg_info(info, Problem([:A])))
+    nvars = nclauses = 0
     try
-        @test isempty(plain.sels) && isempty(same.sels)
-        @test PicoSAT.var_count(plain.pico) == PicoSAT.var_count(same.pico)
-        @test PicoSAT.clause_count(plain.pico) == PicoSAT.clause_count(same.pico)
+        @test isempty(plain.deact) && isempty(same.deact)
+        nvars = PicoSAT.var_count(plain.pico)
+        nclauses = PicoSAT.clause_count(plain.pico)
+        @test nvars == PicoSAT.var_count(same.pico)
+        @test nclauses == PicoSAT.clause_count(same.pico)
     finally
         finalize(plain)
         finalize(same)
     end
 
-    # one selector per constraint source that forbids something; allow-all
-    # entries and entries for absent packages get none
+    # a constraint that leaves a member standing is likewise no clause at all:
+    # :A's class still has :v1, so the instance is the structural one again
+    sat = SAT(rank_pkg_info(info, Problem([:A]; compat = Dict(:A => [:v1]))))
+    try
+        @test isempty(sat.deact)
+        @test PicoSAT.var_count(sat.pico) == nvars
+        @test PicoSAT.clause_count(sat.pico) == nclauses
+    finally
+        finalize(sat)
+    end
+
+    # one literal per emptied class, whatever emptied it, and none for
+    # allow-all entries or entries for absent packages
     prob = Problem([:A];
         compat = Dict(:A => [:v1], :B => [:v1, :v2], :Z => Symbol[]),
-        pins   = Dict(:A => :v1, :Z => :v1))
-    sat = SAT(info, prob)
+        pins   = Dict(:A => :v2))
+    univ = rank_pkg_info(info, prob)
+    sat = SAT(univ)
     try
-        @test Set(values(sat.sels)) == Set([(:compat, :A), (:pin, :A)])
-        @test length(sat.sels) == 2
-        # every mask has a selector, every selector a mask
-        excl = exclusion_masks(info, prob)
-        @test Set(keys(excl)) == Set(p for (_, p) in values(sat.sels))
+        # compat allows only :v1, the pin only :v2: jointly nothing, so :A's
+        # one class is empty. :B's is untouched
+        @test univ.reps[:A] == [0]
+        @test univ.reps[:B] == [1]
+        @test sat.deact == [-(sat.vars[:A] + 1)]
+        @test !is_satisfiable(sat, [:A])
     finally
         finalize(sat)
     end
 end
 
-@testset "Problem: popping the frame relaxes the constraints" begin
-    # the user constraints are asserted as unit clauses in a push frame of
-    # their own: nothing pops it in production, but one pop makes every
-    # previously-forbidden assignment feasible again
+@testset "Problem: popping the frame reactivates the classes" begin
+    # the deactivations are asserted as unit clauses in a push frame of their
+    # own: nothing pops it in production, but one pop makes every deactivated
+    # class choosable again
     nodeps = Dict{Symbol,Vector{Symbol}}()
     nocomp = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
+    # :A@v2 conflicts with :B@v2, so each package has two classes of its own
     data = Dict(
-        :A => PkgData([:v2, :v1], nodeps, nocomp),
+        :A => PkgData([:v2, :v1], nodeps, Dict(:v2 => Dict(:B => [:v1]))),
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
     prob = Problem([:A, :B];
         compat = Dict(:A => [:v1]), pins = Dict(:B => :v2))
     info = pkg_info(data, prob; filter = false)
-    sat = SAT(info, prob)
+    univ = rank_pkg_info(info, prob)
+    sat = SAT(univ)
     try
-        @test length(sat.sels) == 2
-        # A@v2 is forbidden by compat, B@v1 by the pin
+        @test length(sat.deact) == 2
+        # :A's :v2 class is emptied by compat, :B's :v1 class by the pin
         sat_assume(sat, :A, 1)
         @test !is_satisfiable(sat)
         sat_assume(sat, :B, 2)
@@ -336,14 +359,30 @@ end
     @test resolve(data, prob) == resolve(data, both)
     test_bake_equivalence(data, prob)
 
-    # one selector per source, so a kind, a compat bound and a pin on the same
-    # package stay distinguishable
+    # sources are indistinguishable once they have emptied a class -- and here
+    # they have emptied none. Nothing tells :A's two versions apart, nor :B's,
+    # so each package is one class; the kind forbids :v2 of each and the class
+    # survives through :v1. Three constraint sources on two packages, and
+    # nothing at all for any of them to say to the solver
+    @test info[:A].classes == info[:B].classes == [1, 1]
     prob = Problem([:A]; compat = Dict(:A => [:v1, :v2]),
                          pins = Dict(:B => :v1), excludes = [odd])
-    sat = SAT(info, prob)
+    univ = rank_pkg_info(info, prob)
+    sat = SAT(univ)
     try
-        @test Set(values(sat.sels)) ==
-              Set([(:test, :A), (:test, :B), (:pin, :B)])
+        @test univ.reps[:A] == [2] # the class of {:v2, :v1}, standing at :v1
+        @test univ.reps[:B] == [2]
+        @test isempty(sat.deact)
+    finally
+        finalize(sat)
+    end
+    # ... whereas a pin the kind contradicts leaves the class nothing at all
+    prob = Problem([:A]; pins = Dict(:B => :v2), excludes = [odd])
+    univ = rank_pkg_info(info, prob)
+    sat = SAT(univ)
+    try
+        @test univ.reps[:B] == [0]
+        @test sat.deact == [-(sat.vars[:B] + 1)]
     finally
         finalize(sat)
     end
@@ -381,9 +420,7 @@ end
                           resolve(data, as_compat; by)
                     test_bake_equivalence(data, as_kind; by)
                 end
-                # ... and the collapse and the ordering stay orthogonal to it
-                @test resolve(data, as_kind; group = false) ==
-                      resolve(data, as_kind; group = true)
+                # ... and the ordering stays orthogonal to it
                 order = p -> (u, v) -> u > v
                 @test resolve(data, as_kind; order) ==
                       resolve(bake(data, as_kind), reqs; order)

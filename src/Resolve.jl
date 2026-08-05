@@ -1,5 +1,5 @@
 # find the optimal solution determined by the priority ordering `by`:
-# a package => version-index dict, or nothing when the requirements are
+# a package => class-index dict, or nothing when the requirements are
 # not jointly satisfiable
 function resolve_core(
     sat  :: SAT{P},
@@ -23,11 +23,11 @@ function resolve_core(
     # dependencies of the chosen versions that still need optimizing
     function optimize!(opts::Set{P}, seen::Set{P})
         layer = sort!(collect(opts); by)
-        # optimistic joint probe: assume the best version of every
+        # optimistic joint probe: assume the best class of every
         # package in the layer that the current model doesn't already
         # have at its best. when jointly feasible — the common case —
         # one solve pins the whole layer, and joint feasibility of the
-        # best versions witnesses each of the sequential optimizations
+        # best classes witnesses each of the sequential optimizations
         # below, so the layered answer is unchanged. a failed probe
         # tells us nothing and the sequential path proceeds as usual
         # (skipped for a single package, whose own probe covers it)
@@ -40,11 +40,11 @@ function resolve_core(
         end
         for p in layer
             optimize_version!(sat, sol, p)
-            # fix optimized version
+            # fix optimized class
             sat_add(sat, p, sol[p])
             sat_add(sat)
         end
-        # next optimization set: new dependencies of the chosen versions
+        # next optimization set: new dependencies of the chosen classes
         opts′ = empty(opts)
         for p in opts
             info_p = sat.info[p]
@@ -118,7 +118,7 @@ a `SAT` instance. The `SAT` method also accepts `restore::Bool = true`: when
 true the instance's clauses are restored before returning so the instance
 can be reused; `restore = false` is faster for single-use instances.
 
-The other methods accept two more keywords:
+The other methods accept one more keyword:
 
   * `order`: the *version* preference ordering, as a callable mapping a package
     to a `lt` comparator over its versions ("is preferred to"). The default,
@@ -128,10 +128,12 @@ The other methods accept two more keywords:
     the valid solutions rather than changing which ones are valid, so it is a
     parameter here instead of part of the `Problem`, and one artifact serves
     every ordering.
-  * `group::Bool = true`: whether to collapse each package's interchangeable
-    versions to one representative before solving (see `prepare_pkg_info`).
-    Grouping is an optimization and cannot change the answer; `group = false` is
-    the escape hatch that says so.
+
+    The universe is built out of *interchangeability classes* — sets of versions
+    nothing in the registry can tell apart (see
+    [`pkg_info`](@ref Resolver.pkg_info)) — so `order` decides two things: which
+    class the answer picks, and which member of that class it names, namely the
+    best one the query admits.
 """
 function resolve(
     sat  :: SAT{P,V},
@@ -141,17 +143,18 @@ function resolve(
 ) where {P,V}
     sol = resolve_core(sat, reqs; by, restore)
     sol === nothing && return nothing
-    return Dict{P,V}(p => sat.info[p].versions[i] for (p, i) in sol)
+    # a solution names classes; the version each stands for is `reps`
+    return Dict{P,V}(
+        p => sat.info[p].versions[sat.reps[p][i]] for (p, i) in sol)
 end
 
-# resolve a universe that `prepare_pkg_info` has already laid out, collapsed
-# & filtered
+# resolve a universe that `prepare_pkg_info` has already ranked & filtered
 function resolve_prepared(
-    info :: Dict{P,PkgInfo{P,V}},
+    univ :: Universe{P,V},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
 ) where {P,V}
-    sat = SAT(info, prob)
+    sat = SAT(univ)
     # the instance is single-use, so don't bother restoring its state
     try resolve(sat, prob.reqs; by, restore=false)
     finally
@@ -168,22 +171,20 @@ function resolve(
     deps :: DepsProvider{P},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
-    group :: Bool = true, # collapse interchangeable versions
     order = nothing, # version ordering
 ) where {P}
     info = pkg_info(deps, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob; by)
 end
 
 function resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
-    group :: Bool = true, # collapse interchangeable versions
     order = nothing, # version ordering
 ) where {P}
     info = pkg_info(data, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; group, order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob; by)
 end
 
 # a caller-supplied info may be a reusable (or cached) T1 artifact, so this
@@ -192,10 +193,9 @@ function resolve(
     info :: AbstractDict{P,PkgInfo{P,V}},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
-    group :: Bool = true, # collapse interchangeable versions
     order = nothing, # version ordering
 ) where {P,V}
-    resolve_prepared(prepare_pkg_info(info, prob; group, order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob; order), prob; by)
 end
 
 # convenience entry points: bare requirements, with the user constraints (if
@@ -207,9 +207,8 @@ resolve(
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
-    group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
-) where {P} = resolve(deps, Problem(reqs; compat, pins); by, group, order)
+) where {P} = resolve(deps, Problem(reqs; compat, pins); by, order)
 
 resolve(
     data :: AbstractDict{P,<:PkgData{P}},
@@ -217,9 +216,8 @@ resolve(
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
-    group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
-) where {P} = resolve(data, Problem(reqs; compat, pins); by, group, order)
+) where {P} = resolve(data, Problem(reqs; compat, pins); by, order)
 
 resolve(
     info :: AbstractDict{P,PkgInfo{P,V}},
@@ -227,9 +225,8 @@ resolve(
     compat :: AbstractDict{P} = EmptyDict{P,Any}(),
     pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
-    group  :: Bool = true, # collapse interchangeable versions
     order  = nothing, # version ordering
-) where {P,V} = resolve(info, Problem(reqs; compat, pins); by, group, order)
+) where {P,V} = resolve(info, Problem(reqs; compat, pins); by, order)
 
 """
     issatisfiable(data, reqs; compat = ..., pins = ...) -> Bool
@@ -241,9 +238,8 @@ actual solution.
 
 `data` may be a `DepsProvider`, a dict of `PkgData`, a dict of `PkgInfo`, or a
 `SAT` instance, and a `Problem` may be passed in place of the requirements and
-keywords, as with `resolve`. The `by`, `order` and `group` keywords are not
-accepted since they affect which solution `resolve` picks, not whether one
-exists. The `SAT` method leaves the instance unchanged, so it can be reused.
+keywords, as with `resolve`. The `by` and `order` keywords are not accepted
+since they affect which solution `resolve` picks, not whether one exists. The `SAT` method leaves the instance unchanged, so it can be reused.
 """
 function issatisfiable(
     sat  :: SAT{P},
@@ -257,13 +253,12 @@ function issatisfiable(
     return is_satisfiable(sat, reqs)
 end
 
-# check a universe that `prepare_pkg_info` has already laid out, collapsed
-# & filtered
+# check a universe that `prepare_pkg_info` has already ranked & filtered
 function issatisfiable_prepared(
-    info :: Dict{P,PkgInfo{P,V}},
+    univ :: Universe{P,V},
     prob :: Problem{P},
 ) where {P,V}
-    sat = SAT(info, prob)
+    sat = SAT(univ)
     try issatisfiable(sat, prob.reqs)
     finally
         finalize(sat)

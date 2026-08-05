@@ -8,7 +8,7 @@ using Test
 module TestResolver
 
 using Resolver: resolve, issatisfiable, DepsProvider, PkgData, PkgInfo,
-    pkg_data, pkg_info, filter_pkg_info!
+    pkg_data, pkg_info, filter_pkg_info!, nclasses
 using Test
 
 export test_resolver, ref_resolve
@@ -96,11 +96,18 @@ function test_resolver(
         # @info "optimality testing full data"
         info = data # type unstable but 🤷
     else
-        # bound the enumeration by the *uncollapsed* filtered universe: the
-        # collapsed one is smaller, and enumerating fewer candidate solutions
-        # would only weaken the domination check below
-        info = filter_pkg_info!(pkg_info(data, reqs), reqs)
-        Π = prod(float(length(ip.versions)+1) for ip in values(info))
+        # bound the enumeration by the filtered universe, one candidate per
+        # surviving class: its representative. Class members are
+        # interchangeable, so a potential solution using a member is valid
+        # exactly when the one using its class's representative is, and the
+        # representative is the best member of the class — so any solution
+        # that dominates has a representatives-only counterpart that dominates
+        # too, and enumerating them is the same check over fewer candidates
+        univ = filter_pkg_info!(pkg_info(data, reqs), reqs)
+        info = Dict{P,Vector{V}}(
+            p => V[univ.info[p].versions[r] for r in univ.reps[p] if r != 0]
+            for p in keys(univ.info))
+        Π = prod(float(length(vs)+1) for vs in values(info))
         if Π > Π⁺
             # @info "no optimality testing"
             return sol
@@ -318,9 +325,18 @@ end
 
 PkgVers{P,V} = Union{PkgData{P,V},PkgInfo{P,V}}
 
-function each_potential_solution(
+# the enumeration domain is a version list per package; anything with a
+# `.versions` field supplies one
+each_potential_solution(
     body :: Function, # callback
     data :: AbstractDict{P,<:PkgVers{P,V}},
+    pkgs :: AbstractVector{P},
+) where {P,V} = each_potential_solution(
+    body, Dict{P,Vector{V}}(p => collect(d.versions) for (p, d) in data), pkgs)
+
+function each_potential_solution(
+    body :: Function, # callback
+    data :: AbstractDict{P,<:AbstractVector{V}},
     pkgs :: AbstractVector{P},
 ) where {P,V}
     L = length(pkgs)
@@ -330,7 +346,7 @@ function each_potential_solution(
         i ≤ L || (body(s); return)
         # otherwise iterate versions of next package:
         p = pkgs[i]
-        vers_p = haskey(data, p) ? data[p].versions : V[]
+        vers_p = haskey(data, p) ? data[p] : V[]
         for r = 0:length(vers_p)
             v = get(vers_p, r, nothing)
             s[i] = v

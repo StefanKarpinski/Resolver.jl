@@ -166,8 +166,26 @@ using Resolver: PkgData
     @test_throws ArgumentError("Required package MissingReq is not available in the package data") resolve(data, [:MissingReq])
 end
 
-using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file
+using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses
 @testset "pkg info files" begin
+    # the file carries the partition, since the matrix is built over it rather
+    # than the other way round: a loaded artifact must be equal to the saved
+    # one class for class, and must resolve to the same answers
+    function roundtrip(data, reqs, probs)
+        for filter in (false, true)
+            info = pkg_info(data, reqs; filter)
+            path = save_pkg_info_file(info)
+            back = load_pkg_info_file(path)
+            @test back == info
+            @test all(back[p].members == info[p].members for p in keys(info))
+            @test all(nclasses(back[p]) == nclasses(info[p]) for p in keys(info))
+            for prob in probs
+                @test resolve(back, prob) == resolve(info, prob)
+                @test resolve(back, prob) == resolve(data, prob)
+            end
+            rm(path)
+        end
+    end
     # roundtrip with String package names & integer versions
     sdata = Dict(
         "A" => PkgData([2, 1], Dict(2 => ["B"], 1 => ["B"]),
@@ -175,12 +193,11 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file
         "B" => PkgData([2, 1], Dict{Int,Vector{String}}(),
                        Dict{Int,Dict{String,Vector{Int}}}()),
     )
-    for filter in (false, true)
-        info = pkg_info(sdata, ["A"]; filter)
-        path = save_pkg_info_file(info)
-        @test load_pkg_info_file(path) == info
-        rm(path)
-    end
+    roundtrip(sdata, ["A"], [
+        Problem(["A"]),
+        Problem(["A"]; compat = Dict("B" => [1])),
+        Problem(["A", "B"]; pins = Dict("A" => 1)),
+    ])
     # roundtrip with Symbol package names & Symbol versions
     ydata = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]),
@@ -188,12 +205,11 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file
         :B => PkgData([:v2, :v1], Dict{Symbol,Vector{Symbol}}(),
                       Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()),
     )
-    for filter in (false, true)
-        info = pkg_info(ydata, [:A]; filter)
-        path = save_pkg_info_file(info)
-        @test load_pkg_info_file(path) == info
-        rm(path)
-    end
+    roundtrip(ydata, [:A], [
+        Problem([:A]),
+        Problem([:A]; compat = Dict(:B => [:v2])),
+        Problem([:A, :B]; pins = Dict(:B => :v1)),
+    ])
 end
 
 @testset "zero-version packages" begin
@@ -266,7 +282,6 @@ end
     )
     info = pkg_info(data, [:A]; filter = false)
     @test resolve(info, [:A]) === nothing
-    @test resolve(info, [:A]; group = false) === nothing
     data = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B]), nocomp),
         :B => PkgData(Symbol[], nodeps, nocomp),
@@ -274,13 +289,13 @@ end
     )
     info = pkg_info(data, [:C]; filter = false)
     @test resolve(info, [:C]) == Dict(:C => :v1, :A => :v1)
-    @test resolve(info, [:C]; group = false) == Dict(:C => :v1, :A => :v1)
 end
 
 include("unsat_cores.jl")
 include("problem.jl")
 include("satisfiable.jl")
 include("classes.jl")
+include("class_space.jl")
 include("ordering.jl")
 
 @testset "registry resolve" begin

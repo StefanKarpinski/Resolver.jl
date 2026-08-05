@@ -7,7 +7,8 @@
 # `test_resolver` (test/setup.jl) and `test_bake_equivalence` (test/problem.jl),
 # so every sweep in the suite checks it too.
 
-using Resolver: SAT, PicoSAT, DepsProvider, PkgData, pkg_info, finalize
+using Resolver: SAT, PicoSAT, DepsProvider, PkgData, pkg_info, finalize,
+    prepare_pkg_info
 
 # The number of solves an instance has run — or `nothing` when picosat's report
 # didn't reach us (see below). Picosat counts its own `picosat_sat` calls and
@@ -78,7 +79,7 @@ end
     end
 
     # ... and a SAT instance, the shape the others build internally
-    sat = SAT(info, Problem([:A]; compat, pins))
+    sat = SAT(prepare_pkg_info(info, Problem([:A]; compat, pins)))
     try
         @test issatisfiable(sat, [:A]) == (resolve(sat, [:A]) !== nothing)
         @test issatisfiable(sat) == (resolve(sat) !== nothing)
@@ -132,7 +133,7 @@ end
 
     # the verdict costs a single solve, and since the requirements are assumed
     # rather than asserted, the instance is left exactly as it was found
-    sat = SAT(info, prob)
+    sat = SAT(prepare_pkg_info(info, prob))
     try
         clauses = PicoSAT.clause_count(sat.pico)
         # can the solve count be read here? the clause counts below stand on
@@ -156,7 +157,7 @@ end
     # package it optimizes, so it both solves more than once (three times, on
     # this data) and — until the temporary clauses are rolled back — leaves
     # clauses behind
-    sat = SAT(info, prob)
+    sat = SAT(prepare_pkg_info(info, prob))
     try
         counts = solve_count(sat) !== nothing
         clauses = PicoSAT.clause_count(sat.pico)
@@ -187,9 +188,9 @@ end
                     (Dict{Int,Vector{Int}}(), Dict{Int,Int}()) : cs
                 prob = Problem(reqs; compat, pins)
                 verdict = issatisfiable(data, prob)
-                for by in (hi, lo), order in (nothing, up), group in (true, false)
+                for by in (hi, lo), order in (nothing, up)
                     @test verdict ==
-                        (resolve(data, prob; by, order, group) !== nothing)
+                        (resolve(data, prob; by, order) !== nothing)
                 end
             end
         end

@@ -1,11 +1,15 @@
 mutable struct SAT{P,V}
     info :: Dict{P,PkgInfo{P,V}}
+    # per package, the version index each class stands for (0: deactivated) —
+    # what turns a solution over classes back into one over versions
+    reps :: Dict{P,Vector{Int}}
     pico :: Ptr{Cvoid}
     vars :: Dict{P,Int}
-    # selector variable => the user constraint it guards; internal, for
-    # diagnostics (the constraints are asserted as unit clauses inside a push
-    # frame, so popping it relaxes all of them at once)
-    sels :: Dict{Int,Tuple{Symbol,P}}
+    # the literals forbidding the deactivated classes, sorted; internal.
+    # they are asserted as unit clauses inside a push frame, so one sat_pop
+    # reactivates every class at once — after which any subset of them can be
+    # deactivated again by assumption, no clause rewriting involved
+    deact :: Vector{Int}
 end
 
 function Base.show(io::IO, sat::SAT)
@@ -15,15 +19,21 @@ function Base.show(io::IO, sat::SAT)
     c = PicoSAT.clause_count(sat.pico)
     print(io,
         "(packages: ", p,
-        ", versions: ", v-p,
+        ", classes: ", v-p,
         ", clauses: ", c, ")")
 end
 
 # variable indices:
 #   p     vars[p]     package p chosen
-#   p@i   vars[p]+i   version i of p chosen
-#   p@≤k  lads[p]+k   some version ≤ k of p chosen (prefix ladder,
-#                     only for packages with several versions)
+#   p@c   vars[p]+c   class c of p chosen
+#   p@≤k  lads[p]+k   some class ≤ k of p chosen (prefix ladder,
+#                     only for packages with several classes)
+#
+# A variable is a *class*, not a version: class members are indistinguishable
+# to everything in the registry, so no solution can depend on which member
+# stands for a class, and the instance is the smaller for it. `sat.reps` names
+# the member at the end.
+#
 # returns the (sorted) names, the two index maps, and the last used variable
 function sat_variables(
     info :: Dict{P, <: PkgInfo{P}},
@@ -35,9 +45,9 @@ function sat_variables(
     lads = Dict{P,Int}()
     for p in names
         vars[p] = N
-        n_p = length(info[p].versions)
+        n_p = nclasses(info[p])
         # 1 variable for package
-        # n_p variables for versions
+        # n_p variables for classes
         N += 1 + n_p
         if n_p ≥ 2
             # n_p prefix-ladder variables at lads[p]+1 : lads[p]+n_p
@@ -48,8 +58,8 @@ function sat_variables(
     return names, vars, lads, N - 1
 end
 
-# append the literals for "no version in lo:hi of the package
-# with variable base v, ladder base l, and n versions is chosen"
+# append the literals for "no class in lo:hi of the package
+# with variable base v, ladder base l, and n classes is chosen"
 function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
     if lo == hi
         push!(lits, -(v + lo))
@@ -64,8 +74,9 @@ function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
 end
 
 function SAT(
-    info :: Dict{P,PkgInfo{P,V}},
+    univ :: Universe{P,V},
 ) where {P,V}
+    info = univ.info
     names, vars, lads, N = sat_variables(info)
 
     # instantiate picosat solver
@@ -78,9 +89,9 @@ function SAT(
         # fewer spuriously-true packages ("junk"), which makes solves
         # faster and improvement steps land on better versions
         PicoSAT.set_global_default_phase(pico, 0)
-        # ... except each package's best version, which defaults to
+        # ... except each package's best class, which defaults to
         # true: when a package must be chosen the solver tries its best
-        # version first, so models land at or near the optimum and the
+        # class first, so models land at or near the optimum and the
         # descent's improvement loops mostly never need to run
         for v_p in values(vars)
             PicoSAT.set_default_phase_lit(pico, v_p + 1, 1)
@@ -89,10 +100,10 @@ function SAT(
         # generate SAT problem
         for p in names
             info_p = info[p]
-            n_p = length(info_p.versions)
+            n_p = nclasses(info_p)
             v_p = vars[p]
 
-            # package implies some version
+            # package implies some class
             #   p => OR_i p@i
             PicoSAT.add(pico, -v_p)
             for i = 1:n_p
@@ -100,7 +111,7 @@ function SAT(
             end
             PicoSAT.add(pico, 0)
 
-            # version implies its package
+            # class implies its package
             #   p@i => p
             for i = 1:n_p
                 PicoSAT.add(pico, -(v_p + i))
@@ -108,11 +119,11 @@ function SAT(
                 PicoSAT.add(pico, 0)
             end
 
-            # prefix ladder: L_k holds iff some version ≤ k is chosen.
-            # the two upward directions make chosen versions force their
+            # prefix ladder: L_k holds iff some class ≤ k is chosen.
+            # the two upward directions make chosen classes force their
             # ladder suffix true; the completion direction, together with
             # at-most-one below, forces the ladder prefix *below* the
-            # chosen version false — which the interval conflict literals
+            # chosen class false — which the interval conflict literals
             # rely on when they occur positively
             if n_p ≥ 2
                 l_p = lads[p]
@@ -138,8 +149,8 @@ function SAT(
                     PicoSAT.add(pico, l_p + k - 1)
                     PicoSAT.add(pico, 0)
                 end
-                # versions are mutually exclusive:
-                #   p@k => no version < k (linear via the ladder)
+                # classes are mutually exclusive:
+                #   p@k => no class < k (linear via the ladder)
                 for k = 2:n_p
                     PicoSAT.add(pico, -(v_p + k))
                     PicoSAT.add(pico, -(l_p + k - 1))
@@ -147,10 +158,10 @@ function SAT(
                 end
             end
 
-            # dependencies, one clause per maximal run of versions
+            # dependencies, one clause per maximal run of classes
             # sharing the dependency (dep sets change rarely across
             # versions, so runs are long):
-            #   (some version in run chosen) => q
+            #   (some class in run chosen) => q
             l_p = get(lads, p, 0)
             for (k, q) in enumerate(info_p.depends)
                 v_q = vars[q]
@@ -177,26 +188,26 @@ function SAT(
         end
 
         # conflicts, encoded as rectangles: within each interacting pair's
-        # conflict bitmap, group p's versions by their conflict pattern
+        # conflict bitmap, group p's classes by their conflict pattern
         # against q (identical patterns are the norm, since conflicts come
         # from shared compat entries) and split each pattern into maximal
-        # runs of q's versions. each (version group) × (run) rectangle
-        # becomes one clause forbidding "some version in the group chosen
-        # AND some version in the run chosen". a side contributes its
-        # version literal when it is a singleton, its package variable
-        # when every version is covered, prefix-ladder literals when it
+        # runs of q's classes. each (class group) × (run) rectangle
+        # becomes one clause forbidding "some class in the group chosen
+        # AND some class in the run chosen". a side contributes its
+        # class literal when it is a singleton, its package variable
+        # when every class is covered, prefix-ladder literals when it
         # is an interval — ¬L_hi ∨ L_(lo-1), correct because a chosen
-        # version in the interval forces L_hi true and (by at-most-one
+        # class in the interval forces L_hi true and (by at-most-one
         # plus ladder completion) L_(lo-1) false — and otherwise a shared
-        # auxiliary trigger defined by one implication per version.
+        # auxiliary trigger defined by one implication per class.
         # triggers occur only negatively, so their one-directional
         # definitions suffice for exact model projection.
-        psets = Dict{Tuple{Int,Vector{Int}},Int}() # (v_p, versions) => var
+        psets = Dict{Tuple{Int,Vector{Int}},Int}() # (v_p, classes) => var
         pat = UInt64[]
         runs = Tuple{Int,Int}[]
 
-        # literal for "some version in S of the package with variable
-        # base v and n versions is chosen" (non-contiguous S only)
+        # literal for "some class in S of the package with variable
+        # base v and n classes is chosen" (non-contiguous S only)
         function set_trigger(v::Int, S::Vector{Int})
             get!(() -> begin
                 t = PicoSAT.inc_max_var(pico)
@@ -211,20 +222,20 @@ function SAT(
 
         for p in names
             info_p = info[p]
-            n_p = length(info_p.versions)
+            n_p = nclasses(info_p)
             v_p = vars[p]
             l_p = get(lads, p, 0)
             for (q, b) in info_p.interacts
                 p < q || continue # conflicts are symmetrical
                 info_q = info[q]
-                n_q = length(info_q.versions)
+                n_q = nclasses(info_q)
                 v_q = vars[q]
                 l_q = get(lads, q, 0)
                 Y = info_q.conflicts
                 c = info_q.interacts[p]
                 W = col_words(Y)
                 resize!(pat, W)
-                # group p's versions by conflict pattern: the pattern of
+                # group p's classes by conflict pattern: the pattern of
                 # p@i is the contiguous column c+i of q's matrix
                 groups = Dict{Vector{UInt64},Vector{Int}}()
                 for i = 1:n_p
@@ -274,28 +285,8 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    finalizer(finalize, SAT(info, pico, vars, Dict{Int,Tuple{Symbol,P}}()))
-end
-
-# the structural SAT instance for `info`, plus `prob`'s constraints as
-# selector-guarded exclusion clauses: for each constraint source that forbids a
-# kept version — one per compat entry, one per pin, one per admission kind and
-# package — a fresh selector variable `s` and one clause `(¬s, "no version in
-# run")` per maximal run of forbidden versions. the selectors are then asserted
-# as unit clauses inside a sat_push frame, so production solves see them at
-# level 0 (no assumptions), while a single sat_pop relaxes every constraint at
-# once. nothing pops the frame in production; the frame exists so diagnostics
-# can.
-#
-# constraints on packages absent from `info`, constraints that forbid nothing,
-# and constraints that forbid only versions the filter already dropped emit no
-# selector and no clauses — with none at all the instance is exactly SAT(info)
-function SAT(
-    info :: Dict{P,PkgInfo{P,V}},
-    prob :: Problem{P},
-) where {P,V}
-    sat = SAT(info)
-    try add_exclusions!(sat, prob)
+    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[]))
+    try deactivate_classes!(sat)
     catch
         finalize(sat)
         rethrow()
@@ -303,74 +294,51 @@ function SAT(
     return sat
 end
 
-function add_exclusions!(
-    sat  :: SAT{P,V},
-    prob :: Problem{P},
-) where {P,V}
-    is_constrained(prob) || return sat
-    info = sat.info
+# the structural instance for a bare artifact: every class stands for its best
+# member and nothing is deactivated, which is what an unconstrained query makes
+# of it (see `Universe`)
+SAT(info :: Dict{P,PkgInfo{P,V}}) where {P,V} = SAT(Universe(info))
+
+# Forbid the deactivated classes — the ones this query admits no member of.
+#
+# This is the *whole* of how a user constraint reaches the solver. It never
+# forbids a version, because a version is not something the instance can talk
+# about: the members of a class are indistinguishable, so a constraint that
+# spares one of them has left the class choosable and there is nothing to say.
+# What it can do is empty a class, and an empty class is one unit clause.
+#
+# The clauses go in a push frame of their own, so production solves see them at
+# level 0 (no assumptions) while a single `sat_pop` reactivates every class at
+# once — after which any subset can be deactivated again by assuming its
+# literal, with no clause rewritten. Nothing pops the frame in production; the
+# frame exists so that what is built on top of this can.
+function deactivate_classes!(sat::SAT{P,V}) where {P,V}
     pico = sat.pico
-    _, vars, lads = sat_variables(info)
-    lits = Int[]
-    mask = BitVector()
-    for p in constrained_packages(info, prob)
-        haskey(info, p) || continue # constraint on an absent package
-        vers = info[p].versions
-        n_p = length(vers)
-        n_p > 0 || continue # nothing to forbid, and no version variables
-        v_p = vars[p]
-        l_p = get(lads, p, 0)
-        resize!(mask, n_p)
-        # one selector per constraint source (see `exclusion_sources`), so
-        # diagnostics can tell a compat bound, a pin and an admission knob on
-        # the same package apart
-        for (kind, forbids) in exclusion_sources(prob, p)
-            fill!(mask, false)
-            found = false
-            for (i, v) in enumerate(vers)
-                forbids(v) || continue
-                mask[i] = true
-                found = true
-            end
-            found || continue # nothing left to forbid
-            sel = PicoSAT.inc_max_var(pico)
-            sat.sels[sel] = (kind, p)
-            # one clause per maximal run of forbidden versions, via the
-            # prefix ladder (same interval encoding as conflicts)
-            i = 1
-            while i ≤ n_p
-                if mask[i]
-                    lo = i
-                    while i < n_p && mask[i + 1]
-                        i += 1
-                    end
-                    empty!(lits)
-                    push!(lits, -sel)
-                    run_lits!(lits, v_p, l_p, lo, i, n_p)
-                    for x in lits
-                        PicoSAT.add(pico, x)
-                    end
-                    PicoSAT.add(pico, 0)
-                end
-                i += 1
+    for (p, reps_p) in sat.reps
+        v_p = sat.vars[p]
+        best = 0
+        for (i, r) in enumerate(reps_p)
+            if iszero(r)
+                push!(sat.deact, -(v_p + i))
+            elseif best == 0
+                best = i
             end
         end
-        # the structural instance defaults every package's best version to
-        # true, so that a package that must be chosen is tried at its best
-        # version first. when the user forbids that version, point the phase
-        # at the best version they do allow instead — otherwise the solver's
-        # first guess is infeasible for every constrained package at once
-        i = findfirst(v -> !is_excluded(prob, p, v), vers)
-        if i ≠ 1
+        # the structural instance defaults every package's best class to true,
+        # so that a package that must be chosen is tried at its best class
+        # first. when this query has emptied that class, point the phase at the
+        # best class it does admit instead — otherwise the solver's first guess
+        # is infeasible for every such package at once
+        if best != 1
             PicoSAT.set_default_phase_lit(pico, v_p + 1, 0)
-            isnothing(i) || PicoSAT.set_default_phase_lit(pico, v_p + i, 1)
+            best == 0 || PicoSAT.set_default_phase_lit(pico, v_p + best, 1)
         end
     end
-    # assert the selectors in a push frame of their own
-    isempty(sat.sels) && return sat
+    isempty(sat.deact) && return sat
+    sort!(sat.deact; by = abs) # dict order must not reach the solver
     sat_push(sat)
-    for sel in sort!(collect(keys(sat.sels)))
-        PicoSAT.add(pico, sel)
+    for l in sat.deact
+        PicoSAT.add(pico, l)
         PicoSAT.add(pico, 0)
     end
     return sat
@@ -411,7 +379,7 @@ end
 
 const is_unsatisfiable = !is_satisfiable
 
-# iterate the current solution's package => version-index assignments by
+# iterate the current solution's package => class-index assignments by
 # dereferencing the solver's assignment without re-solving: only valid right
 # after a solve that returned satisfiable, with no clauses added since --
 # ensuring that is the caller's responsibility
@@ -446,7 +414,7 @@ function solution(sat::SAT{P,V}) where {P,V}
     sol = Dict{P,V}()
     is_satisfiable(sat) || return sol
     each_solution_index(sat) do p, i
-        sol[p] = sat.info[p].versions[i]
+        sol[p] = sat.info[p].versions[sat.reps[p][i]]
     end
     return sol
 end
@@ -462,15 +430,15 @@ function with_temp_clauses(body::Function, sat::SAT)
     end
 end
 
-# improve package p to its best feasible version: repeatedly demand some
-# strictly better version until that becomes unsatisfiable, keeping the last
+# improve package p to its best feasible class: repeatedly demand some
+# strictly better class until that becomes unsatisfiable, keeping the last
 # good model in sol
 function optimize_version!(
     sat :: SAT{P},
     sol :: Dict{P,Int},
     p   :: P,
 ) where {P}
-    # cheap first try: after filtering, the best version is feasible more
+    # cheap first try: after filtering, the best class is feasible more
     # often than not, and probing it by assumption needs no temp clauses
     # at all — one solve replaces the whole improvement loop
     if sol[p] > 1
@@ -484,7 +452,7 @@ function optimize_version!(
     # empty, forcing a guaranteed-UNSAT solve
     while sol[p] > 1
         improved = with_temp_clauses(sat) do
-            # some strictly better version of p
+            # some strictly better class of p
             for i = 1:sol[p]-1
                 sat_add(sat, p, i)
             end
@@ -497,7 +465,9 @@ function optimize_version!(
     end
 end
 
-# fix a given set of versions
+# fix a given set of versions — as the classes that hold them, which is all
+# the instance can express (and all that is needed: a version's class is
+# interchangeable with it)
 
 function fix_versions(
     sat  :: SAT{P,V},
@@ -506,9 +476,10 @@ function fix_versions(
 ) where {P,V}
     for (p, v) in zip(pkgs, vers)
         v === nothing && continue
-        i = findfirst(==(v), sat.info[p].versions)
+        info_p = sat.info[p]
+        i = findfirst(==(v), info_p.versions)
         i === nothing && throw(ArgumentError("package $p: unknown version $v"))
-        sat_add(sat, p, i)
+        sat_add(sat, p, info_p.classes[i])
         sat_add(sat)
     end
 end

@@ -9,11 +9,15 @@ Problem
 ## Internals
 
 ```@docs
+Resolver.PkgInfo
 Resolver.pkg_info
 Resolver.version_classes
+Resolver.class_members
+Resolver.collapse_classes!
+Resolver.Universe
 Resolver.prepare_pkg_info
 Resolver.version_permutations
-Resolver.class_representatives
+Resolver.class_ranking
 Resolver.find_reachable
 Resolver.exclusion_masks
 ```

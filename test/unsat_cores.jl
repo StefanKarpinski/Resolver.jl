@@ -54,9 +54,10 @@ struct Cand
     pred :: Function
 end
 
-# "package p is installed" for every package, plus "not p's first version" for
-# every package with versions, so that negative literals — the shape the
-# diagnostics rebuild will use — get exercised too
+# "package p is installed" for every package, plus "not p's first class" for
+# every package with classes, so that negative literals — the shape the
+# diagnostics rebuild will use — get exercised too. A class variable stands for
+# every member of its class at once, which is what the predicate has to say
 function candidates(
     sat  :: SAT{P},
     pkgs :: AbstractVector{P};
@@ -68,10 +69,10 @@ function candidates(
     end
     versions || return cands
     for (i, p) in enumerate(pkgs)
-        vers = sat.info[p].versions
-        isempty(vers) && continue
-        v = vers[1]
-        push!(cands, Cand(-(sat.vars[p] + 1), s -> s[i] ≠ v))
+        info_p = sat.info[p]
+        isempty(info_p.members) && continue
+        mem = Set(info_p.versions[j] for j in info_p.members[1])
+        push!(cands, Cand(-(sat.vars[p] + 1), s -> s[i] ∉ mem))
     end
     return cands
 end

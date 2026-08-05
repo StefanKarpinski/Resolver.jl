@@ -1,29 +1,89 @@
+"""
+    PkgInfo{P,V}
+
+One package's slice of the universe. The conflict matrix has one row per
+interchangeability *class* — a set of versions nothing in the registry can tell
+apart — and the partition saying which versions those are is carried with it.
+
+  * `versions` — every version the package offers, in canonical (provider)
+    order. Untouched by the ordering a query asks for: the rank order is a
+    property of the *classes*, and it is the rows that move.
+  * `classes` / `members` — the partition, in both directions. `classes[i]` is
+    the matrix row version `i` belongs to; `members[c]` is class `c`'s version
+    indices, ascending. Both are stored because both directions are hot;
+    anything that drops or renumbers classes rebuilds them together.
+  * `depends` — the packages some class depends on, sorted; one matrix column
+    each, in that order.
+  * `interacts` — per partner package, the offset of its block of *class*
+    columns in this matrix.
+  * `conflicts` — `(m+1) × (n+1)` bits for `m` classes and `n` conflict
+    columns: the dependency columns followed by one block of partner classes
+    per partner, with the last row and column holding the *in-universe* flags
+    (see BitKernels.jl for the layout).
+
+Versions share a class when nothing in the registry can tell them apart — see
+[`version_classes`](@ref Resolver.version_classes). Since class members are
+indistinguishable by construction, a user constraint cannot split a class; all
+it can do is empty one, which is why constraints never enter these matrices
+(see [`prepare_pkg_info`](@ref Resolver.prepare_pkg_info)).
+
+## The two per-class bits
+
+A class carries two independent facts, and the matrix holds only one of them:
+
+  * **in-universe** — "this class is still part of the problem". This is the
+    flag row and column of `conflicts`. The passes that *delete* clear it
+    (`mark_installable!`, `mark_reachable!`, `mark_necessary!`), and
+    `drop_unmarked!` reads it and nothing else.
+  * **activated** — "this query admits some member of this class". This is
+    per-resolve state, not matrix state: it is `reps[c] != 0` on the
+    [`Universe`](@ref Resolver.Universe) built from this artifact.
+
+Deactivation never implies deletion: an emptied class keeps its row, its
+column in every partner, and its dependency columns. Keeping the two bits apart
+is what makes that possible, and BitKernels.jl's header spells out why one bit
+could not do both jobs.
+"""
 struct PkgInfo{P,V}
     versions  :: Vector{V}
+    classes   :: Vector{Int}
+    members   :: Vector{Vector{Int}}
     depends   :: Vector{P}
     interacts :: Dict{P, Int}
     conflicts :: BitMatrix
-    # the interchangeability partition of `versions`, as a class id per
-    # version (see `version_classes`): versions share a class when nothing in
-    # the registry can tell them apart. Derived from `conflicts`, and at the
-    # T1 boundary (`pkg_info`) exactly so
-    classes   :: Vector{Int}
 end
 
 PkgInfo(
     versions  :: Vector{V},
+    classes   :: Vector{Int},
     depends   :: Vector{P},
     interacts :: Dict{P,Int},
     conflicts :: BitMatrix,
-) where {P,V} = PkgInfo{P,V}(versions, depends, interacts, conflicts,
-    version_classes(conflicts, length(versions)))
+) where {P,V} = PkgInfo{P,V}(versions, classes, class_members(classes),
+    depends, interacts, conflicts)
 
-# `classes` is a function of `conflicts`, so it is not compared: in-place
-# shrinking (see `drop_unmarked!`) leaves a sound but possibly finer partition
-# than a recomputation would give, and that difference is not a difference of
-# content
+# the number of classes — i.e. of rows of the conflicts matrix
+nclasses(info::PkgInfo) = length(info.members)
+
+"""
+    class_members(classes, m = maximum(classes)) :: Vector{Vector{Int}}
+
+Invert a class-id-per-version vector into a version-index-per-class one. `m` is
+the number of classes, needed only when the last ones might be empty — which
+they never are for a partition, but the argument keeps the inverse total.
+"""
+function class_members(classes::Vector{Int}, m::Int = maximum(classes; init = 0))
+    members = [Int[] for _ = 1:m]
+    for (i, j) in enumerate(classes)
+        push!(members[j], i)
+    end
+    return members
+end
+
+# `members` is the inverse of `classes`, so it is not compared
 function Base.:(==)(a::PkgInfo, b::PkgInfo)
     a.versions  == b.versions  &&
+    a.classes   == b.classes   &&
     a.depends   == b.depends   &&
     a.interacts == b.interacts &&
     a.conflicts == b.conflicts
@@ -49,8 +109,11 @@ the other, and then they are genuinely distinguishable.)
 
 The partition is a property of the registry alone: it is independent of the
 requirements, of the version ordering, and of any user constraints. That is
-what puts it on the T1 side of the boundary, and what lets the collapse to
-class representatives be a per-resolve step (see `class_representatives`).
+what puts it on the T1 side of the boundary, and what lets a `PkgInfo`'s matrix
+be indexed by it: `pkg_info` computes the partition from rows it builds one per
+version, then emits the matrix with one row per class (`collapse_classes!`).
+Choosing which member of a class stands for it is the part that does depend on
+the query, and that is per-resolve state (see `class_ranking`).
 
 The scan is word-parallel over columns: one pass computes, for every adjacent
 pair of versions at once, whether their rows differ anywhere, which yields the
@@ -130,13 +193,89 @@ function version_classes!(ids::Vector{Int}, X::BitMatrix, m::Int)
     return ids
 end
 
-# renumber class ids to 1, 2, … in order of first appearance
-function renumber_classes!(ids::Vector{Int})
-    num = Dict{Int,Int}()
-    for (i, c) in enumerate(ids)
-        ids[i] = get!(() -> length(num) + 1, num, c)
+"""
+    collapse_classes!(info)
+
+The last step of building an artifact. `pkg_info` starts with a row per
+version, because that is what the partition is computed from; this computes it
+(`version_classes`) and rebuilds every matrix with one row per class of the
+package and one column per class of each partner, which is the shape everything
+downstream reads.
+
+The collapse is lossless in both directions. A class's members have identical
+rows by definition, so the class's row *is* any member's row. And members of a
+partner class have identical *columns* here: a conflict is recorded
+symmetrically in both partners' matrices, so partner rows that agree everywhere
+agree in particular about this package, and the columns they index are equal.
+Deleting duplicate columns cannot separate rows that agreed, so the partition
+this indexes is also exactly the partition it was computed from — collapsing
+does not have to be iterated to a fixpoint to be correct, only to be coarsest,
+and coarser is not what is claimed here.
+
+Called once, at the end of `pkg_info`.
+"""
+function collapse_classes!(info::Dict{P,PkgInfo{P,V}}) where {P,V}
+    cls = Dict{P,Vector{Int}}()
+    mem = Dict{P,Vector{Vector{Int}}}()
+    for (p, info_p) in info
+        c = version_classes(info_p.conflicts, length(info_p.versions))
+        cls[p] = c
+        mem[p] = class_members(c)
     end
-    return ids
+    for p in collect(keys(info))
+        info_p = info[p]
+        mem_p = mem[p]
+        m = length(mem_p)
+        # every class of this package and of every partner holds a single
+        # version, so the matrix is already the one this wants: only the
+        # partition has to be recorded
+        if m == length(info_p.versions) && all(
+            length(mem[q]) == length(info[q].versions)
+            for q in keys(info_p.interacts))
+            info[p] = PkgInfo{P,V}(info_p.versions, cls[p], mem_p,
+                info_p.depends, info_p.interacts, info_p.conflicts)
+            continue
+        end
+        # one column per dependency, then one per class of each partner
+        cols = collect(1:length(info_p.depends))
+        interacts = Dict{P,Int}()
+        for (q, b) in sort!(collect(info_p.interacts), by = last)
+            interacts[q] = length(cols)
+            for mem_q in mem[q]
+                push!(cols, b + first(mem_q))
+            end
+        end
+        rows = Int[first(mem_c) for mem_c in mem_p]
+        info[p] = PkgInfo{P,V}(info_p.versions, cls[p], mem_p,
+            info_p.depends, interacts,
+            gather_conflicts(info_p.conflicts, rows, cols))
+    end
+    return info
+end
+
+# `X′[i, j] = X[rows[i], cols[j]]`, in a freshly allocated matrix of the shape
+# `PkgInfo` wants: `length(cols)` conflict columns plus the flag column, all of
+# it marked active
+function gather_conflicts(X::BitMatrix, rows::Vector{Int}, cols::Vector{Int})
+    m = length(rows)
+    n = length(cols)
+    X′ = falses(padded_rows(m), n + 1)
+    W = col_words(X)
+    W′ = col_words(X′)
+    ch = X.chunks
+    ch′ = X′.chunks
+    @inbounds for j = 1:n
+        base = (cols[j] - 1) * W
+        base′ = (j - 1) * W′
+        for i′ = 1:m
+            i = rows[i′]
+            b = (ch[base + ((i - 1) >> 6) + 1] >> ((i - 1) & 63)) & 1
+            ch′[base′ + ((i′ - 1) >> 6) + 1] |= b << ((i′ - 1) & 63)
+        end
+    end
+    X′[1:m, end] .= true
+    X′[m+1, 1:n] .= true
+    return X′
 end
 
 function pkg_data(
@@ -211,19 +350,22 @@ pkg_info(
     pkg_info(data, reqs = all packages; filter = true) :: Dict{P,PkgInfo{P,V}}
 
 The **T1 artifact**: the dependency closure of `reqs`, encoded as one `PkgInfo`
-per package — conflict matrices, plus the
-preprocessing that depends on the registry *alone*, namely the arc-consistency
-prune (`mark_installable!`) and the interchangeability partition
-(`version_classes`). Nothing here depends on the version ordering, on user
-compat or pins, or (beyond the closure) on the requirements, so the result can
-be computed once and shared by, or cached across, arbitrarily many resolves.
+per package — one conflict matrix per package, indexed by its interchangeability
+classes (`version_classes`, `collapse_classes!`) — plus the one piece of
+preprocessing that depends on the registry *alone*: dropping the versions that
+cannot be installed whatever else is chosen, because they depend on a package
+with no installable version at all, applied repeatedly until nothing more drops
+(`mark_installable!`; the literature calls this arc consistency). Nothing here
+depends on the version ordering, on user compat or pins, or (beyond the closure)
+on the requirements, so the result can be computed once and shared by, or cached
+across, arbitrarily many resolves.
 
-`filter = false` skips the arc-consistency prune, leaving the conflict matrices
-exactly as the data spells them out.
+`filter = false` skips that prune, leaving the conflict matrices saying exactly
+what the data spells out.
 
 Requirement-specific and constraint-specific shrinking — reachability and
-redundancy elimination — happens per resolve instead, after the classes have
-been refined and collapsed: see `prepare_pkg_info`.
+redundancy elimination — happens per resolve instead, on the universe the
+query's representatives make of this one: see `prepare_pkg_info`.
 """
 function pkg_info(
     data :: AbstractDict{P,<:PkgData{P,V}},
@@ -362,12 +504,15 @@ function pkg_info(
         end
         offs[pi] = off
         # conflicts matrix: n+1 columns of padded_rows(m) bits each — rows
-        # 1:m are versions, row m+1 holds column-active flags, the rest is
-        # word-alignment padding (always zero); column n+1 holds the
-        # version-active flags
+        # 1:m are the singleton classes the build starts from (so one per
+        # version here), row m+1 holds the columns' in-universe flags, the rest
+        # is word-alignment padding (always zero); column n+1 holds the classes'
+        # in-universe flags. Nothing is ever deactivated in a T1 artifact: that
+        # is the query's business, and it is `Universe.reps` rather than a bit
+        # in here (see BitKernels.jl's header on the two per-class bits)
         m = nver[pi]
         X = falses(padded_rows(m), n + 1)
-        # mark all versions & columns as active; the column flags live at
+        # mark all classes & columns in-universe; the column flags live at
         # a fixed bit of each column's chunk span, so set them directly
         # rather than through one strided BitArray write per column
         X[1:m, end] .= true
@@ -438,36 +583,41 @@ function pkg_info(
         end
     end
 
-    # materialize the package-keyed PkgInfo structures. classes start out as
-    # singletons (always a sound partition) and are computed for real below,
-    # once the prune has settled which versions there are
+    # materialize the package-keyed PkgInfo structures. the build starts at the
+    # finest partition there is — one class per version — so that the matrices
+    # already have the shape the passes below expect, and one row still means
+    # one version, which is what the partition has to be computed from.
+    # `collapse_classes!` computes it and merges the rows
     info = Dict{P,PkgInfo{P,V}}()
     for pi = 1:N
         D = pkgs[depids[pi]]
         T = Dict{P,Int}(
             pkgs[qi] => offs[pi][k]
             for (k, qi) in enumerate(interacts[pi]))
+        m = nver[pi]
         info[pkgs[pi]] = PkgInfo{P,V}(
-            datas[pi].versions, D, T, mats[pi], collect(1:nver[pi]))
+            datas[pi].versions, collect(1:m), [[i] for i = 1:m],
+            D, T, mats[pi])
     end
 
-    # the T1 preprocessing: arc consistency, then interchangeability. Both are
-    # properties of the registry alone — the arc-consistency test deletes
-    # versions one of whose dependencies has no versions at all, which is a
-    # sound approximation of deleting model-free versions and, per the manual's
-    # Theory section, exactly the kind of deletion that is safe for *every*
-    # ordering and requirement set; the classes are row equality. Reachability
-    # and redundancy elimination are not of that kind — both are stated in
-    # terms of the version ordering, and reachability in terms of the
-    # requirements too — so they now run per resolve, in `prepare_pkg_info`.
+    # the T1 preprocessing: the installability prune, then the partition. Both
+    # are properties of the registry alone. The prune deletes versions one of
+    # whose dependencies has no versions at all, repeating until nothing more
+    # goes (the literature calls this arc consistency); that is a sound
+    # approximation of deleting versions no valid solution contains, and, per
+    # the manual's Theory section, exactly the kind of deletion that is safe
+    # for *every* ordering and requirement set. The partition is row equality.
+    # Reachability and redundancy elimination are not of that kind — both are
+    # stated in terms of the version ordering, and reachability in terms of the
+    # requirements too — so they run per resolve, in `prepare_pkg_info`.
+    #
+    # the prune runs first because it can only make the partition coarser:
+    # deleting versions removes rows to distinguish and columns to differ in.
     if filter
         mark_installable!(info)
         drop_unmarked!(info)
     end
-    for info_p in values(info)
-        version_classes!(info_p.classes, info_p.conflicts,
-                         length(info_p.versions))
-    end
+    collapse_classes!(info)
 
     return info
 end

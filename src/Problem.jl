@@ -76,14 +76,22 @@ adopt_kinds(kinds) = isempty(kinds) ? NoKinds :
 is_constrained(prob::Problem) =
     !isempty(prob.compat) || !isempty(prob.pins) || !isempty(prob.excludes)
 
-# The user constraints are read as a *virtual package*: one always-required
-# version, no dependencies, whose conflict rows are exactly the exclusions
-# below. Under that reading a constrained problem is an ordinary resolution
-# problem, so the filtering theorems (see the manual's Theory section) apply
-# verbatim. The implementation special-cases the virtual package as the
-# per-package exclusion masks computed here — one extra degradation trigger in
-# `find_reachable`, one extra conflict column in `mark_necessary!`, and one
-# selector-guarded clause group per constraint source in `SAT`.
+# What a user constraint does, and the only thing it does, is forbid *members*
+# of interchangeability classes. Members are indistinguishable to everything in
+# the registry, so forbidding some of them changes nothing a class can be asked
+# to do — unless it forbids all of them, and then the class is empty and cannot
+# be selected. Nothing of a constraint therefore appears in a conflict matrix.
+# Constraints are evaluated once, here, into the per-version masks below;
+# `class_ranking` turns those into each class's representative; and a class left
+# without one is deactivated in the universe (see `Universe`), which is a single
+# relaxable unit clause in the SAT instance and one degradation trigger in the
+# filter.
+#
+# The consequence worth naming: a constraint cannot make two versions'
+# constraint rows identical, because it does not touch the rows — and versions
+# whose rows *are* identical are one class sharing one column, so there is no
+# pair of separately-deletable objects for a partial relaxation to fall
+# between.
 
 # does the problem forbid version v of package p?
 function is_excluded(prob::Problem{P}, p::P, v) where {P}
@@ -105,27 +113,6 @@ exclusion_candidates(info::AbstractDict{P}, prob::Problem{P}) where {P} =
     isempty(prob.excludes) ?
         union(keys(prob.compat), keys(prob.pins)) : keys(info)
 
-# ... the same set in a deterministic order, for the places that number things
-constrained_packages(info::AbstractDict{P}, prob::Problem{P}) where {P} =
-    sort!(P[p for p in exclusion_candidates(info, prob)])
-
-# The constraints are read as a *virtual package*: one always-required version,
-# no dependencies, whose conflict rows are exactly the exclusions. This lists,
-# per source that says anything about `p`, the kind and a predicate on `p`'s
-# versions — one selector per source, so diagnostics can tell a compat bound, a
-# pin and an admission knob on the same package apart.
-function exclusion_sources(prob::Problem{P}, p::P) where {P}
-    srcs = Pair{Symbol,Any}[]
-    s = get(prob.compat, p, nothing)
-    s === nothing || push!(srcs, :compat => (v -> v ∉ s))
-    w = get(prob.pins, p, nothing)
-    w === nothing || push!(srcs, :pin => (v -> v != w))
-    for (kind, forbids) in prob.excludes
-        push!(srcs, kind => (v -> forbids(p, v)::Bool))
-    end
-    return srcs
-end
-
 """
     exclusion_masks(info, prob) :: AbstractDict{P, BitVector}
 
@@ -134,8 +121,10 @@ that package's version list in `info`. Only packages with a constraint that
 actually excludes something get an entry, so packages nothing constrains — the
 overwhelming majority, absent an admission knob — cost nothing downstream.
 
-Masks are index-based, so they must be recomputed whenever versions are
-dropped and renumbered (see `filter_pkg_info!`).
+This is the only place a constraint is ever evaluated, and what reads it is
+[`class_ranking`](@ref Resolver.class_ranking), which turns it into
+representatives. Masks are index-based, so they are read against the version
+list they were built from.
 """
 function exclusion_masks(
     info :: AbstractDict{P}, # a PkgInfo dict (declared before PkgInfo)

@@ -390,27 +390,54 @@ invalidates only the middle tier, which is orders of magnitude cheaper
 to rebuild than the first.
 
 The implementation draws the line between the first tier and the rest
-at `pkg_info`, whose output — conflict matrices, the arc-consistency
-prune and the classes (`version_classes`) — is exactly the
-registry-only artifact, and it merges the second and third tiers into
-one per-resolve pass, `prepare_pkg_info`, since the middle tier is
-cheap enough not to be worth storing. That pass lays each package's
-versions out in the ordering the query asked for
-(`version_permutations`), refines the classes by the user's constraints
-and collapses each to its best member in that ordering
-(`class_representatives`), and filters the result
-(`filter_pkg_info!`).
+at `pkg_info`, whose output — conflict matrices indexed by the classes
+(`version_classes`), with the versions that cannot be installed
+whatever else is chosen already dropped — is exactly the registry-only
+artifact, and it merges the second and third tiers into one per-resolve
+pass, `prepare_pkg_info`, since the middle tier is cheap enough not to
+be worth storing.
+
+The artifact is indexed by those classes throughout: a `PkgInfo`'s
+conflict matrix has one row per class and one column per partner class.
+Building it takes one row per version first, since that is what the
+partition is computed from, and then merges them (`collapse_classes!`).
+Nothing is lost in the merge: members of a class have equal rows by
+definition, and — since conflicts are recorded symmetrically — members
+of a partner class index equal columns, so the merged matrix states
+exactly the same conflicts.
+
+What the per-resolve pass then does is choose, per class, which member
+it stands for. The user's constraints act only by forbidding members
+(`exclusion_masks`): a class keeps whichever of its admissible members
+the query's ordering ranks best, and competes at that member's rank,
+which is why the classes have to be laid out in the order those
+representatives put them in (`class_ranking`). A class the query
+admits no member of is *deactivated* — nothing can choose it — and
+that, not deletion, is the whole of a constraint's effect. Then the
+result is filtered (`filter_pkg_info!`).
+
+Deactivation is deliberately not deletion. A deactivated class stays in
+the matrices: reachability continues its prefix past one, since a class
+that cannot be selected is not somewhere a package can be installed,
+but still follows its dependencies, and redundancy elimination neither
+deletes one nor lets one license a deletion. What that buys is that the
+universe a later question about relaxing a constraint would need is
+still present — and, one level down, that such a question is even well
+posed, since a constraint cannot make two versions' rows identical: it
+does not touch the rows, and versions whose rows *are* identical are
+one class sharing one column, with no pair of separately deletable
+objects to fall between.
 
 The ordering is a `resolve` parameter rather than part of the problem,
 which is what makes one artifact serve every query: it selects among
 the valid solutions instead of changing which solutions are valid. What
 *does* change the model set — the user's compat bounds and pins, and
 the admission of prerelease versions — is a `Problem`, and enters as
-constraints on the artifact's versions rather than as deletions from it
-(see `exclusion_masks`). So there is one T1 artifact per registry
-state, full stop: every version the registry state offers is in it, in
-canonical order, and each query says which of them it will accept and
-in what order it prefers them.
+constraints on the artifact's versions rather than as deletions from it.
+So there is one T1 artifact per registry state, full stop: every
+version the registry state offers is in it, in canonical order and in
+its class, and each query says which of them it will accept and in what
+order it prefers them.
 
 "Every version the registry state offers" is meant strictly, and it is
 where yanked versions come in. Yankedness is not a query fact but part

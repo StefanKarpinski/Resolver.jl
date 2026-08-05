@@ -9,13 +9,17 @@
 #     package's, constrains the two versions equally) — a completely different
 #     computation from the bit-matrix row scan it checks;
 #
-#   * for the *collapse*, the ungrouped resolve. Grouping is an optimization,
-#     so `resolve(…; group = true)` and `resolve(…; group = false)` must return
-#     the very same answer — and the very same `nothing` — everywhere,
-#     including where user constraints split classes.
+#   * for the *answer*, the brute force. Classes are the representation now, so
+#     there is no ungrouped resolve to compare against: what the collapse has to
+#     agree with is the universe itself. Every constrained resolve is checked
+#     against the resolve of the *baked* data — the registry with the forbidden
+#     versions deleted, which is what a constraint says — and, where the
+#     enumeration is affordable, against `ref_resolve` on that data, which knows
+#     nothing about matrices, classes or representatives at all.
 
 using Resolver: PkgData, PkgInfo, DepsProvider, Problem, pkg_info, pkg_data,
-    version_classes, class_representatives, prepare_pkg_info, is_excluded
+    version_classes, class_ranking, prepare_pkg_info, rank_pkg_info,
+    is_excluded, nclasses
 using .TestResolver: each_potential_solution, is_valid_solution
 
 # the class partition of package p, as a set of sets of version *values*
@@ -110,15 +114,27 @@ function test_class_swaps(data)
     @test bad === nothing
 end
 
-# grouping cannot change the answer, whatever the constraints or the ordering
-function test_collapse_invariance(data, prob; by::Function = identity)
-    @test resolve(data, prob; by, group = true) ==
-          resolve(data, prob; by, group = false)
+# The answer is the universe's answer, whatever the constraints or the
+# ordering. Two oracles, neither of which knows how the universe is
+# represented: the same problem with the forbidden versions deleted from the
+# data outright (a *different* registry, hence a different partition, resolved
+# with no deactivation anywhere), and — when the potential solutions are few
+# enough to enumerate — the brute force on that data.
+const REF⁺ = 256 # enumeration budget for the brute-force cross-check
+
+function test_class_space(data, prob; by::Function = identity)
+    baked = bake(data, prob)
+    sol = resolve(data, prob; by)
+    @test sol == resolve(baked, prob.reqs; by)
+    @test issatisfiable(data, prob) == (sol !== nothing)
+    Π = prod(init = 1.0, float(length(d.versions) + 1) for d in values(baked))
+    Π ≤ REF⁺ && @test sol == ref_resolve(baked, prob.reqs; by)
 end
 
-# the constraints that split classes: forbid exactly one member of a
-# multi-member class, or pin one member of it
-function class_splitting_problems(data, reqs)
+# the constraints that bear on multi-member classes: forbid exactly one member
+# of one, or pin one member of it. Neither can split the class — that is the
+# point — so each is a test that a class survives through the members left
+function class_emptying_problems(data, reqs)
     info = pkg_info(data, keys(data); filter = false)
     probs = []
     for p in sort!(collect(keys(data)))
@@ -175,14 +191,20 @@ end
     info = test_classes(data)
     @test info[:A].classes == [1, 2, 1]
 
-    # ... and the collapse keeps the best member of each of them
-    keep = class_representatives(info)
-    @test keep[:A] == BitVector([true, true, false])
+    # ... and each class stands at its best member
+    reps, cperms = class_ranking(info)
+    @test reps[:A] == [1, 2] # :v3 for {:v3, :v1}, :v2 for {:v2}
+    @test cperms === nothing # which is the order the artifact already has
 
-    # a pin inside a class refines it: the pinned version becomes a class of
-    # its own, so the collapse cannot drop it
+    # a pin inside a class does not *refine* it — a class is one column, and a
+    # user constraint has no way to split one. All it can do is move which
+    # member stands for the class, and empty the classes it admits nothing of
     prob = Problem([:A]; pins = Dict(:A => :v1))
-    @test class_representatives(info, prob)[:A] == BitVector([true, true, true])
+    reps, cperms = class_ranking(info, prob)
+    @test info[:A].members == [[1, 3], [2]] # the partition is untouched
+    @test reps[:A] == [3, 0]  # {:v3, :v1} stands at :v1; {:v2} is empty
+    @test cperms[:A] == [2, 1] # and the empty class ranks where :v2 would
+    @test resolve(data, prob) == Dict(:A => :v1)
 end
 
 @testset "classes: reference partition, complete data grids" begin
@@ -213,7 +235,7 @@ end
     end
 end
 
-@testset "collapse invariance: complete data grids" begin
+@testset "resolve vs. the oracles: complete data grids" begin
     Random.seed!(rand(RandomDevice(), UInt64))
     hi = p -> p
     lo = p -> -p
@@ -227,11 +249,11 @@ end
                 for reqs_bits = 0:2^m-1
                     reqs = collect(make_reqs(reqs_bits))
                     for by in (hi, lo)
-                        test_collapse_invariance(data, Problem(reqs); by)
+                        test_class_space(data, Problem(reqs); by)
                     end
                     for _ = 1:4
                         compat, pins = random_constraints(m, n)
-                        test_collapse_invariance(data, Problem(reqs; compat, pins))
+                        test_class_space(data, Problem(reqs; compat, pins))
                     end
                 end
             end
@@ -239,7 +261,7 @@ end
     end
 end
 
-@testset "collapse invariance: random grids" begin
+@testset "resolve vs. the oracles: random grids" begin
     Random.seed!(rand(RandomDevice(), UInt64))
     hi = p -> p
     lo = p -> -p
@@ -250,14 +272,14 @@ end
             reqs = collect(make_reqs(rand(1:2^m-1)))
             for _ = 1:4
                 compat, pins = random_constraints(m, n)
-                test_collapse_invariance(data, Problem(reqs; compat, pins);
-                                         by = rand((hi, lo)))
+                test_class_space(data, Problem(reqs; compat, pins);
+                                 by = rand((hi, lo)))
             end
         end
     end
 end
 
-@testset "collapse invariance: constraints that split classes" begin
+@testset "resolve vs. the oracles: constraints that empty classes" begin
     Random.seed!(rand(RandomDevice(), UInt64))
     hi = p -> p
     lo = p -> -p
@@ -270,20 +292,17 @@ end
             comp = make_comp(randbits(c) & randbits(c) & randbits(c))
             fill_data!(m, n, deps, comp, data)
             reqs = collect(make_reqs(rand(1:2^m-1)))
-            probs = class_splitting_problems(data, reqs)
+            probs = class_emptying_problems(data, reqs)
             splits += length(probs)
             for prob in probs, by in (hi, lo)
-                test_collapse_invariance(data, prob; by)
-                # ... and the grouped answer is also the answer the same
-                # universe with those versions deleted would give
-                test_bake_equivalence(data, prob; by)
+                test_class_space(data, prob; by)
             end
         end
     end
     @test splits > 1000 # the sweep really did split classes
 end
 
-@testset "collapse invariance: exhaustive constraint shapes" begin
+@testset "resolve vs. the oracles: exhaustive constraint shapes" begin
     Random.seed!(rand(RandomDevice(), UInt64))
     hi = p -> p
     lo = p -> -p
@@ -299,17 +318,17 @@ end
                     constrain!(compat, pins, p, shape, n)
                 end
                 prob = Problem(reqs; compat, pins)
-                test_collapse_invariance(data, prob; by = hi)
-                test_collapse_invariance(data, prob; by = lo)
+                test_class_space(data, prob; by = hi)
+                test_class_space(data, prob; by = lo)
             end
         end
     end
 end
 
-@testset "collapse invariance: adversarial" begin
+@testset "resolve vs. the oracles: adversarial" begin
     Random.seed!(rand(RandomDevice(), UInt64))
     # break the solution until it is unsolvable, with constraints in force the
-    # whole way, checking grouping against no grouping at every step
+    # whole way, checking the answer against the oracles at every step
     for m = 2:4, n = 2:3
         (m*n)^2 ≤ 128 || continue
         make_deps, make_comp, data, d, c, bit = tiny_data_makers(m, n)
@@ -321,7 +340,7 @@ end
             prob = Problem(reqs; compat, pins)
             while true
                 fill_data!(m, n, deps, comp, data)
-                test_collapse_invariance(data, prob)
+                test_class_space(data, prob)
                 sol = resolve(data, prob)
                 sol === nothing && break
                 p = rand(collect(keys(sol)))
@@ -365,11 +384,11 @@ permute_versions(data::AbstractDict, perms) = Dict(
                 for p = 1:m
                     @test class_sets(info, p) == class_sets(base, p)
                 end
-                # and the answer under the permuted ordering is the same
-                # whether or not it is reached by collapsing
-                test_collapse_invariance(perm, Problem(reqs))
+                # and the answer under the permuted ordering is the
+                # universe's answer all the same
+                test_class_space(perm, Problem(reqs))
                 compat, pins = random_constraints(m, n)
-                test_collapse_invariance(perm, Problem(reqs; compat, pins))
+                test_class_space(perm, Problem(reqs; compat, pins))
             end
         end
     end
@@ -422,5 +441,6 @@ end
     # ... and preparing it explicitly yields a universe of its own
     work = prepare_pkg_info(info, prob)
     @test info == before
-    @test work !== info
+    @test work.info !== info
+    @test all(info[p].members == before[p].members for p in keys(info))
 end

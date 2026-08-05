@@ -1,13 +1,64 @@
 # Every PkgInfo conflicts matrix is allocated with its row dimension padded
 # to a whole number of 64-bit words (see padded_rows), so that column j
 # occupies exactly the aligned chunk words X.chunks[(j-1)*W .+ (1:W)] where
-# W = size(X, 1) >> 6. Version i of the package corresponds to bit i-1 of
-# that span; the row after the last version holds the column's active flag;
-# any rows beyond that are padding and must remain zero. The helpers below
-# are the word-parallel column primitives the filtering passes build on.
+# W = size(X, 1) >> 6. Class i of the package corresponds to bit i-1 of that
+# span; the row after the last class holds the column's in-universe flag; any
+# rows beyond that are padding and must remain zero. The helpers below are the
+# word-parallel column primitives the filtering passes build on.
+#
+## What the flags mean
+#
+# A class carries two independent facts, and they are stored in two different
+# places:
+#
+#   1. **in-universe** — "this class is still part of the problem". This is the
+#      flag in the matrix: X[i, end] for class i, and X[end, j] for column j
+#      (a partner's block of columns mirrors that partner's own class flags).
+#      Three passes clear it, and all three of them mean "delete": the
+#      installability prune (`mark_installable!`), reachability
+#      (`mark_reachable!`) and redundancy elimination (`mark_necessary!`).
+#      `drop_unmarked!` reads this flag and nothing else, and rebuilds each
+#      matrix without whatever it says is gone.
+#
+#   2. **activated** — "this query admits some member of this class". Class
+#      members are indistinguishable to everything in the registry, so a user
+#      constraint can only forbid members; a class all of whose members it
+#      forbids is *empty*, hence *deactivated*, and cannot be selected. This
+#      fact is not in the matrix at all: it is `Universe.reps[p][i] == 0`,
+#      per-resolve state, which `deactivations` turns into a per-package mask
+#      for the passes that want it. `Universe`'s docstring says why it is kept
+#      there rather than in a flag of its own.
+#
+# **Deactivation never implies deletion.** A deactivated class stays
+# in-universe: it keeps its row, its column in every partner, and its
+# dependency columns. It is the universe a later relaxation of whatever emptied
+# it would need to find still there.
+#
+# The passes read the two facts differently, and deliberately so:
+#
+#   * `find_reachable` keeps a prefix of each package's classes and stops at
+#     the first one it can install. A deactivated class cannot be selected, so
+#     the prefix has to continue past it — while its dependencies are followed
+#     anyway, which is what keeps the packages behind it in the universe. Its
+#     own drops clear the in-universe flag.
+#   * `mark_necessary!` takes deactivated classes off *both* sides of the
+#     domination test: they may not be deleted (a relaxation would want them
+#     back) and they may not dominate (domination says a better class will be
+#     selected instead, which is worth nothing when that class cannot be).
+#     The test itself reads only the rows, so a conflict against a deactivated
+#     *partner* class still counts.
+#   * `drop_unmarked!` reads the in-universe flag only. It never learns about
+#     deactivation at all.
+#
+# The two must not be conflated, whichever way round. Treating an emptied class
+# as not-in-universe would have `drop_unmarked!` delete it, so a relaxation of
+# whatever emptied it would find it gone; and it would make
+# `mark_necessary!`'s partner-column test — which ANDs in the partner's own
+# in-universe flag — treat a conflict against an emptied partner class as
+# vacuous, which can license a deletion that same relaxation needs undone.
 
-# rows to allocate for a package with m versions:
-# m version rows plus the flag row, rounded up to whole words
+# rows to allocate for a package with m classes:
+# m class rows plus the flag row, rounded up to whole words
 padded_rows(m::Int) = 64 * cld(m + 1, 64)
 
 # number of 64-bit words per column

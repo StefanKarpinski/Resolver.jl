@@ -3,8 +3,9 @@
 A package version resolver built on a real SAT solver (PicoSAT). Given
 package data — versions, dependencies, and compatibility constraints — and a
 set of required packages, [`resolve`](@ref) returns a single optimal solution
-mapping each needed package to a version, or `nothing` when the requirements
-cannot be satisfied.
+mapping each needed package to a version, or a [`Diagnosis`](@ref) — which
+requirements cannot hold together, why, and a menu of verified fixes — when
+they cannot be satisfied.
 
 What "optimal" means, precisely, and why the resolver's aggressive problem
 filtering provably does not change the answer, is worked out in the Theory
@@ -19,6 +20,9 @@ section:
   declarative notion of optimality that was fully worked out and ultimately
   set aside; its theorems and counterexamples illuminate why the layered
   semantics and its filter fit together as well as they do.
+- [Diagnosing an unsatisfiable resolve](theory/diagnostics.md) — what
+  licenses the questions a `Diagnosis` is assembled from, and why the
+  versions it shows come from a resolve rather than from the instance.
 
 For the package's motivation and project status, see the
 [README](https://github.com/StefanKarpinski/Resolver.jl).

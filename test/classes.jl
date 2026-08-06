@@ -124,8 +124,8 @@ const REF⁺ = 256 # enumeration budget for the brute-force cross-check
 
 function test_class_space(data, prob; by::Function = identity)
     baked = bake(data, prob)
-    sol = resolve(data, prob; by)
-    @test sol == resolve(baked, prob.reqs; by)
+    sol = resolve(data, prob; by, diagnose = false)
+    @test sol == resolve(baked, prob.reqs; by, diagnose = false)
     @test issatisfiable(data, prob) == (sol !== nothing)
     Π = prod(init = 1.0, float(length(d.versions) + 1) for d in values(baked))
     Π ≤ REF⁺ && @test sol == ref_resolve(baked, prob.reqs; by)
@@ -341,7 +341,7 @@ end
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_class_space(data, prob)
-                sol = resolve(data, prob)
+                sol = resolve(data, prob; diagnose = false)
                 sol === nothing && break
                 p = rand(collect(keys(sol)))
                 v = sol[p]
@@ -411,11 +411,14 @@ end
                 specific = pkg_info(deps, reqs) # T1 over the closure of reqs
                 compat, pins = random_constraints(m, n)
                 for prob in (Problem(reqs), Problem(reqs; compat, pins))
-                    @test resolve(all_reqs, prob) == resolve(specific, prob)
-                    @test resolve(all_reqs, prob) == resolve(data, prob)
+                    @test resolve(all_reqs, prob; diagnose = false) ==
+                          resolve(specific, prob; diagnose = false)
+                    @test resolve(all_reqs, prob; diagnose = false) ==
+                          resolve(data, prob; diagnose = false)
                     # the T1 artifacts are reusable: resolving does not
                     # consume them
-                    @test resolve(all_reqs, prob) == resolve(all_reqs, prob)
+                    @test resolve(all_reqs, prob; diagnose = false) ==
+                          resolve(all_reqs, prob; diagnose = false)
                 end
             end
         end

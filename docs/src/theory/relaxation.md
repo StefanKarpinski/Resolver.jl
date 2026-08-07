@@ -340,6 +340,8 @@ keeping the union would add nothing.
     A diagnosis may answer any relaxation of a failed query on the universe
     filtered for that query. Re-filtering per candidate fix is unnecessary.
 
+[`resolve_relaxed`](@ref Resolver.resolve_relaxed) is that call.
+
 Because ``\le`` is a lattice with the empty query at the bottom, the same
 argument run at ``Q = \emptyset`` says a universe filtered for no constraints
 at all serves every query over the same requirements — which is what makes a

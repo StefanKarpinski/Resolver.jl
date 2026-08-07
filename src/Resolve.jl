@@ -5,8 +5,9 @@ function resolve_core(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);
     by   :: Function = identity, # priority ordering
+    ord  :: O = LayoutOrder(), # class ranking (the universe's layout by default)
     restore :: Bool = true, # restore the SAT instance's state before returning
-) where {P}
+) where {P, O <: ClassOrder}
     # a requirement the instance doesn't know has no installable version —
     # the filter drops such packages — so it cannot be satisfied
     all(p -> haskey(sat.info, p), reqs) || return nothing
@@ -31,15 +32,15 @@ function resolve_core(
         # below, so the layered answer is unchanged. a failed probe
         # tells us nothing and the sequential path proceeds as usual
         # (skipped for a single package, whose own probe covers it)
-        todo = [p for p in layer if sol[p] > 1]
+        todo = [p for p in layer if !at_best(ord, p, sol[p])]
         if length(todo) > 1
             for p in todo
-                sat_assume(sat, p, 1)
+                sat_assume(sat, p, best_class(ord, p))
             end
             is_satisfiable(sat) && extract_solution!(sat, sol)
         end
         for p in layer
-            optimize_version!(sat, sol, p)
+            optimize_version!(sat, sol, p, ord)
             # fix optimized class
             sat_add(sat, p, sol[p])
             sat_add(sat)
@@ -157,6 +158,69 @@ function resolve_prepared(
     sat = SAT(univ)
     # the instance is single-use, so don't bother restoring its state
     try resolve(sat, prob.reqs; by, restore=false)
+    finally
+        finalize(sat)
+    end
+end
+
+"""
+    resolve_relaxed(sat,  R; by = identity, order = nothing)
+    resolve_relaxed(univ, R; by = identity, order = nothing)
+
+Return what `resolve(info, R; by, order)` returns, where `univ` is
+`prepare_pkg_info(info, Q; order)` and `sat` is `SAT(univ)` — the answer
+preparing again for `R` would give, without preparing again.
+
+`R` has to be a *relaxation* of that `Q`: the same query with requirements,
+compat entries, pins or admission kinds dropped, never added and never
+tightened. `order` has to be the ordering the universe was ranked in, since it
+is what "better" means on both sides. Neither holds by construction and neither
+is checked: violate one and the answer is wrong rather than an error.
+
+The instance is left exactly as it was found — same clauses, same forbidden
+classes, same decision phases — so one filtered universe answers as many
+relaxations as it is asked, in any order.
+"""
+function resolve_relaxed(
+    sat  :: SAT{P,V},
+    R    :: Problem{P};
+    by   :: Function = identity, # package ordering
+    order = nothing, # version ordering
+) where {P,V}
+    info = sat.info
+    # what `R` makes of the classes `Q` laid out, in one pass: the member each
+    # class stands for under `R` and the order those members rank the classes
+    # in. The universe is not relaid out — the clauses say which classes exist,
+    # depend and conflict, and `R` changes none of that — so the new ranking is
+    # threaded through the descent and the new representatives name the answer.
+    reps, cperms = class_ranking(info, R, version_permutations(info, order))
+    ord = cperms === nothing ? LayoutOrder() : RankedOrder(info, cperms)
+    sol = with_deactivations(sat, deactivated_lits(sat, reps)) do
+        rehint_classes!(sat, sat.reps, LayoutOrder(), reps, ord)
+        try
+            resolve_core(sat, R.reqs; by, ord)
+        finally
+            rehint_classes!(sat, reps, ord, sat.reps, LayoutOrder())
+        end
+    end
+    sol === nothing && return nothing
+    # a solution names classes, and it is `R`'s representatives that name the
+    # versions: a class whose best member `Q` forbade stands at a better one
+    # here, so `sat.reps` would name the wrong version — and is not ours to move
+    return Dict{P,V}(p => info[p].versions[reps[p][i]] for (p, i) in sol)
+end
+
+# answer one relaxation against a universe `prepare_pkg_info` has filtered,
+# building the instance for it — the shape to reach for when there is a single
+# relaxation to answer, since a second one wants the instance kept
+function resolve_relaxed(
+    univ :: Universe{P,V},
+    R    :: Problem{P};
+    by   :: Function = identity, # package ordering
+    order = nothing, # version ordering
+) where {P,V}
+    sat = SAT(univ)
+    try resolve_relaxed(sat, R; by, order)
     finally
         finalize(sat)
     end

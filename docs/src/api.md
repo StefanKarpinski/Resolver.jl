@@ -18,6 +18,7 @@ Resolver.Universe
 Resolver.prepare_pkg_info
 Resolver.version_permutations
 Resolver.class_ranking
+Resolver.resolve_relaxed
 Resolver.find_reachable
 Resolver.exclusion_masks
 ```

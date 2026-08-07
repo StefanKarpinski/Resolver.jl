@@ -36,11 +36,12 @@
 #
 # The passes read the two facts differently, and deliberately so:
 #
-#   * `find_reachable` keeps a prefix of each package's classes and stops at
-#     the first one it can install. A deactivated class cannot be selected, so
-#     the prefix has to continue past it — while its dependencies are followed
-#     anyway, which is what keeps the packages behind it in the universe. Its
-#     own drops clear the in-universe flag.
+#   * `find_reachable` keeps, per package, every class some relaxation of the
+#     query could put first, and stops at the first one it can install. A
+#     deactivated class cannot be selected, so the walk has to continue past
+#     it — while its dependencies are followed anyway, which is what keeps the
+#     packages behind it in the universe. Its own drops clear the in-universe
+#     flag.
 #   * `mark_necessary!` takes deactivated classes off *both* sides of the
 #     domination test: they may not be deleted (a relaxation would want them
 #     back) and they may not dominate (domination says a better class will be

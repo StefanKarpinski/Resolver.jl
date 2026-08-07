@@ -10,6 +10,12 @@ mutable struct SAT{P,V}
     # reactivates every class at once — after which any subset of them can be
     # deactivated again by assumption, no clause rewriting involved
     deact :: Vector{Int}
+    # how many push frames are open. picosat reports the current context as a
+    # literal rather than a level, and recycles those literals, so counting is
+    # the way to know: `with_deactivations` has to reach the deactivation frame
+    # with `sat_pop`, which retracts whatever was pushed last, and getting that
+    # wrong retracts someone else's clauses instead of the query's
+    depth :: Int
 end
 
 function Base.show(io::IO, sat::SAT)
@@ -285,7 +291,7 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[]))
+    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[], 0))
     try deactivate_classes!(sat)
     catch
         finalize(sat)
@@ -312,52 +318,96 @@ SAT(info :: Dict{P,PkgInfo{P,V}}) where {P,V} = SAT(Universe(info))
 # once — after which any subset can be deactivated again by assuming its
 # literal, with no clause rewritten. Nothing pops the frame in production; the
 # frame exists so that what is built on top of this can, which is
-# `with_classes_relaxed`.
+# `with_classes_relaxed` and `with_deactivations`.
 function deactivate_classes!(sat::SAT{P,V}) where {P,V}
     pico = sat.pico
+    append!(sat.deact, deactivated_lits(sat, sat.reps))
     for (p, reps_p) in sat.reps
         v_p = sat.vars[p]
-        best = 0
-        for (i, r) in enumerate(reps_p)
-            if iszero(r)
-                push!(sat.deact, forbidden_lit(sat, p, i))
-            elseif best == 0
-                best = i
-            end
-        end
         # the structural instance defaults every package's best class to true,
         # so that a package that must be chosen is tried at its best class
         # first. when this query has emptied that class, point the phase at the
         # best class it does admit instead — otherwise the solver's first guess
         # is infeasible for every such package at once
+        best = hinted_class(reps_p, LayoutOrder(), p)
         if best != 1
             PicoSAT.set_default_phase_lit(pico, v_p + 1, 0)
             best == 0 || PicoSAT.set_default_phase_lit(pico, v_p + best, 1)
         end
     end
-    isempty(sat.deact) && return sat
-    sort!(sat.deact; by = abs) # dict order must not reach the solver
     return push_deactivations!(sat)
 end
 
-# Assert `sat.deact` as unit clauses in a push frame of its own: one `sat_pop`
+# The literals forbidding the classes `reps` gives no representative to, sorted
+# — what `sat.deact` is for the query the instance was built for, and what a
+# relaxation of that query needs in its place.
+function deactivated_lits(sat::SAT{P}, reps::Dict{P,Vector{Int}}) where {P}
+    lits = Int[]
+    for (p, reps_p) in reps, (i, r) in enumerate(reps_p)
+        iszero(r) && push!(lits, forbidden_lit(sat, p, i))
+    end
+    sort!(lits; by = abs) # dict order must not reach the solver
+    return lits
+end
+
+# Assert `lits` as unit clauses in a push frame of their own: one `sat_pop`
 # retracts all of them at once, and asserting them again is what puts the frame
-# back (`with_classes_relaxed`). Which classes are forbidden and where each
-# package's phase hint points are properties of the query, true whether or not
-# the frame is in force, so `deactivate_classes!` settles them once, around this.
-function push_deactivations!(sat::SAT)
-    isempty(sat.deact) && return sat
+# back. Nothing to assert means no frame, so a caller that pushed nothing must
+# not pop.
+function push_forbidden!(sat::SAT, lits::Vector{Int})
+    isempty(lits) && return sat
     sat_push(sat)
-    for l in sat.deact
+    for l in lits
         PicoSAT.add(sat.pico, l)
         PicoSAT.add(sat.pico, 0)
     end
     return sat
 end
 
+# The query's own frame, re-asserted. Which classes it forbids and where each
+# package's phase hint points are properties of the query, true whether or not
+# the frame is in force, so `deactivate_classes!` settles them once, around this.
+push_deactivations!(sat::SAT) = push_forbidden!(sat, sat.deact)
+
+# Run `body` with `deact` forbidden in place of the query's own deactivations,
+# and put the query's frame back afterwards, whatever `body` does, so the
+# instance is as reusable as it was. Returns `body`'s value.
+#
+# The deactivation frame has to be the innermost one, since `sat_pop` retracts
+# whatever was pushed last: this cannot run inside `with_temp_clauses`, though
+# `body` may open one. That is checked rather than trusted — running it one
+# frame too deep pops someone else's clauses and never says so — and so is the
+# balance on the way out, which is what catches a `body` that pushed and did not
+# pop, at the call that did it rather than wherever the damage surfaces.
+function with_deactivations(body::Function, sat::SAT, deact::Vector{Int})
+    depth = sat.depth
+    @assert depth == (isempty(sat.deact) ? 0 : 1) """
+        the deactivation frame is not the innermost one — $depth frames are \
+        open where $(isempty(sat.deact) ? 0 : 1) is expected"""
+    sat_pop_if(sat, !isempty(sat.deact))
+    try
+        push_forbidden!(sat, deact)
+        try body()
+        finally
+            sat_pop_if(sat, !isempty(deact))
+        end
+    finally
+        push_deactivations!(sat)
+        @assert sat.depth == depth balance_error(sat, depth)
+    end
+end
+
+sat_pop_if(sat::SAT, yes::Bool) = yes ? sat_pop(sat) : sat
+
+# what an unbalanced body did, said the same way by both `with_` helpers. An
+# exception thrown here while another is in flight does not lose it: Julia
+# carries both, and reports the original as the cause
+balance_error(sat::SAT, depth::Int) =
+    "the body left $(sat.depth - depth) push frame(s) open"
+
 # Run `body` with every class of the universe choosable — the deactivating
-# clauses retracted — and put the frame back afterwards, whatever `body` does,
-# so the instance is as reusable as it was. Returns `body`'s value.
+# clauses retracted — and put the frame back afterwards. The empty end of
+# `with_deactivations`: forbidding nothing is the weakest thing to forbid.
 #
 # Inside, activation is entirely a matter of assumption: assuming
 # `forbidden_lit(sat, p, c)` forbids class `c` of `p` for one solve, and
@@ -365,17 +415,8 @@ end
 # subset of the query's deactivations can be imposed one solve at a time with no
 # clause added and none rewritten. Restoring re-asserts the same unit clauses,
 # because popping a frame discards the clauses asserted in it.
-#
-# The deactivation frame has to be the innermost one, since `sat_pop` retracts
-# whatever was pushed last: this cannot run inside `with_temp_clauses`.
-function with_classes_relaxed(body::Function, sat::SAT)
-    isempty(sat.deact) && return body() # no frame to lift: nothing is forbidden
-    sat_pop(sat)
-    try body()
-    finally
-        push_deactivations!(sat)
-    end
-end
+with_classes_relaxed(body::Function, sat::SAT) =
+    with_deactivations(body, sat, Int[])
 
 function finalize(sat::SAT)
     pico = sat.pico
@@ -463,15 +504,158 @@ function solution(sat::SAT{P,V}) where {P,V}
     return sol
 end
 
-sat_push(sat::SAT) = PicoSAT.push(sat.pico)
-sat_pop(sat::SAT) = PicoSAT.pop(sat.pico)
+sat_push(sat::SAT) = (sat.depth += 1; PicoSAT.push(sat.pico))
+sat_pop(sat::SAT) = (sat.depth -= 1; PicoSAT.pop(sat.pico))
 
 function with_temp_clauses(body::Function, sat::SAT)
+    depth = sat.depth
     sat_push(sat)
     try body()
     finally
         sat_pop(sat)
+        @assert sat.depth == depth balance_error(sat, depth)
     end
+end
+
+# The class ranking the descent optimizes in. Everything it needs is two
+# questions per package: which class to try first, and which classes count as
+# improvements on the one it has.
+#
+# `LayoutOrder` is the universe's own layout, which *is* rank order for the
+# query the universe was ranked for: class 1 is best and `1:i-1` is everything
+# better than class `i`. Both accessors are the index arithmetic they replace,
+# so the ordinary descent pays nothing for asking.
+#
+# `RankedOrder` is a re-ranking of that same layout, which is what answering a
+# relaxation on an already-filtered universe needs. Re-ranking invalidates no
+# clause — every clause says which classes exist, depend and conflict, and a
+# relaxation changes none of that — so the universe is not relaid out and the
+# new order is threaded through the descent instead. The better-set has the same
+# size as the layout order's, so the descent adds the clauses it always added.
+#
+# A relaxation moves a handful of packages' classes and leaves the rest where
+# they were, and moves few of the classes of the ones it does move. Both
+# sparsities are the same fact — a permutation close to the identity — so both
+# are carried the same way, as the deviation from it (`ClassRanking`).
+abstract type ClassOrder end
+
+struct LayoutOrder <: ClassOrder end
+
+# One package's class ranking: `r[i]` is the class ranked `i`-th. Stored as its
+# deviation from the layout order — the ranks holding something other than
+# themselves, ascending, and what each of them holds — so the identity is the
+# empty deviation and there is no separate case for a package or a class a
+# re-ranking left alone. Lookup is a binary search over the deviation, which for
+# the identity is a length check.
+struct ClassRanking <: AbstractVector{Int}
+    n  :: Int
+    at :: Vector{Int}
+    to :: Vector{Int}
+end
+
+Base.size(r::ClassRanking) = (r.n,)
+
+Base.@propagate_inbounds function Base.getindex(r::ClassRanking, i::Int)
+    @boundscheck checkbounds(r, i)
+    k = searchsortedfirst(r.at, i)
+    return @inbounds k ≤ length(r.at) && r.at[k] == i ? r.to[k] : i
+end
+
+# the permutation `perm` as its deviation
+function ClassRanking(perm::AbstractVector{Int})
+    at, to = Int[], Int[]
+    for (i, c) in enumerate(perm)
+        i == c && continue
+        push!(at, i)
+        push!(to, c)
+    end
+    return ClassRanking(length(perm), at, to)
+end
+
+# The ranking read the other way: which rank each class holds. A permutation
+# maps the ranks it displaces onto themselves, so the inverse's deviation sits
+# at the same ranks and needs no pass over the ones that did not move.
+function Base.invperm(r::ClassRanking)
+    k = sortperm(r.to)
+    return ClassRanking(r.n, r.to[k], r.at[k])
+end
+
+# `ord[p]` is `p`'s ranking and `pos[p]` its inverse, for the packages a
+# re-ranking moved; `id` answers for every other package, and is as long as the
+# largest of them needs
+struct RankedOrder{P} <: ClassOrder
+    ord :: Dict{P,ClassRanking}
+    pos :: Dict{P,ClassRanking}
+    id  :: ClassRanking
+end
+
+# the re-ranking `cperms` describes, over the classes of the layout it was
+# computed against (`class_ranking`'s second return value)
+function RankedOrder(
+    info   :: AbstractDict{P, PkgInfo{P,V}},
+    cperms :: AbstractDict{P, Vector{Int}},
+) where {P,V}
+    ord = Dict{P,ClassRanking}()
+    pos = Dict{P,ClassRanking}()
+    for (p, perm) in cperms
+        r = ClassRanking(perm)
+        ord[p] = r
+        pos[p] = invperm(r)
+    end
+    n = maximum(nclasses(info_p) for info_p in values(info))
+    return RankedOrder{P}(ord, pos, ClassRanking(n, Int[], Int[]))
+end
+
+ranking(o::RankedOrder{P}, p::P) where {P} = get(o.ord, p, o.id)
+position(o::RankedOrder{P}, p::P) where {P} = get(o.pos, p, o.id)
+
+class_at_rank(::LayoutOrder, p, r::Int) = r
+class_at_rank(o::RankedOrder{P}, p::P, r::Int) where {P} =
+    @inbounds ranking(o, p)[r]
+
+best_class(::LayoutOrder, p) = 1
+best_class(o::RankedOrder{P}, p::P) where {P} = @inbounds ranking(o, p)[1]
+
+better_classes(::LayoutOrder, p, i::Int) = 1:i-1
+better_classes(o::RankedOrder{P}, p::P, i::Int) where {P} =
+    view(ranking(o, p), 1:(@inbounds position(o, p)[i]) - 1)
+
+# does anything rank above class `i` of `p`? — `sol[p] == 1` in the layout order
+at_best(o::ClassOrder, p, i::Int) = isempty(better_classes(o, p, i))
+
+# the class a package's decision phase points at when its classes are
+# represented by `reps_p` and ranked by `ord`: the best class the query admits,
+# or 0 when it admits none
+function hinted_class(reps_p::Vector{Int}, ord::ClassOrder, p)
+    for r in eachindex(reps_p)
+        c = class_at_rank(ord, p, r)
+        iszero(reps_p[c]) || return c
+    end
+    return 0
+end
+
+# Move every package's phase hint from where `(from, from_ord)` puts it to where
+# `(to, to_ord)` does. A phase is a solver knob rather than a clause, so no
+# `sat_pop` takes one back down: an instance that answers one relaxation after
+# another has to have each one's hints taken down explicitly before the next
+# one's go up, or the first relaxation's guesses leak into the second's solves.
+# Settled once per relaxation and not touched again — once the descent pins a
+# package it adds a unit clause, and the hint stops mattering.
+function rehint_classes!(
+    sat      :: SAT{P},
+    from     :: Dict{P,Vector{Int}},
+    from_ord :: ClassOrder,
+    to       :: Dict{P,Vector{Int}},
+    to_ord   :: ClassOrder,
+) where {P}
+    for (p, v_p) in sat.vars
+        a = hinted_class(from[p], from_ord, p)
+        b = hinted_class(to[p], to_ord, p)
+        a == b && continue
+        a == 0 || PicoSAT.set_default_phase_lit(sat.pico, v_p + a, 0)
+        b == 0 || PicoSAT.set_default_phase_lit(sat.pico, v_p + b, 1)
+    end
+    return sat
 end
 
 # improve package p to its best feasible class: repeatedly demand some
@@ -481,23 +665,25 @@ function optimize_version!(
     sat :: SAT{P},
     sol :: Dict{P,Int},
     p   :: P,
-) where {P}
+    ord :: O = LayoutOrder(),
+) where {P, O <: ClassOrder}
     # cheap first try: after filtering, the best class is feasible more
     # often than not, and probing it by assumption needs no temp clauses
     # at all — one solve replaces the whole improvement loop
-    if sol[p] > 1
-        sat_assume(sat, p, 1)
+    if !at_best(ord, p, sol[p])
+        best = best_class(ord, p)
+        sat_assume(sat, p, best)
         if is_satisfiable(sat)
             extract_solution!(sat, sol)
-            @assert sol[p] == 1
+            @assert sol[p] == best
         end
     end
-    # sol[p] == 1 is already optimal: the improvement clause below would be
-    # empty, forcing a guaranteed-UNSAT solve
-    while sol[p] > 1
+    # a package already at its best class is optimal: the improvement clause
+    # below would be empty, forcing a guaranteed-UNSAT solve
+    while !at_best(ord, p, sol[p])
         improved = with_temp_clauses(sat) do
             # some strictly better class of p
-            for i = 1:sol[p]-1
+            for i in better_classes(ord, p, sol[p])
                 sat_add(sat, p, i)
             end
             sat_add(sat)

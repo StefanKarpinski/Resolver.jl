@@ -15,20 +15,35 @@ using Test
 using Resolver
 import TOML
 
-# Run bin/resolve.jl on a workspace; return (success, stdout, stderr strings).
-function resolve_workspace_manifest(ws::AbstractString; flags::Cmd = `--print-manifest`)
+@isdefined(TestSuccess) || include(joinpath(@__DIR__, "TestSuccess.jl"))
+using .TestSuccess
+
+# The bin/resolve.jl command for a workspace, with the bin/ environment
+# instantiated so that it can run.
+function resolve_workspace_cmd(ws::AbstractString; flags::Cmd = `--print-manifest`)
     julia = Base.julia_cmd()[1]
     project = pkgdir(Resolver, "bin")
     script = joinpath(project, "resolve.jl")
     julia_version = string(Int(VERSION.major), ".", VERSION.minor)
     run(`$julia --project=$project -e 'import Pkg; Pkg.instantiate()'`)
+    return `$julia --project=$project $script $ws $flags --julia=$julia_version`
+end
+
+# Resolve a workspace, asserting that it resolved, and return what the script
+# printed; a failure reports the command, its exit code and its stderr.
+function resolve_workspace(ws::AbstractString; flags::Cmd = `--print-manifest`)
     out = IOBuffer()
+    @test_success pipeline(resolve_workspace_cmd(ws; flags); stdout = out)
+    return String(take!(out))
+end
+
+# Resolve a workspace that must *not* resolve, returning the script's stderr so
+# the caller can check which complaint it made.
+function resolve_workspace_error(ws::AbstractString; flags::Cmd = `--print-manifest`)
     err = IOBuffer()
-    ok = success(pipeline(
-        `$julia --project=$project $script $ws $flags --julia=$julia_version`;
-        stdout = out, stderr = err,
-    ))
-    return ok, String(take!(out)), String(take!(err))
+    cmd = resolve_workspace_cmd(ws; flags)
+    @test !success(pipeline(cmd; stdout = devnull, stderr = err))
+    return String(take!(err))
 end
 
 @testset "workspaces" begin
@@ -74,9 +89,7 @@ end
             WorkspaceRoot = "11111111-1111-1111-1111-111111111111"
             """)
 
-        ok, manifest, err = resolve_workspace_manifest(ws)
-        ok || print(stderr, err)
-        @test ok
+        manifest = resolve_workspace(ws)
         m = TOML.parse(manifest)
 
         # all three workspace packages are path entries relative to the root,
@@ -135,9 +148,7 @@ end
             Example = "7876af07-990d-54b4-ab0e-23690620f79a"
             """)
 
-        ok, manifest, err = resolve_workspace_manifest(ws)
-        ok || print(stderr, err)
-        @test ok
+        manifest = resolve_workspace(ws)
         m = TOML.parse(manifest)
 
         # the local JSON is a path entry fixed at its local version, and the
@@ -173,9 +184,7 @@ end
             WorkspaceRoot = "11111111-1111-1111-1111-111111111111"
             """)
 
-        ok, manifest, err = resolve_workspace_manifest(ws)
-        ok || print(stderr, err)
-        @test ok
+        manifest = resolve_workspace(ws)
         m = TOML.parse(manifest)
         root = only(m["deps"]["WorkspaceRoot"])
         @test root["path"] == "."
@@ -204,9 +213,7 @@ end
             JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
             """)
 
-        ok, manifest, err = resolve_workspace_manifest(ws)
-        ok || print(stderr, err)
-        @test ok
+        manifest = resolve_workspace(ws)
         m = TOML.parse(manifest)
         member = only(m["deps"]["WorkspaceMember"])
         @test member["path"] == "member"
@@ -251,15 +258,11 @@ end
         # (a) local version admitted by Conda's compat: resolves against the
         # fixed local copy; the registry JSON's dependency tree stays out
         ws = make_shadow_ws("1.99.99")
-        ok, out, err = resolve_workspace_manifest(ws; flags = `--print-versions`)
-        ok || print(stderr, err)
-        @test ok
+        out = resolve_workspace(ws; flags = `--print-versions`)
         @test occursin(r"(?m)^682c06a0-de6a-54ab-a142-c8b1cf79cde6 JSON\s+1\.99\.99$", out)
         @test !occursin("Parsers", out)
 
-        ok, manifest, err = resolve_workspace_manifest(ws)
-        ok || print(stderr, err)
-        @test ok
+        manifest = resolve_workspace(ws)
         m = TOML.parse(manifest)
         json = only(m["deps"]["JSON"])
         @test json["path"] == "json"
@@ -273,8 +276,7 @@ end
 
         # (b) local version excluded by Conda's compat: unsatisfiable, as Pkg
         ws = make_shadow_ws("99.0.0")
-        ok, out, err = resolve_workspace_manifest(ws)
-        @test !ok
+        err = resolve_workspace_error(ws)
         @test occursin("Unsatisfiable", err)
     end
 
@@ -303,8 +305,7 @@ end
             version = "99.0.0"
             """)
 
-        ok, out, err = resolve_workspace_manifest(ws)
-        @test !ok
+        err = resolve_workspace_error(ws)
         @test occursin("excludes its local version", err)
     end
 end

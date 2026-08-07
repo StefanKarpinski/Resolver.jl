@@ -52,7 +52,18 @@ be reachable from the thing that gets cached and shared.
 struct Universe{P,V}
     info :: Dict{P, PkgInfo{P,V}}
     reps :: Dict{P, Vector{Int}}
+    # per package, `(key_Q, key_∅)` per class: the version rank the class
+    # competes at under this query, and the rank of its best member with
+    # nothing forbidden. The filter's licence to delete is a comparison of the
+    # two (see the relaxation-stability page). Carried alongside `reps` and
+    # renumbered with it.
+    ranks :: Union{Nothing, Tuple{Dict{P,Vector{Int}}, Dict{P,Vector{Int}}}}
 end
+
+Universe{P,V}(
+    info :: Dict{P, PkgInfo{P,V}},
+    reps :: Dict{P, Vector{Int}},
+) where {P,V} = Universe{P,V}(info, reps, nothing)
 
 # the universe an unconstrained query makes of an artifact: every class stands
 # for its first member (the canonical order's best), nothing is deactivated
@@ -150,15 +161,30 @@ Both outputs are per-resolve state: the partition they index is the registry's,
 but which member stands for a class, and hence how the classes are ordered,
 belongs to the query.
 """
-function class_ranking(
+class_ranking(
     info  :: AbstractDict{P, PkgInfo{P,V}},
     prob  :: Problem{P} = Problem(P[]),
     perms :: Union{Nothing, AbstractDict{P, Vector{Int}}} = nothing,
+) where {P,V} = class_ranking_keys(info, prob, perms, false)[1:2]
+
+# `class_ranking` plus, when `want_keys`, the two per-class rank keys the
+# filter's deletion rules compare: `key_Q` (what `key` below already is) and
+# `key_∅`, the rank of the class's best member ignoring the query's
+# exclusions. Both are returned in the *post-permutation* class layout, like
+# `reps` after `copy_ranked!` — i.e. permuted by `perms′` where there is one.
+function class_ranking_keys(
+    info  :: AbstractDict{P, PkgInfo{P,V}},
+    prob  :: Problem{P},
+    perms :: Union{Nothing, AbstractDict{P, Vector{Int}}},
+    want_keys :: Bool,
 ) where {P,V}
     excl = exclusion_masks(info, prob)
     reps = Dict{P, Vector{Int}}()
     perms′ = Dict{P, Vector{Int}}()
+    keys_q = want_keys ? Dict{P, Vector{Int}}() : nothing
+    keys_0 = want_keys ? Dict{P, Vector{Int}}() : nothing
     key = Int[] # scratch: per class, the rank of the member it competes at
+    key0 = Int[] # scratch: per class, the rank of its best member, period
     for (p, info_p) in info
         m = nclasses(info_p)          # one entry of `reps` and `key` per class
         nv = length(info_p.versions)  # ... walking this many versions to fill them
@@ -188,9 +214,23 @@ function class_ranking(
             end
         end
         reps[p] = reps_p
-        issorted(key) || (perms′[p] = sortperm(key))
+        cperm = issorted(key) ? nothing : sortperm(key)
+        cperm === nothing || (perms′[p] = cperm)
+        if want_keys
+            # key_∅: the rank of each class's best member, exclusions ignored
+            resize!(key0, m)
+            fill!(key0, 0)
+            for r = 1:nv
+                j = cls[perm === nothing ? r : perm[r]]
+                key0[j] == 0 || continue
+                key0[j] = r
+            end
+            keys_q[p] = cperm === nothing ? copy(key) : key[cperm]
+            keys_0[p] = cperm === nothing ? copy(key0) : key0[cperm]
+        end
     end
-    return reps, isempty(perms′) ? nothing : perms′
+    return reps, isempty(perms′) ? nothing : perms′,
+        want_keys ? (keys_q, keys_0) : nothing
 end
 
 """
@@ -241,12 +281,13 @@ function rank_pkg_info(
     order = nothing,
 ) where {P,V}
     perms = version_permutations(info, order)
-    reps, cperms = class_ranking(info, prob, perms)
+    reps, cperms, keys = class_ranking_keys(
+        info, prob, perms, true)
     # reordering reads every matrix while writing a differently laid out one,
     # so the in-place shortcut is only available when nothing moves
     cperms === nothing || info′ !== info ||
         (info′ = Dict{P, PkgInfo{P,V}}())
-    univ = Universe{P,V}(info′, Dict{P, Vector{Int}}())
+    univ = Universe{P,V}(info′, Dict{P, Vector{Int}}(), keys)
     return copy_ranked!(univ, info, reps, cperms)
 end
 
@@ -356,10 +397,17 @@ function relaid_conflicts(
     return X′
 end
 
-filter_pkg_info!(
+# the unconstrained case, filtered in place: ranking an unconstrained query
+# moves no class, so this is `Universe(info)` plus the rank keys the passes
+# compare — which even here are not both the same, since two members of one
+# class still give it one `key_∅`
+function filter_pkg_info!(
     info :: Dict{P, PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info),
-) where {P,V} = filter_pkg_info!(Universe(info), Problem(reqs))
+) where {P,V}
+    prob = Problem(collect(reqs))
+    return filter_pkg_info!(rank_pkg_info(info, prob, info), prob)
+end
 
 function filter_pkg_info!(
     univ :: Universe{P,V},
@@ -386,13 +434,19 @@ function filter_pkg_info!(
     # can satisfy those — so the requirements remain valid across rounds.
     # rounds strictly shrink the total class count, so the loop terminates
     mark_installable!(info)
-    mark_necessary!(info, deactivations(univ))
+    mark_necessary!(info, deactivations(univ), univ.ranks)
     drop_unmarked!(univ)
     while true
         total = sum(nclasses(i) for i in values(info); init = 0)
         deact = deactivations(univ)
-        mark_reachable!(info, reqs, deact)
-        mark_necessary!(info, deact)
+        mark_reachable!(info, reqs, deact, univ.ranks)
+        # a prefix walk is arc-consistent by construction — it steps past any
+        # class that depends on a package with no installable class — but the
+        # possibly-best set keeps classes from outside any one prefix, which
+        # carries no such guarantee and can leave `depends` naming a package
+        # this round empties. Restore the invariant explicitly.
+        mark_installable!(info)
+        mark_necessary!(info, deact, univ.ranks)
         drop_unmarked!(univ)
         sum(nclasses(i) for i in values(info); init = 0) < total ||
             break
@@ -400,193 +454,313 @@ function filter_pkg_info!(
     return univ
 end
 
-"""
-    find_reachable(info, reqs) :: Dict{P, Int}
-
-This function finds a minimal "reachable" subset of packages and classes that
-could appear in pareto-optimal solutions to version resolution for the given set
-of required "root" packages, using the following recursive logic:
-
-- P in reqs => P[1] reachable
-- P[i] reachable & P[i] depends on D => D[1] reachable
-- P[i] reachable & P[i] conflicts w. reachable => P[i+1] reachable
-- D[end] conflicts w. reachable & P[i] depends on D => P[i+1] reachable
-
-The optional `deact` argument gives, per package, a mask of its deactivated
-classes — the ones this query admits no member of. Such a class cannot be
-selected, so the package cannot be installed at it and the prefix has to
-continue past it, exactly as it continues past a class conflicting with
-something present:
-
-- P[i] reachable & P[i] deactivated => P[i+1] reachable
-
-A deactivated class's dependencies are followed all the same, which is what
-keeps the cone behind it in the universe: it is precisely the cone a relaxation
-of whatever emptied the class would need to find still there.
-
-The function returns a dictionary mapping packages to the maximum class index
-of that package that could be reached in an optimal solution. If a package
-cannot appear in an optimal solution, it will not appear in this dictionary.
-"""
-function find_reachable(
-    info  :: Dict{P, PkgInfo{P,V}},
-    reqs  :: SetOrVec{P} = keys(info),
-    deact :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
-) where {P,V}
-    # intern packages as integer indices so that the fixpoint loop below
-    # hashes no package names; all derived tables are indexed by pkg id
+# the interned tables the reachability walk reads: packages as integer indices,
+# so the fixpoint below hashes no package names.
+function reach_tables(info::Dict{P, PkgInfo{P,V}}) where {P,V}
     pkgs = sort!(collect(keys(info)))
     N = length(pkgs)
     ix = Dict{P,Int}(p => i for (i, p) in enumerate(pkgs))
     infos = Vector{PkgInfo{P,V}}(undef, N)
     ncls = Vector{Int}(undef, N)
-    # interned depends, same order (id 0: dependency absent from info,
-    # i.e. a package with no installable class — see below)
     deps = Vector{Vector{Int}}(undef, N)
-    partners = Vector{Vector{Tuple{Int,Int}}}(undef, N)
-    # interned deactivation masks (nothing: nothing empty here, the norm)
-    deacts = Vector{Union{Nothing,BitVector}}(nothing, N)
+    # (partner id, partner's class block offset in p's matrix,
+    #  p's class block offset in the partner's matrix)
+    partners = Vector{Vector{NTuple{3,Int}}}(undef, N)
     for p = 1:N
         info_p = info[pkgs[p]]
         infos[p] = info_p
         ncls[p] = nclasses(info_p)
-        deacts[p] = get(deact, pkgs[p], nothing)
         deps[p] = Int[get(ix, q, 0) for q in info_p.depends]
-        # (partner id, offset of p's class block in the partner's matrix)
-        prt = Tuple{Int,Int}[
-            (ix[q], info[q].interacts[pkgs[p]])
-            for q in keys(info_p.interacts)
-        ]
-        partners[p] = sort!(prt)
+        partners[p] = sort!(NTuple{3,Int}[
+            (ix[q], b, info[q].interacts[pkgs[p]]) for (q, b) in info_p.interacts])
     end
-
-    # meaning (both map packages to class indices):
-    #   - reach tracks fully processed reachable classes
-    #   - queue tracks newly reachable classes not yet processed
-    reach = zeros(Int, N)
-    queue = zeros(Int, N)
-    stack = Int[] # packages with queued work
-    instack = falses(N)
-
-    function enqueue(p::Int, j::Int)
-        queue[p] = j
-        if !instack[p]
-            instack[p] = true
-            push!(stack, p)
-        end
-    end
-
-    # add next active class of p *after* i to the queue
-    # do nothing if there's already class > i in reach/queue
-    function next(p::Int, i::Int)
-        reach[p] > i && return false
-        queue[p] > i && return false
-        m = ncls[p]
-        X = infos[p].conflicts
-        # first active class after i (the flag column is the active set)
-        j = col_min_from(X, size(X, 2), i + 1, m)
-        # j == 0: we're out of classes (i.e. saturated; see below)
-        enqueue(p, j == 0 ? m + 1 : j)
-        return true
-    end
-
-    rdeps = [Dict{Int,Int}() for _ = 1:N] # reverse dependency map
-    # rdeps[p][q] == k means
-    #   "k is latest reachable class of q that depends on p"
-
-    for p in reqs
-        # a requirement with no installable class reaches nothing
-        i = get(ix, p, 0)
-        i == 0 || enqueue(i, 1)
-    end
-
-    # notation:
-    #   - p, q: packages
-    #   - info_p = infos[p]
-    #   - indices of classes of package p: i, j
-    #   - indices of classes of package q: k
-    while !isempty(stack)
-        # get unprocessed package + class
-        p = pop!(stack)
-        instack[p] = false
-        i = queue[p]
-        queue[p] = 0
-        info_p = infos[p]
-        m = ncls[p]
-        # check for saturation
-        #   p saturated means: conflicts can force p to be uninstallable
-        #   saturation represented by i > ncls[p]
-        if i > m
-            # p has become saturated
-            for (q, k) in rdeps[p]
-                # q@k depends on p, therefore
-                # q@k conflicts with p being uninstallable
-                # p being saturated means that can happen
-                next(q, k)
-            end
-        end
-        # process each newly reachable class of p
-        deact_p = deacts[p]
-        for j = reach[p]+1:min(i, m)
-            # p@j is deactivated: it cannot be selected, so it cannot be
-            # what p is installed at — the prefix has to continue past it.
-            # its dependencies below are followed anyway, which is what keeps
-            # the packages behind it in the universe
-            deact_p === nothing || !deact_p[j] || next(p, j)
-            # dependencies
-            for (k, q) in enumerate(deps[p])
-                info_p.conflicts[j, k] || continue
-                # p@j depends on q
-                if q == 0
-                    # q has no installable class at all, so neither has
-                    # p@j: p can only be installed past it
-                    next(p, j)
-                    continue
-                end
-                rdeps_q = rdeps[q]
-                rdeps_q[p] = max(get(rdeps_q, p, 0), j)
-                next(q, 0) # q can be required
-                # check if q is saturated:
-                if reach[q] > ncls[q]
-                    # p@j depends on q, therefore
-                    # p@j conflicts with q being uninstallable
-                    # q being saturated means that can happen
-                    next(p, j)
-                end
-            end
-            # find p@j's conflicts with reached classes of each partner:
-            # conflicts are stored symmetrically, so scan the partner-side
-            # column Y[k, c+j] == X[j, b+k], which is contiguous
-            for (q, c) in partners[p]
-                r = min(reach[q], ncls[q])
-                r > 0 || continue
-                k = col_max_upto(infos[q].conflicts, c + j, r)
-                k == 0 && continue
-                # p@j conflicts with q@k (the highest such k; pushing past
-                # it subsumes pushing past any lower conflicting class)
-                next(p, j)
-                next(q, k)
-            end
-        end
-        # update the reach map
-        reach[p] = i
-    end
-
-    return Dict{P,Int}(pkgs[p] => reach[p] for p = 1:N if reach[p] > 0)
+    return (; pkgs, N, ix, infos, ncls, deps, partners)
 end
 
 function mark_reachable!(
     info  :: Dict{P, PkgInfo{P,V}},
-    reqs  :: SetOrVec{P} = keys(info),
-    deact :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
+    reqs  :: SetOrVec{P},
+    deact :: AbstractDict{P, BitVector},
+    # the per-package `(key_Q, key_∅)` vectors the walk compares
+    ranks :: Tuple{Dict{P,Vector{Int}}, Dict{P,Vector{Int}}},
 ) where {P,V}
-    reach = find_reachable(info, reqs, deact)
-    for (p, info_p) in info
-        r = min(get(reach, p, 0), nclasses(info_p))
-        info_p.conflicts[1:r, end] .= true
-        info_p.conflicts[r+1:end, end] .= false
+    for (_, info_p) in info
+        info_p.conflicts[1:nclasses(info_p), end] .= false
     end
-    return reach
+    return find_reachable(info, reqs, deact, ranks[1], ranks[2])
+end
+
+"""
+    find_reachable(info, reqs, deact, kq, k0)
+
+Flag, in each package's matrix, the classes that some relaxation of this query
+could reach — where a relaxation is the same query with any of its requirements
+or constraint sources dropped. `kq` gives per class the rank of the best member
+this query admits (`typemax` if it admits none) and `k0` the rank of its best
+member, period.
+
+Relaxing a constraint only moves a class earlier, so `k0(c) ≤ key_R(c) ≤ kq(c)`
+for every relaxation `R`. A class `c` can therefore be the best of a candidate
+set `C` under some relaxation exactly when no `c′ ∈ C` has `kq(c′) < k0(c)`:
+otherwise `c′` at its worst still precedes `c` at its best. Writing
+`t = min{kq(c′) : c′ ∈ C}`, those classes are `{c ∈ C : k0(c) ≤ t}`.
+
+A package's flagged classes are the possibly-best classes of whatever it has
+not been forced past, and being forced past one — a conflict with a flagged
+class, nothing selectable in it, a dependency on a package with nothing
+selectable — recomputes that set, to a fixpoint. The result already contains
+the classes this query alone would reach, so there is nothing to union it with —
+Theorem D of the manual's relaxation-stability page proves that.
+"""
+function find_reachable(
+    info  :: Dict{P, PkgInfo{P,V}},
+    reqs  :: SetOrVec{P},
+    deact :: AbstractDict{P, BitVector},
+    kq    :: Dict{P, Vector{Int}},
+    k0    :: Dict{P, Vector{Int}},
+    tb    = reach_tables(info),
+) where {P,V}
+    pkgs, N, ix, infos, ncls, deps, partners =
+        tb.pkgs, tb.N, tb.ix, tb.infos, tb.ncls, tb.deps, tb.partners
+
+    # ---------------------------------------------------------------- layout
+    # Everything per-class is flat: `coff[p]` offsets the key arrays, `soff[p]`
+    # the bitset words. One allocation each instead of one per package.
+    coff = Vector{Int}(undef, N + 1); coff[1] = 0
+    soff = Vector{Int}(undef, N + 1); soff[1] = 0
+    cw   = Vector{Int}(undef, N)  # words per column of p's matrix
+    # the matrices' backing words, hoisted: the walk reads them by package id
+    # thousands of times and has no other use for the wrappers
+    chunks = Vector{Vector{UInt64}}(undef, N)
+    for p = 1:N
+        coff[p+1] = coff[p] + ncls[p]
+        soff[p+1] = soff[p] + cld(ncls[p], 64)
+        X = infos[p].conflicts
+        cw[p] = col_words(X)
+        chunks[p] = X.chunks
+    end
+    M = coff[N+1]
+    KQ = Vector{Int}(undef, M) # key_Q, typemax where the query empties the class
+    K0 = Vector{Int}(undef, M) # key_∅
+    # The classes in key_∅ order, per package — `nothing` when that is the
+    # layout order already, which is exactly when nothing here is demoted.
+    ord0 = Vector{Union{Nothing,Vector{Int}}}(nothing, N)
+    for p = 1:N
+        m = ncls[p]
+        o = coff[p]
+        d = get(deact, pkgs[p], nothing)
+        a, b = kq[pkgs[p]], k0[pkgs[p]]
+        @inbounds for c = 1:m
+            KQ[o+c] = d !== nothing && d[c] ? typemax(Int) : a[c]
+            K0[o+c] = b[c]
+        end
+        issorted(b) || (ord0[p] = sortperm(b))
+    end
+
+    # ------------------------------------------------------------ reverse deps
+    # `p` saturating pushes every class of every package that depends on `p`.
+    # Which classes those are is already in the dependee's matrix — its
+    # dependency column for `p` — so the walk needs only the static edge list,
+    # not the incremental (package => classes) map it used to accumulate.
+    nrd = zeros(Int, N + 1)
+    for p = 1:N, q in deps[p]
+        q == 0 || (nrd[q+1] += 1)
+    end
+    rdoff = cumsum!(nrd, nrd)
+    rdpkg = Vector{Int}(undef, rdoff[N+1])
+    rdcol = Vector{Int}(undef, rdoff[N+1])
+    fill = copy(rdoff)
+    for p = 1:N, (k, q) in enumerate(deps[p])
+        q == 0 && continue
+        fill[q] += 1
+        rdpkg[fill[q]] = p
+        rdcol[fill[q]] = k
+    end
+
+    # ----------------------------------------------------------------- state
+    # S(p), the kept set, is a prefix in key_∅ order — `iK0[p]` is how far along
+    # that order it reaches. It is stored as a bitset anyway because the
+    # conflict scan wants to AND it against a partner's column, but no scan of
+    # it ever runs past `smax[p]`, its highest layout index.
+    Sw = zeros(UInt64, soff[N+1]) # kept
+    Pw = zeros(UInt64, soff[N+1]) # forced past
+    npushed = zeros(Int, N)       # count, so saturation is O(1)
+    smax = zeros(Int, N)          # highest layout index in S(p)
+    iKQ = ones(Int, N)            # into layout order: min key_Q still unpushed
+    iK0 = ones(Int, N)            # into key_∅ order: how far S(p) reaches
+    seeded = falses(N)
+    indirty = falses(N)
+    addq  = Tuple{Int,Int}[]  # classes newly in S, to be processed
+    dirty = Int[]             # packages whose candidate set shrank
+
+    @inline getbit(A, b, c) =
+        @inbounds (A[b + ((c - 1) >> 6) + 1] >> ((c - 1) & 63)) & 1 != 0
+    @inline setbit!(A, b, c) =
+        @inbounds A[b + ((c - 1) >> 6) + 1] |= UInt64(1) << ((c - 1) & 63)
+
+    function add!(p::Int, c::Int)
+        b = soff[p]
+        getbit(Sw, b, c) && return
+        setbit!(Sw, b, c)
+        c > smax[p] && (smax[p] = c)
+        push!(addq, (p, c))
+        return
+    end
+
+    function mark_pushed!(p::Int, c::Int)
+        b = soff[p]
+        getbit(Pw, b, c) && return
+        setbit!(Pw, b, c)
+        npushed[p] += 1
+        # a class something had to step past is still one the universe keeps —
+        # that is what "keep the first class, then the next" means
+        add!(p, c)
+        if !indirty[p]
+            indirty[p] = true
+            push!(dirty, p)
+        end
+        return
+    end
+
+    # every class of every dependee that depends on a saturated `p`
+    function saturate!(p::Int)
+        @inbounds for t = rdoff[p]+1:rdoff[p+1]
+            q, k = rdpkg[t], rdcol[t]
+            smax[q] == 0 && continue
+            Yc = chunks[q]
+            base = (k - 1) * cw[q]
+            b = soff[q]
+            for w = 1:cld(smax[q], 64)
+                z = Yc[base + w] & Sw[b + w] & ~Pw[b + w]
+                while !iszero(z)
+                    c = ((w - 1) << 6) + trailing_zeros(z) + 1
+                    z &= z - 1
+                    mark_pushed!(q, c)
+                end
+            end
+        end
+        return
+    end
+
+    # S(p) ⊇ possibly-best of (all classes − pushed).
+    #
+    # `mkq`, the smallest key_Q among the classes not yet pushed, only rises,
+    # and the possibly-best set `{c : key_∅(c) ≤ mkq}` only grows: both pointers
+    # advance monotonically and neither order is ever rescanned. The layout
+    # order already sorts the *active* classes by key_Q — it was built as
+    # `sortperm(key_Q)` — so finding `mkq` is a walk along it skipping the
+    # deactivated and the pushed, with no second permutation to maintain.
+    function refresh!(p::Int)
+        m = ncls[p]
+        o, b = coff[p], soff[p]
+        i = iKQ[p]
+        @inbounds while i ≤ m && (KQ[o+i] == typemax(Int) || getbit(Pw, b, i))
+            i += 1
+        end
+        iKQ[p] = i
+        # no active class left to rest on: every class is possibly-best, since
+        # a relaxation that revives one of them revives it at its own key_∅
+        mkq = i > m ? typemax(Int) : @inbounds KQ[o+i]
+        j = iK0[p]
+        ord = ord0[p]
+        if ord === nothing
+            @inbounds while j ≤ m && K0[o+j] ≤ mkq
+                add!(p, j)
+                j += 1
+            end
+        else
+            @inbounds while j ≤ m && K0[o+ord[j]] ≤ mkq
+                add!(p, ord[j])
+                j += 1
+            end
+        end
+        iK0[p] = j
+        # saturated: conflicts can force p to be uninstallable, so every class
+        # that depends on p has to be stepped past too
+        npushed[p] == m && saturate!(p)
+        return
+    end
+
+    function seed!(p::Int)
+        seeded[p] && return
+        seeded[p] = true
+        if !indirty[p]
+            indirty[p] = true
+            push!(dirty, p)
+        end
+        return
+    end
+
+    for p in reqs
+        i = get(ix, p, 0)
+        i == 0 || seed!(i)
+    end
+
+    while !isempty(dirty) || !isempty(addq)
+        while !isempty(dirty)
+            r = pop!(dirty)
+            indirty[r] = false
+            refresh!(r)
+        end
+        isempty(addq) && continue
+        p, c = pop!(addq)
+        info_p = infos[p]
+        o = coff[p]
+        # a class this query admits nothing of cannot be rested on
+        @inbounds KQ[o+c] == typemax(Int) && mark_pushed!(p, c)
+        # dependencies
+        @inbounds for (k, q) in enumerate(deps[p])
+            info_p.conflicts[c, k] || continue
+            if q == 0
+                mark_pushed!(p, c) # nothing installable to depend on
+                continue
+            end
+            seed!(q)
+            npushed[q] == ncls[q] && mark_pushed!(p, c)
+        end
+        # conflicts against the partner's kept classes. the partner-side column
+        # of p@c is contiguous, so this is a mask AND — bounded by the partner's
+        # highest kept class, which is what keeps it off the tail of the column
+        @inbounds for (q, _b, cq) in partners[p]
+            # nothing of q is kept yet, so nothing of q can be conflicted with
+            smax[q] == 0 && continue
+            Yc = chunks[q]
+            base = (cq + c - 1) * cw[q]
+            bq = soff[q]
+            hit = false
+            for w = 1:cld(smax[q], 64)
+                x = Yc[base + w] & Sw[bq + w]
+                iszero(x) && continue
+                hit = true
+                # only the conflicting classes that have not already been
+                # stepped past need visiting; without this mask every class
+                # added to S(p) re-walks every conflict q had already absorbed
+                z = x & ~Pw[bq + w]
+                while !iszero(z)
+                    k = ((w - 1) << 6) + trailing_zeros(z) + 1
+                    z &= z - 1
+                    mark_pushed!(q, k)
+                end
+            end
+            hit && mark_pushed!(p, c)
+        end
+    end
+
+    # the kept set goes straight into each matrix's flag column, OR-ed over
+    # whatever the query's own prefix already marked there: `Sw`'s words are
+    # laid out exactly like the column's, and its bits stop below the flag row
+    for p = 1:N
+        m = ncls[p]
+        m == 0 && continue
+        W = cw[p]
+        base = (size(infos[p].conflicts, 2) - 1) * W
+        Xc = chunks[p]
+        b = soff[p]
+        @inbounds for w = 1:cld(m, 64)
+            Xc[base + w] |= Sw[b + w]
+        end
+    end
+    return nothing
 end
 
 function mark_installable!(
@@ -639,6 +813,8 @@ end
 function mark_necessary!(
     info  :: Dict{P, PkgInfo{P,V}},
     deact :: AbstractDict{P, BitVector} = EmptyDict{P,BitVector}(),
+    # the per-package `(key_Q, key_∅)` vectors the domination rule compares
+    ranks :: Union{Nothing, Tuple{Dict{P,Vector{Int}}, Dict{P,Vector{Int}}}} = nothing,
 ) where {P,V}
     # intern packages as integer indices so that the work loop below
     # hashes no package names (sorted so the processing order — and with
@@ -651,11 +827,18 @@ function mark_necessary!(
     partners = Vector{Vector{NTuple{3,Int}}}(undef, N)
     # interned deactivation masks (nothing: nothing empty here, the norm)
     deacts = Vector{Union{Nothing,BitVector}}(nothing, N)
+    # interned rank keys
+    kqv = Vector{Union{Nothing,Vector{Int}}}(nothing, N)
+    k0v = Vector{Union{Nothing,Vector{Int}}}(nothing, N)
     for p = 1:N
         info_p = info[pkgs[p]]
         infos[p] = info_p
         ncls[p] = nclasses(info_p)
         deacts[p] = get(deact, pkgs[p], nothing)
+        if ranks !== nothing
+            kqv[p] = ranks[1][pkgs[p]]
+            k0v[p] = ranks[2][pkgs[p]]
+        end
         # (partner id, partner's class block offset in p's matrix,
         #  p's class block offset in the partner's matrix)
         prt = NTuple{3,Int}[
@@ -669,6 +852,11 @@ function mark_necessary!(
     D = UInt64[]        # per-class domination candidate masks
     T = UInt64[]        # mask of classes still tracked by the sweep
     R = Int[]           # redundant indices vector
+    # scratch: suffix masks of the classes
+    # ordered by key_∅, so "the classes whose best possible rank is worse than
+    # t" is one mask lookup
+    S = UInt64[]
+    k0s = Int[]
 
     # the classes redundancy may reason about: the in-universe ones, less the
     # deactivated ones — the pass is the one place that reads *both* per-class
@@ -762,6 +950,33 @@ function mark_necessary!(
         resize!(D, m * W)
         resize!(T, W)
         copyto!(T, A)
+        # the candidate set of `i` is not "the classes worse than i" but "the
+        # classes whose *best possible* rank is worse than i's current one" —
+        # key_∅(j) > key_Q(i), the one order fact a relaxation cannot reverse
+        # (see the relaxation-stability page).'
+        # Build the suffix masks of the classes sorted by key_∅ once per
+        # package; `S[(k-1)*W+1 : k*W]` is the mask of the classes at position
+        # k and later, and the block at k = m+1 is empty.
+        kq_p = kqv[p]
+        k0_p = k0v[p]
+        if kq_p !== nothing
+            ord = sortperm(k0_p)
+            resize!(k0s, m)
+            for k = 1:m
+                k0s[k] = k0_p[ord[k]]
+            end
+            resize!(S, (m + 1) * W)
+            fill!(S, UInt64(0))
+            @inbounds for k = m:-1:1
+                base = (k - 1) * W
+                nb = k * W
+                for w = 1:W
+                    S[base + w] = S[nb + w]
+                end
+                j = ord[k]
+                S[base + ((j - 1) >> 6) + 1] |= UInt64(1) << ((j - 1) & 63)
+            end
+        end
         @inbounds for w = 1:W
             c = A[w]
             while !iszero(c)
@@ -769,16 +984,27 @@ function mark_necessary!(
                 c &= c - 1
                 # candidates of i: candidate classes worse than i
                 o = (i - 1) * W
-                for w′ = 1:W
-                    D[o + w′] = A[w′]
-                end
-                wt = i >> 6
-                for w′ = 1:min(wt, W)
-                    D[o + w′] = 0
-                end
-                r = i & 63
-                if r != 0 && wt < W
-                    D[o + wt + 1] &= ~((UInt64(1) << r) - 1)
+                if kq_p === nothing
+                    for w′ = 1:W
+                        D[o + w′] = A[w′]
+                    end
+                    wt = i >> 6
+                    for w′ = 1:min(wt, W)
+                        D[o + w′] = 0
+                    end
+                    r = i & 63
+                    if r != 0 && wt < W
+                        D[o + wt + 1] &= ~((UInt64(1) << r) - 1)
+                    end
+                else
+                    # key_∅(j) > key_Q(i) implies j > i (key_∅(j) ≤ key_Q(j)
+                    # and key_Q is ascending), so this is a subset of the
+                    # candidate set "every class worse than i"
+                    kk = searchsortedlast(k0s, kq_p[i]) + 1
+                    sb = (kk - 1) * W
+                    for w′ = 1:W
+                        D[o + w′] = A[w′] & S[sb + w′]
+                    end
                 end
                 live = UInt64(0)
                 for w′ = 1:W
@@ -852,11 +1078,15 @@ function mark_necessary!(
     end
 end
 
-drop_unmarked!(univ::Universe) = drop_unmarked!(univ.info, univ.reps)
+drop_unmarked!(univ::Universe) = drop_unmarked!(univ.info, univ.reps, univ.ranks)
 
 function drop_unmarked!(
     info :: Dict{P, <: PkgInfo{P}},
     reps :: Union{Nothing, Dict{P, Vector{Int}}} = nothing,
+    # renumbered with `reps`; the *values* are ranks in the
+    # artifact's version order and are never rewritten, only subset, so the
+    # comparisons they support survive deletion
+    ranks :: Union{Nothing, Tuple{Dict{P,Vector{Int}}, Dict{P,Vector{Int}}}} = nothing,
 ) where {P}
     # This pass reads the *in-universe* bit and nothing else: it knows about
     # the deleting passes' verdicts and knows nothing about deactivation, which
@@ -914,6 +1144,10 @@ function drop_unmarked!(
         if m′ == 0
             delete!(info, p)
             reps === nothing || delete!(reps, p)
+            if ranks !== nothing
+                delete!(ranks[1], p)
+                delete!(ranks[2], p)
+            end
             continue
         end
         # keep as is if everything is active (with the column flags
@@ -951,6 +1185,12 @@ function drop_unmarked!(
         if reps !== nothing
             r = reps[p]
             reps[p] = Int[iszero(r[i]) ? 0 : index[r[i]] for i = 1:m if I[i]]
+        end
+        if ranks !== nothing
+            kq, k0 = ranks
+            kq_p, k0_p = kq[p], k0[p]
+            kq[p] = Int[kq_p[i] for i = 1:m if I[i]]
+            k0[p] = Int[k0_p[i] for i = 1:m if I[i]]
         end
         # compute shrunken components
         D′ = D[K[1:length(D)]]

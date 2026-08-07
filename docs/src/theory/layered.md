@@ -74,6 +74,21 @@ Real problems are shrunk before solving by two passes
 its constraints — every dependency and every (surviving) conflict of
 ``q@i`` is also one of ``q@j`` — iterated to a fixpoint.
 
+!!! note "What the code runs is weaker than this"
+    Both rules as stated are what the theorems below are proved against, and
+    both are *stronger* than what `find_reachable` and `mark_necessary!`
+    actually apply. The implemented rules replace "the first version" with
+    "every version some relaxation of this query could put first", and
+    "``i < j``" with a comparison that no relaxation can reverse, so that the
+    filtered universe serves every relaxation of the query and not only the
+    query — see [Relaxation-stable filtering](relaxation.md).
+
+    Nothing below needs restating for that. The implemented reachability keeps
+    a superset of the prefix above (Theorem D there) and the implemented
+    redundancy deletes a subset of what the ``i < j`` rule deletes (its Rule A
+    implies ``i < j``), so every deletion the implementation makes is one this
+    page already licenses, and Theorem 4 carries the answer through.
+
 The intuition behind reachability is: *an optimal solution only settles for
 a worse version for a reason, and the reason is a conflict.* That intuition
 is exactly right for the layered (pointwise) semantics, and the theorems

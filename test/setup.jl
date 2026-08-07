@@ -5,6 +5,9 @@ using Test
 @isdefined(includet) ? includet("tiny_data.jl") : include("tiny_data.jl")
 @isdefined(includet) ? includet("registry.jl")  : include("registry.jl")
 
+@isdefined(TestSuccess) || include(joinpath(@__DIR__, "TestSuccess.jl"))
+using .TestSuccess
+
 module TestResolver
 
 using Resolver: resolve, issatisfiable, DepsProvider, PkgData, PkgInfo,

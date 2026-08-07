@@ -137,7 +137,8 @@ function resolve_versions(
         # back so a caller that passed `err` in can read it too
         msg = String(take!(err))
         print(err, msg)
-        occursin("Unsatisfiable", msg) || error("failed: $cmd")
+        # when it broke, say what it said -- the command alone explains nothing
+        occursin("Unsatisfiable", msg) || error("failed: $cmd\n$msg")
         return nothing
     end
     vers = Dict{UUID,VersionNumber}()

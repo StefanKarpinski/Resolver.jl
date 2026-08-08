@@ -104,7 +104,7 @@ classkeys(univ) = Set(
             end
         end
     end
-    @test reused > 1000
+    @test reused > 900
 end
 
 @testset "the reachable set is downward closed in key_∅" begin

@@ -10,6 +10,12 @@ mutable struct SAT{P,V}
     # reactivates every class at once — after which any subset of them can be
     # deactivated again by assumption, no clause rewriting involved
     deact :: Vector{Int}
+    # how many push frames are open. `sat_pop` retracts whatever was pushed
+    # last, so every helper that opens a frame is relying on the frames below
+    # being the ones it thinks they are; this is what lets it say so. picosat
+    # reports the current context as a literal rather than a level, and recycles
+    # those literals, so counting is the way to know
+    depth :: Int
 end
 
 function Base.show(io::IO, sat::SAT)
@@ -285,7 +291,7 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[]))
+    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[], 0))
     try deactivate_classes!(sat)
     catch
         finalize(sat)
@@ -367,13 +373,21 @@ end
 # because popping a frame discards the clauses asserted in it.
 #
 # The deactivation frame has to be the innermost one, since `sat_pop` retracts
-# whatever was pushed last: this cannot run inside `with_temp_clauses`.
+# whatever was pushed last: this cannot run inside `with_temp_clauses`, though
+# `body` may open one. Both halves of that are checked rather than trusted —
+# lifting one frame too deep retracts someone else's clauses, and a `body` that
+# pushes without popping leaves the instance a frame deeper than it found it,
+# and neither says so on its own.
 function with_classes_relaxed(body::Function, sat::SAT)
-    isempty(sat.deact) && return body() # no frame to lift: nothing is forbidden
-    sat_pop(sat)
+    depth = sat.depth
+    @assert depth == (isempty(sat.deact) ? 0 : 1) """
+        the deactivation frame is not the innermost one — $depth frames are \
+        open where $(isempty(sat.deact) ? 0 : 1) is expected"""
+    isempty(sat.deact) || sat_pop(sat) # nothing forbidden: no frame to lift
     try body()
     finally
         push_deactivations!(sat)
+        @assert sat.depth == depth balance_error(sat, depth)
     end
 end
 
@@ -463,14 +477,22 @@ function solution(sat::SAT{P,V}) where {P,V}
     return sol
 end
 
-sat_push(sat::SAT) = PicoSAT.push(sat.pico)
-sat_pop(sat::SAT) = PicoSAT.pop(sat.pico)
+sat_push(sat::SAT) = (sat.depth += 1; PicoSAT.push(sat.pico))
+sat_pop(sat::SAT) = (sat.depth -= 1; PicoSAT.pop(sat.pico))
+
+# What an unbalanced body did, said the same way wherever it is caught. An
+# exception thrown from a `finally` while another is in flight does not lose it:
+# Julia carries both and reports the original as the cause.
+balance_error(sat::SAT, depth::Int) =
+    "the body left $(sat.depth - depth) push frame(s) open"
 
 function with_temp_clauses(body::Function, sat::SAT)
+    depth = sat.depth
     sat_push(sat)
     try body()
     finally
         sat_pop(sat)
+        @assert sat.depth == depth balance_error(sat, depth)
     end
 end
 

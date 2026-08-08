@@ -409,7 +409,7 @@ end
 @testset "the substrate stays internal" begin
     # substrate, reached by qualified name: `Resolver` exports none of it
     for name in (:installed_lit, :forbidden_lit, :with_classes_relaxed,
-                 :push_deactivations!, :exclusion_sources, :class_exclusions)
+                 :push_forbidden!, :exclusion_sources, :class_exclusions)
         @test isdefined(Resolver, name)
         @test name ∉ names(Resolver)
     end

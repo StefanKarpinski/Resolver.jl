@@ -134,6 +134,34 @@ function version_permutations(
 end
 
 """
+    SparsePerm <: AbstractVector{Int}
+
+A permutation of `1:n` stored as the positions it moves: the pairs
+`(i, p[i])` for every `i` with `p[i] != i`, ascending in `i`. A permutation
+close to the identity costs what it displaces rather than what it spans, and
+the identity costs nothing at all.
+
+Indexing is a search over those pairs — short, since there are few — and
+`invperm` is the pairs swapped and re-sorted, so neither direction ever touches
+the positions that did not move.
+"""
+struct SparsePerm <: AbstractVector{Int}
+    n     :: Int
+    moved :: Vector{Tuple{Int,Int}}
+end
+
+Base.size(p::SparsePerm) = (p.n,)
+
+Base.@propagate_inbounds function Base.getindex(p::SparsePerm, i::Int)
+    @boundscheck checkbounds(p, i)
+    k = searchsortedfirst(p.moved, i; by = first)
+    return @inbounds k ≤ length(p.moved) && p.moved[k][1] == i ? p.moved[k][2] : i
+end
+
+Base.invperm(p::SparsePerm) =
+    SparsePerm(p.n, sort!(Tuple{Int,Int}[(j, i) for (i, j) in p.moved]))
+
+"""
     class_ranking(info, prob, perms) :: (reps, perms′)
 
 What a query makes of an artifact's classes, before anything is materialized:
@@ -180,9 +208,10 @@ function class_ranking_keys(
 ) where {P,V}
     excl = exclusion_masks(info, prob)
     reps = Dict{P, Vector{Int}}()
-    perms′ = Dict{P, Vector{Int}}()
+    perms′ = Dict{P, SparsePerm}()
     keys_q = want_keys ? Dict{P, Vector{Int}}() : nothing
     keys_0 = want_keys ? Dict{P, Vector{Int}}() : nothing
+    ord = Int[] # scratch: the class order, read out into a `SparsePerm`
     key = Int[] # scratch: per class, the rank of the member it competes at
     key0 = Int[] # scratch: per class, the rank of its best member, period
     for (p, info_p) in info
@@ -214,8 +243,20 @@ function class_ranking_keys(
             end
         end
         reps[p] = reps_p
-        cperm = issorted(key) ? nothing : sortperm(key)
-        cperm === nothing || (perms′[p] = cperm)
+        # the class order this query puts the package in, as what it displaces:
+        # sorted into scratch, then walked, so a package that moves nothing
+        # allocates nothing and one that moves two classes carries two pairs
+        cperm = nothing
+        if !issorted(key)
+            resize!(ord, m)
+            sortperm!(ord, key)
+            moved = Tuple{Int,Int}[]
+            for r = 1:m
+                @inbounds ord[r] == r || push!(moved, (r, ord[r]))
+            end
+            cperm = SparsePerm(m, moved)
+            perms′[p] = cperm
+        end
         if want_keys
             # key_∅: the rank of each class's best member, exclusions ignored
             resize!(key0, m)
@@ -301,7 +342,7 @@ function copy_ranked!(
     univ  :: Universe{P,V},
     info  :: AbstractDict{P, PkgInfo{P,V}},
     reps  :: Dict{P, Vector{Int}},
-    perms :: Union{Nothing, AbstractDict{P, Vector{Int}}} = nothing,
+    perms :: Union{Nothing, AbstractDict{P, SparsePerm}} = nothing,
 ) where {P,V}
     info′ = univ.info
     reps′ = univ.reps
@@ -371,7 +412,7 @@ function relaid_conflicts(
     X    :: BitMatrix,
     m    :: Int,
     n    :: Int,
-    perm :: Union{Nothing, Vector{Int}},
+    perm :: Union{Nothing, AbstractVector{Int}},
     cols :: Union{Nothing, Vector{Int}},
 )
     X′ = falses(size(X, 1), n + 1)

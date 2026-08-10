@@ -17,7 +17,7 @@
 using Resolver: PkgData, Problem, SAT, PicoSAT, pkg_info, nclasses, NoKinds,
     rank_pkg_info, finalize, is_satisfiable, is_excluded,
     exclusion_sources, class_exclusions, installed_lit, forbidden_lit,
-    with_classes_relaxed, sat_assume_var
+    with_classes_relaxed, with_temp_clauses, sat_assume_var, sat_push
 
 const NO_DEPS = Dict{Symbol,Vector{Symbol}}()
 const NO_COMP = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
@@ -350,10 +350,66 @@ end
     end
 end
 
+@testset "push frames have to balance" begin
+    # A helper that opens a frame is relying on the frames below it being the
+    # ones it thinks they are, since `sat_pop` retracts whatever was pushed
+    # last. `sat.depth` is what lets it say so, and what these check is that it
+    # does: a body that pushes without popping leaves the instance a frame
+    # deeper than the helper found it, which is a wrong `sat_pop` somewhere
+    # later and nothing at all at the call that caused it.
+    data = Dict(
+        :P => PkgData([:v2, :v1], NO_DEPS, Dict(:v2 => Dict(:Q => [:w1]))),
+        :Q => PkgData([:w2, :w1], NO_DEPS, NO_COMP),
+    )
+    prob = Problem([:P, :Q]; compat = Dict(:P => [:v1]))
+    info = pkg_info(data, prob; filter = false)
+
+    for (name, prob) in ((:constrained, prob), (:plain, Problem([:P, :Q])))
+        sat = SAT(rank_pkg_info(info, prob))
+        try
+            # the frame the query's deactivations sit in, and nothing else
+            @test sat.depth == (isempty(sat.deact) ? 0 : 1)
+            before = verdicts(sat)
+            # a balanced body is what both helpers are for, and leaves no trace
+            @test with_temp_clauses(() -> :ok, sat) === :ok
+            @test with_classes_relaxed(() -> :ok, sat) === :ok
+            @test sat.depth == (isempty(sat.deact) ? 0 : 1)
+            @test verdicts(sat) == before
+        finally
+            finalize(sat)
+        end
+        # an unbalanced one is caught by each of them, at the call that did it
+        sat = SAT(rank_pkg_info(info, prob))
+        try
+            @test_throws AssertionError with_temp_clauses(() -> sat_push(sat), sat)
+        finally
+            finalize(sat)
+        end
+        sat = SAT(rank_pkg_info(info, prob))
+        try
+            @test_throws AssertionError with_classes_relaxed(() -> sat_push(sat), sat)
+        finally
+            finalize(sat)
+        end
+    end
+
+    # ... and lifting the deactivations from inside a temp-clause frame would
+    # pop that frame instead of theirs, which is caught on the way in
+    sat = SAT(rank_pkg_info(info, prob))
+    try
+        @test !isempty(sat.deact) # there is a frame to get wrong
+        @test_throws AssertionError with_temp_clauses(sat) do
+            with_classes_relaxed(() -> nothing, sat)
+        end
+    finally
+        finalize(sat)
+    end
+end
+
 @testset "the substrate stays internal" begin
     # substrate, reached by qualified name: `Resolver` exports none of it
     for name in (:installed_lit, :forbidden_lit, :with_classes_relaxed,
-                 :push_deactivations!, :exclusion_sources, :class_exclusions)
+                 :push_forbidden!, :exclusion_sources, :class_exclusions)
         @test isdefined(Resolver, name)
         @test name ∉ names(Resolver)
     end

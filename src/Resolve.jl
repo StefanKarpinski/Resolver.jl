@@ -5,8 +5,9 @@ function resolve_core(
     sat  :: SAT{P},
     reqs :: SetOrVec{P} = keys(sat.info);
     by   :: Function = identity, # priority ordering
+    ord  :: O = nothing, # class ranking (the universe's own layout by default)
     restore :: Bool = true, # restore the SAT instance's state before returning
-) where {P}
+) where {P, O}
     # a requirement the instance doesn't know has no installable version —
     # the filter drops such packages — so it cannot be satisfied
     all(p -> haskey(sat.info, p), reqs) || return nothing
@@ -31,15 +32,17 @@ function resolve_core(
         # below, so the layered answer is unchanged. a failed probe
         # tells us nothing and the sequential path proceeds as usual
         # (skipped for a single package, whose own probe covers it)
-        todo = [p for p in layer if sol[p] > 1]
+        todo = [p for p in layer
+                if sol[p] != @inbounds ranking(ord, p, nclasses(sat.info[p]))[1]]
         if length(todo) > 1
             for p in todo
-                sat_assume(sat, p, 1)
+                sat_assume(sat, p,
+                    @inbounds ranking(ord, p, nclasses(sat.info[p]))[1])
             end
             is_satisfiable(sat) && extract_solution!(sat, sol)
         end
         for p in layer
-            optimize_version!(sat, sol, p)
+            optimize_version!(sat, sol, p, ord)
             # fix optimized class
             sat_add(sat, p, sol[p])
             sat_add(sat)
@@ -157,6 +160,148 @@ function resolve_prepared(
     sat = SAT(univ)
     # the instance is single-use, so don't bother restoring its state
     try resolve(sat, prob.reqs; by, restore=false)
+    finally
+        finalize(sat)
+    end
+end
+
+"""
+    sources(prob) :: Vector{Pair{Symbol,Any}}
+
+Every constraint source `prob` carries, as something a relaxation can release:
+`:compat => p` and `:pin => p` for the entries naming a package, and
+`:kind => k` for each admission kind. This is the vocabulary
+[`relax`](@ref Resolver.relax) takes, so `relax(univ, prob, prob.reqs,
+sources(prob))` is the bottom of the relaxation lattice — the empty query — and
+any subset of it is a point in between.
+"""
+function sources(prob::Problem{P}) where {P}
+    srcs = Pair{Symbol,Any}[]
+    for p in keys(prob.compat);  push!(srcs, :compat => p); end
+    for p in keys(prob.pins);    push!(srcs, :pin => p);    end
+    for (k, _) in prob.excludes; push!(srcs, :kind => k);   end
+    return srcs
+end
+
+"""
+    RelaxedProblem
+
+A relaxation of a query, together with what answering it on the universe that
+query was filtered for takes: `resolve(sat, rp)` returns what
+`resolve(info, rp.prob)` returns, without preparing again.
+
+Built by [`relax`](@ref Resolver.relax), which *derives* the relaxed problem by
+withdrawing demands rather than accepting one — so that `rp.prob` being a
+relaxation of `rp.base` is a consequence of how the value was made rather than a
+claim about an argument — and settles there what every solve would otherwise
+recompute: the member each class stands for under the relaxed problem, and the
+order those members rank the classes in.
+
+Those two are indexed by the class layout of the universe `relax` was given, so
+a `RelaxedProblem` is stale if that universe is filtered again afterwards.
+Nothing does that: `drop_unmarked!` is reachable only from `prepare_pkg_info`,
+which builds a universe rather than shrinking one already in use.
+"""
+struct RelaxedProblem{P, O}
+    base :: Problem{P} # the query this relaxes — what it is a relaxation *of*
+    prob :: Problem{P} # the relaxed query, derived from `base`
+    reps :: Dict{P, Vector{Int}} # per class, its member under `prob`
+    # per package, the ranking `prob` puts its classes in, for the ones it moved
+    # — or `nothing`, the universe's own layout, when it moved none
+    ord  :: O
+end
+
+"""
+    relax(univ, Q, drop_reqs = P[], drop_sources = Pair{Symbol,Any}[]; order = nothing)
+
+The relaxation of `Q` that withdraws the requirements `drop_reqs` and releases
+the constraint sources `drop_sources`, ready to resolve against `univ` — the
+universe `prepare_pkg_info(info, Q; order)` produced. Withdrawing nothing gives
+`Q` itself, which is a relaxation of `Q`; withdrawing everything gives the empty
+query. Names that `Q` does not carry are ignored, a source that is not there
+being already released.
+
+`drop_sources` names sources the way [`sources`](@ref Resolver.sources) lists
+them: `:compat => p`, `:pin => p`, `:kind => k`.
+
+`order` is the version preference ordering, as `resolve` takes it, and has to be
+the one `univ` was ranked in: it is what "better" means, and the universe and the
+relaxation have to mean the same thing by it. It is consumed here, so the
+permutations it induces are computed once however often the result is resolved.
+"""
+function relax(
+    univ :: Universe{P,V},
+    Q    :: Problem{P},
+    drop_reqs    :: SetOrVec{P} = P[],
+    drop_sources :: SetOrVec{Pair{Symbol,Any}} = Pair{Symbol,Any}[];
+    order = nothing, # version ordering
+) where {P,V}
+    nocomp, nopin = Set{P}(), Set{P}()
+    nokind = Set{Symbol}()
+    for (what, key) in drop_sources
+        what === :compat ? push!(nocomp, key) :
+        what === :pin    ? push!(nopin,  key) :
+        what === :kind   ? push!(nokind, key) :
+            throw(ArgumentError("no such constraint source: $(repr(what))"))
+    end
+    withdrawn = Set{P}(drop_reqs)
+    # a relaxation is `Q` with entries removed, so it is built by removing them
+    R = Problem(P[p for p in Q.reqs if p ∉ withdrawn];
+        compat = isempty(nocomp) ? Q.compat :
+            filter(kv -> first(kv) ∉ nocomp, Dict(Q.compat)),
+        pins = isempty(nopin) ? Q.pins :
+            filter(kv -> first(kv) ∉ nopin, Dict(Q.pins)),
+        excludes = isempty(nokind) ? Q.excludes :
+            Pair{Symbol,Any}[kv for kv in Q.excludes if first(kv) ∉ nokind])
+    # what `R` makes of the classes `Q` laid out, in one pass: the member each
+    # class stands for under `R` and the order those members rank the classes
+    # in. The universe is not relaid out — the clauses say which classes exist,
+    # depend and conflict, and `R` changes none of that — so the ranking is
+    # threaded through the descent instead, and the representatives name the
+    # answer at the end.
+    info = univ.info
+    reps, cperms = class_ranking(info, R, version_permutations(info, order))
+    return RelaxedProblem(Q, R, reps, cperms)
+end
+
+# Answer a relaxation on the instance built for the query it relaxes: the
+# descent again, in the order `rp` ranks the classes, with `rp`'s deactivations
+# in place of the query's for the duration and the query's put back after. The
+# instance is left exactly as it was found — same clauses, same forbidden
+# classes, same decision phases — so one universe answers as many relaxations as
+# it is asked, in any order.
+function resolve(
+    sat :: SAT{P,V},
+    rp  :: RelaxedProblem{P};
+    by  :: Function = identity, # package ordering
+) where {P,V}
+    info = sat.info
+    reps, ord = rp.reps, rp.ord
+    sol = with_deactivations(sat, deactivated_lits(sat, reps)) do
+        rehint_classes!(sat, sat.reps, nothing, reps, ord)
+        try
+            resolve_core(sat, rp.prob.reqs; by, ord)
+        finally
+            rehint_classes!(sat, reps, ord, sat.reps, nothing)
+        end
+    end
+    sol === nothing && return nothing
+    # a solution names classes, and it is the relaxation's representatives that
+    # name the versions: a class whose best member the query forbade stands at a
+    # better one here, so `sat.reps` would name the wrong version — and is not
+    # ours to move
+    return Dict{P,V}(p => info[p].versions[reps[p][i]] for (p, i) in sol)
+end
+
+# ... building the instance for it, which is the shape to reach for when there
+# is a single relaxation to answer; a second one wants the instance kept
+function resolve(
+    univ :: Universe{P,V},
+    rp   :: RelaxedProblem{P};
+    by   :: Function = identity, # package ordering
+) where {P,V}
+    sat = SAT(univ)
+    try resolve(sat, rp; by)
     finally
         finalize(sat)
     end

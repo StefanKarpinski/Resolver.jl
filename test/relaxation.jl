@@ -7,16 +7,16 @@
 # class is empty when every member of it is forbidden; emptiness is what the
 # solver sees, as `reps[p][c] == 0` and one forbidding unit clause. So:
 #
-#     reps[p][c] == 0  ⟺  every member of class c has an excluding source
+#     reps[p][c] == 0  ⟺  every member of class c has an excluding constraint
 #
 # Attribution is a statement about constraints and versions, deactivation is a
 # statement about the instance, and the sweeps below are that they are the same
 # statement — checked over the tiny data grids crossed with randomized compat
 # bounds, pins, an admission kind, and every combination of the three.
 
-using Resolver: PkgData, Problem, SAT, PicoSAT, pkg_info, nclasses, NoKinds,
-    rank_pkg_info, finalize, is_satisfiable, is_excluded,
-    exclusion_sources, class_exclusions, installed_lit, forbidden_lit,
+using Resolver: PkgData, Problem, SAT, PicoSAT, pkg_info, nclasses,
+    rank_pkg_info, finalize, is_satisfiable, is_excluded, Compat, Pins, named,
+    exclusion_kinds, class_exclusions, installed_lit, forbidden_lit,
     with_classes_relaxed, with_temp_clauses, sat_assume_var, sat_push
 
 const NO_DEPS = Dict{Symbol,Vector{Symbol}}()
@@ -24,30 +24,29 @@ const NO_COMP = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
 
 ## references, none of which asks the solver anything
 
-# the sources excluding a version, recomputed straight from the problem
-function ref_sources(prob::Problem{P}, p::P, v) where {P}
-    srcs = Symbol[]
-    haskey(prob.compat, p) && v ∉ prob.compat[p] && push!(srcs, :compat)
-    haskey(prob.pins, p) && v ≠ prob.pins[p] && push!(srcs, :pin)
-    for (kind, forbids) in prob.excludes
-        forbids(p, v) && push!(srcs, kind)
+# the kinds excluding a version, recomputed straight from the problem's
+# constraints, reaching into each shape rather than asking it anything
+function ref_kinds(prob::Problem{P}, p::P, v) where {P}
+    kinds = Symbol[]
+    for (kind, c) in prob.constraints
+        ex = c isa Compat ? (haskey(c.allowed, p) && v ∉ c.allowed[p]) :
+             c isa Pins   ? (haskey(c.at, p) && v ≠ c.at[p]) :
+                            (p ∉ c.except && c.forbids(p, v))
+        ex && push!(kinds, kind)
     end
-    return srcs
+    return sort!(kinds)
 end
 
-# every source of `prob` that could name a version of `p` at all
-sources_of(prob::Problem{P}, p::P) where {P} = Symbol[
-    (haskey(prob.compat, p) ? (:compat,) : ())...,
-    (haskey(prob.pins, p) ? (:pin,) : ())...,
-    first.(prob.excludes)...]
+# every kind of `prob` that could name a version of `p` at all
+kinds_of(prob::Problem{P}, p::P) where {P} = sort!(Symbol[
+    kind for (kind, c) in prob.constraints
+    if (names = named(c); names === nothing || p in names)])
 
-# `prob` with one of its sources kept and the rest dropped, so that what a
-# single source excludes can be asked of `is_excluded` directly
-one_source(prob::Problem, src::Symbol) =
-    src == :compat ? Problem(prob.reqs; compat = prob.compat) :
-    src == :pin    ? Problem(prob.reqs; pins = prob.pins) :
-                     Problem(prob.reqs;
-                         excludes = filter(kf -> first(kf) == src, prob.excludes))
+# `prob` with one of its constraints kept and the rest dropped, so that what a
+# single kind excludes can be asked of `is_excluded` directly
+one_kind(prob::Problem, kind::Symbol) = Problem(prob.reqs,
+    Dict{Symbol, valtype(prob.constraints)}(
+        kc for kc in prob.constraints if first(kc) == kind))
 
 # a random constraint set of the requested shape over `m` packages with `n`
 # versions each. `random_constraints` (problem.jl) draws the compat bounds and
@@ -55,16 +54,16 @@ one_source(prob::Problem, src::Symbol) =
 # kind forbids a random set of (package, version) pairs, reaching every package
 # at once the way a kind does
 function random_problem(reqs, m::Int, n::Int, shape::Symbol)
-    compat, pins = random_constraints(m, n)
+    compat, pin = random_constraints(m, n)
     shape in (:compat, :all) || (compat = Dict{Int,Vector{Int}}())
-    shape in (:pins,   :all) || (pins   = Dict{Int,Int}())
+    shape in (:pin,    :all) || (pin    = Dict{Int,Int}())
     banned = Set((p, v) for p = 1:m+1, v = 1:n if rand(Bool))
-    excludes = shape in (:kind, :all) ?
-        Pair{Symbol,Any}[:ban => (p, v) -> (p, v) in banned] : NoKinds
-    return Problem(reqs; compat, pins, excludes)
+    ban = shape in (:kind, :all) ?
+        (; ban = (p, v) -> (p, v) in banned) : (;)
+    return Problem(reqs; compat, pin, ban...)
 end
 
-const SHAPES = (:none, :compat, :pins, :kind, :all)
+const SHAPES = (:none, :compat, :pin, :kind, :all)
 
 ## instance-level helpers
 
@@ -102,38 +101,44 @@ empty_classes(univ) = sort!(
 
 ## attribution
 
-@testset "attribution: every source that excludes a version, and only those" begin
+@testset "attribution: every kind that excludes a version, and only those" begin
     prob = Problem([:A];
         compat = Dict(:A => [:v1]),
-        pins   = Dict(:A => :v2),
-        excludes = [:pre => (p, v) -> v == :v3, :odd => (p, v) -> p == :B])
-    # each version of :A is excluded by the sources that name it, in source
-    # order, and by no others
-    @test exclusion_sources(prob, :A, :v1) == [:pin]
-    @test exclusion_sources(prob, :A, :v2) == [:compat]
-    @test exclusion_sources(prob, :A, :v3) == [:compat, :pin, :pre]
-    # compat and pins name their packages; a kind reaches every package
-    @test isempty(exclusion_sources(prob, :C, :v1))
-    @test exclusion_sources(prob, :C, :v3) == [:pre]
-    @test exclusion_sources(prob, :B, :v1) == [:odd]
-    @test exclusion_sources(prob, :B, :v3) == [:pre, :odd]
+        pin    = Dict(:A => :v2),
+        pre    = (p, v) -> v == :v3,
+        odd    = (p, v) -> p == :B)
+    # each version of :A is excluded by the kinds that name it, in kind order,
+    # and by no others
+    @test exclusion_kinds(prob, :A, :v1) == [:pin]
+    @test exclusion_kinds(prob, :A, :v2) == [:compat]
+    @test exclusion_kinds(prob, :A, :v3) == [:compat, :pin, :pre]
+    # compat and pins name their packages; a predicate reaches every package
+    @test isempty(exclusion_kinds(prob, :C, :v1))
+    @test exclusion_kinds(prob, :C, :v3) == [:pre]
+    @test exclusion_kinds(prob, :B, :v1) == [:odd]
+    @test exclusion_kinds(prob, :B, :v3) == [:odd, :pre]
     # an unconstrained problem excludes nothing at all
-    @test isempty(exclusion_sources(Problem([:A]), :A, :v1))
-    # ... and a source that excludes nothing names nothing
-    @test isempty(exclusion_sources(Problem([:A];
+    @test isempty(exclusion_kinds(Problem([:A]), :A, :v1))
+    # ... and a kind that excludes nothing names nothing
+    @test isempty(exclusion_kinds(Problem([:A];
         compat = Dict(:A => [:v1, :v2])), :A, :v1))
+    # two constraints cannot share a kind: the map is a namespace, and since a
+    # kind's name *is* its keyword's, a repeat never reaches the constructor —
+    # it is a syntax error, so it takes an `@eval` to write one down at all
+    @test_throws ErrorException @eval Problem([:A];
+        compat = Dict(:A => [:v1]), compat = (p, v) -> true)
 end
 
 @testset "attribution: why a class is empty" begin
     # nothing in the registry tells :A's :v2 and :v1 apart, so they are one
-    # class of two members, and two sources empty it between them: the compat
+    # class of two members, and two kinds empty it between them: the compat
     # bound takes one member, the admission kind the other
     data = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]), NO_COMP),
         :B => PkgData([:w1], NO_DEPS, NO_COMP),
     )
     prob = Problem([:A]; compat = Dict(:A => [:v1]),
-                         excludes = [:pre => (p, v) -> v == :v1])
+                         pre = (p, v) -> v == :v1)
     info = pkg_info(data, prob)
     @test info[:A].members == [[1, 2]]
     @test class_exclusions(prob, :A, info[:A], 1) ==
@@ -177,19 +182,19 @@ end
                     # excludes
                     r = univ.reps[p][k]
                     if !iszero(r)
-                        @test isempty(exclusion_sources(prob, p, info_p.versions[r]))
+                        @test isempty(exclusion_kinds(prob, p, info_p.versions[r]))
                     end
-                    for (v, srcs) in ex
+                    for (v, kinds) in ex
                         # attribution agrees with a recomputation from the
                         # problem, and with `is_excluded` on whether there is
                         # anything to name
-                        @test srcs == ref_sources(prob, p, v)
-                        @test isempty(srcs) == !is_excluded(prob, p, v)
-                        # every source named really does exclude the version on
-                        # its own, and every source that does is named
-                        for src in sources_of(prob, p)
-                            @test (src in srcs) ==
-                                is_excluded(one_source(prob, src), p, v)
+                        @test kinds == ref_kinds(prob, p, v)
+                        @test isempty(kinds) == !is_excluded(prob, p, v)
+                        # every kind named really does exclude the version on
+                        # its own, and every kind that does is named
+                        for kind in kinds_of(prob, p)
+                            @test (kind in kinds) ==
+                                is_excluded(one_kind(prob, kind), p, v)
                         end
                     end
                 end
@@ -285,7 +290,7 @@ end
 end
 
 @testset "the lift is scoped, and selective inside" begin
-    # :P's two classes are emptied by two different sources: the compat bound
+    # :P's two classes are emptied by two different kinds: the compat bound
     # takes the class holding :v3 and :v1, the admission kind the one holding
     # :v2 (which is a class of its own because it conflicts with :Q@:w2)
     data = Dict(
@@ -294,7 +299,7 @@ end
     )
     prob = Problem([:P, :Q];
         compat = Dict(:P => [:v2]),
-        excludes = [:pre => (p, v) -> v == :v2])
+        pre = (p, v) -> v == :v2)
     info = pkg_info(data, prob; filter = false)
     univ = rank_pkg_info(info, prob)
     @test univ.reps[:P] == [0, 0]
@@ -409,7 +414,7 @@ end
 @testset "the substrate stays internal" begin
     # substrate, reached by qualified name: `Resolver` exports none of it
     for name in (:installed_lit, :forbidden_lit, :with_classes_relaxed,
-                 :push_forbidden!, :exclusion_sources, :class_exclusions)
+                 :push_forbidden!, :exclusion_kinds, :class_exclusions)
         @test isdefined(Resolver, name)
         @test name ∉ names(Resolver)
     end

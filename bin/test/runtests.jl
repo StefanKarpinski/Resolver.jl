@@ -72,9 +72,8 @@ function make_problem(
 )
     c = Dict{UUID,Any}(compat)
     c[JULIA_UUID] = julia
-    Resolver.Problem(reqs; compat = c, excludes = [
-        prerelease_exclusion(allow_pre),
-    ])
+    Resolver.Problem(reqs;
+        compat = c, prerelease = prerelease_exclusion(allow_pre))
 end
 
 # The old baked path, for the knobs that used to be applied by deleting versions
@@ -303,8 +302,8 @@ end
 
         for allow_pre in (no_pre, all_pre,
                           Dict(UUID(0) => false, LLVM_FULL_JLL => true))
-            excludes = [prerelease_exclusion(allow_pre)]
-            prob = Resolver.Problem(reqs; excludes)
+            prob = Resolver.Problem(reqs;
+                prerelease = prerelease_exclusion(allow_pre))
             old = bake(data, prob) # the versions deleted, as the provider used to
             @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
             @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
@@ -398,12 +397,10 @@ end
         yanked_of(u::UUID) = get!(() -> yanked_versions(packages, u), struck, u)
         # a kind reaches every package in the universe, not just the required
         # ones, so this has to answer for any uuid it is handed
-        kind = Pair{Symbol,Any}(:yanked,
-            (u::UUID, v::VersionNumber) -> v in yanked_of(u))
-        for pre in (Pair{Symbol,Any}[],
-                    Pair{Symbol,Any}[prerelease_exclusion(no_pre)])
-            old = Resolver.Problem(reqs; excludes = [kind, pre...])
-            new = Resolver.Problem(reqs; excludes = pre)
+        yanked = (u::UUID, v::VersionNumber) -> v in yanked_of(u)
+        for pre in ((;), (; prerelease = prerelease_exclusion(no_pre)))
+            old = Resolver.Problem(reqs; yanked, pre...)
+            new = Resolver.Problem(reqs; pre...)
             @test Resolver.resolve(reg, new) == Resolver.resolve(kept, old)
             @test Resolver.resolve(info, new) == Resolver.resolve(kept, old)
             order = u -> (<)

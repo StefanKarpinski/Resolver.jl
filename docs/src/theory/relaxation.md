@@ -5,7 +5,7 @@ it was run for*. This page proves something stronger, which is what lets a
 failed resolve be explained rather than merely reported: the filtered
 universe answers every **relaxation** of that query too.
 
-A relaxation is the same query with some of its demands withdrawn — a
+A relaxation is the same query with some of its demands relaxed — a
 requirement dropped, a compat entry ignored, a pin released. Those are
 exactly the repairs a user can make to an unsatisfiable problem, so
 "filtered for ``Q``, valid for every ``R \le Q``" is precisely the property
@@ -19,15 +19,16 @@ to are the ones the previous page describes.
 ## What a relaxation is
 
 Fix an artifact ``D``. A **query** ``Q`` is a requirement set together with a
-set of constraint sources — the compat entries, pins, and admission kinds
-(prereleases, yanked versions) the user's problem carries.
+set of constraints — one per package a compat entry or a pin of the user's
+problem names, plus one per admission kind (prereleases, yanked versions),
+which names no package in particular.
 
 !!! note "Definition (the relaxation order)"
     ``R \le Q`` — "``R`` is a relaxation of ``Q``" — iff
-    ``\mathrm{reqs}_R \subseteq \mathrm{reqs}_Q`` and ``R``'s constraint
-    sources are a subset of ``Q``'s.
+    ``\mathrm{reqs}_R \subseteq \mathrm{reqs}_Q`` and ``R``'s constraints are
+    a subset of ``Q``'s.
 
-This is a lattice with ``2^{|\mathrm{reqs}_Q| + |\mathrm{sources}_Q|}``
+This is a lattice with ``2^{|\mathrm{reqs}_Q| + |\mathrm{cons}_Q|}``
 points, ``Q`` at the top and the empty query at the bottom. Note ``Q \le Q``:
 every statement below about "every relaxation" includes the query itself,
 which is what makes the results here strengthen rather than replace the
@@ -80,7 +81,7 @@ second fills the classes that got none from their best member, period.
     For every class ``c`` and every ``R \le Q``:
     ``\mathrm{key}_\emptyset(c) \le \mathrm{key}_R(c) \le \mathrm{key}_Q(c)``.
 
-    *Proof.* Adding constraint sources only removes admissible members, so
+    *Proof.* Adding constraints only removes admissible members, so
     ``\mathrm{adm}_Q(c) \subseteq \mathrm{adm}_R(c) \subseteq
     \mathrm{adm}_\emptyset(c)``. A minimum over a superset is no larger
     (with ``\min \emptyset = \infty``). ∎

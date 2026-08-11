@@ -536,7 +536,7 @@ end
 
 Flag, in each package's matrix, the classes that some relaxation of this query
 could reach — where a relaxation is the same query with any of its requirements
-or constraint sources dropped. `kq` gives per class the rank of the best member
+or constraints relaxed. `kq` gives per class the rank of the best member
 this query admits (`typemax` if it admits none) and `k0` the rank of its best
 member, period.
 

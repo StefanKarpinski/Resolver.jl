@@ -493,9 +493,7 @@ reg = registry_provider(packages;
 # so the struck versions are not in the universe to begin with -- see the provider.)
 const problem = Problem(reqs;
     compat = project_compat,
-    excludes = [
-        prerelease_exclusion(allow_pre),
-    ],
+    prerelease = prerelease_exclusion(allow_pre),
 )
 
 pkg_info = Resolver.pkg_info(reg, problem)

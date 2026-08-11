@@ -20,7 +20,7 @@
 using Resolver: PkgData, PkgInfo, Problem, SAT, PicoSAT, pkg_info, nclasses,
     rank_pkg_info, prepare_pkg_info, filter_pkg_info!, deactivations,
     mark_installable!, mark_necessary!, class_ranking, finalize,
-    sat_assume, sat_pop, is_satisfiable, NoKinds
+    sat_assume, sat_pop, is_satisfiable
 
 const NODEPS = Dict{Symbol,Vector{Symbol}}()
 const NOCOMP = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
@@ -93,10 +93,9 @@ end
             facts = universe_facts(base)
             @test isempty(emptied(base)) # nothing constrains, nothing is empty
             for cs = 1:4
-                compat, pins = random_constraints(m, n)
-                kinds = [:test => (p, v) -> v == rand(1:n)]
-                prob = Problem(reqs; compat, pins,
-                               excludes = iseven(cs) ? kinds : NoKinds)
+                compat, pin = random_constraints(m, n)
+                test = iseven(cs) ? (; test = (p, v) -> v == rand(1:n)) : (;)
+                prob = Problem(reqs; compat, pin, test...)
                 univ = rank_pkg_info(info, prob)
                 # the partition is not refined: same classes, same members
                 @test all_classes(univ) == all_classes(base)
@@ -134,7 +133,7 @@ end
 @testset "precondition 2c: redundancy never deletes a dead class" begin
     # :P's classes are {:v3, :v1} (no constraints at all) and {:v2} (conflicts
     # with :Q@:w2), so the first dominates the second outright. Two different
-    # sources empty them: the compat bound takes the dominator, an admission
+    # kinds empty them: the compat bound takes the dominator, an admission
     # kind takes the dominated one. Deleting the dominated class for being
     # dominated would make relaxing the kind alone unanswerable, because the
     # class it would return is the one that was deleted.
@@ -145,8 +144,8 @@ end
     info = pkg_info(data, [:P, :Q]; filter = false)
     @test info[:P].members == [[1, 3], [2]]
     prob = Problem([:P, :Q];
-        compat = Dict(:P => [:v2]),                 # empties {:v3, :v1}
-        excludes = [:pre => (p, v) -> v == :v2])    # empties {:v2}
+        compat = Dict(:P => [:v2]),          # empties {:v3, :v1}
+        pre = (p, v) -> v == :v2)            # empties {:v2}
     univ = prepare_pkg_info(pkg_info(data, prob), prob)
     @test nclasses(univ.info[:P]) == 2
     @test univ.reps[:P] == [0, 0]
@@ -196,8 +195,8 @@ end
             info = pkg_info(data, keys(data); filter = false)
             base = struck(redundancy_only(info, Problem(reqs)))
             for _ = 1:4
-                compat, pins = random_constraints(m, n)
-                prob = Problem(reqs; compat, pins)
+                compat, pin = random_constraints(m, n)
+                prob = Problem(reqs; compat, pin)
                 univ = redundancy_only(info, prob)
                 gone = struck(univ)
                 @test isempty(gone ∩ emptied(univ))
@@ -289,7 +288,7 @@ end
 @testset "fitness: the D1′ shape is unrepresentable" begin
     # Proposition D1′'s counterexample shape: a compat bound and a pin that
     # between them forbid both versions of a package, where relaxing one of the
-    # two sources ought to bring one version back. What made a partial
+    # two kinds ought to bring one version back. What made a partial
     # relaxation unsound in version space was that the constraints entered the
     # rows, could make the two versions row-identical, and redundancy
     # elimination could then delete the one the relaxation needed.
@@ -301,21 +300,21 @@ end
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]), NOCOMP),
         :B => PkgData([:w1], NODEPS, NOCOMP),
     )
-    prob = Problem([:A]; compat = Dict(:A => [:v1]), pins = Dict(:A => :v2))
+    prob = Problem([:A]; compat = Dict(:A => [:v1]), pin = Dict(:A => :v2))
     info = pkg_info(data, prob)
     # nothing in the registry tells :v2 and :v1 apart, so they are one class
     @test info[:A].classes == [1, 1]
     @test info[:A].members == [[1, 2]]
     @test nclasses(info[:A]) == 1
-    # the two sources empty that one class between them
+    # the two kinds empty that one class between them
     univ = rank_pkg_info(info, prob)
     @test univ.reps[:A] == [0]
     @test resolve(data, prob) === nothing
 
-    # relaxing either source reactivates the same single class — there is no
+    # relaxing either kind reactivates the same single class — there is no
     # "half" of this constraint set to be unsound about, and nothing that could
     # have been deleted for being dominated by the other half
-    for (relaxed, want) in ((Problem([:A]; pins = Dict(:A => :v2)), :v2),
+    for (relaxed, want) in ((Problem([:A]; pin = Dict(:A => :v2)), :v2),
                             (Problem([:A]; compat = Dict(:A => [:v1])), :v1))
         u = rank_pkg_info(info, relaxed)
         @test nclasses(u.info[:A]) == 1

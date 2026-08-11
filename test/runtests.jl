@@ -196,7 +196,7 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses
     roundtrip(sdata, ["A"], [
         Problem(["A"]),
         Problem(["A"]; compat = Dict("B" => [1])),
-        Problem(["A", "B"]; pins = Dict("A" => 1)),
+        Problem(["A", "B"]; pin = Dict("A" => 1)),
     ])
     # roundtrip with Symbol package names & Symbol versions
     ydata = Dict(
@@ -208,7 +208,7 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses
     roundtrip(ydata, [:A], [
         Problem([:A]),
         Problem([:A]; compat = Dict(:B => [:v2])),
-        Problem([:A, :B]; pins = Dict(:B => :v1)),
+        Problem([:A, :B]; pin = Dict(:B => :v1)),
     ])
 end
 
@@ -321,10 +321,11 @@ include("ordering.jl")
     @test issatisfiable(rp, ["JSON"])
     @test issatisfiable(rp, ["DataFrames", "JSON"])
     @test issatisfiable(rp, String[])
-    # ... including through the convenience keywords: no version of JSON can
-    # satisfy a pin at a version that doesn't exist
-    @test !issatisfiable(rp, ["JSON"]; pins = Dict("JSON" => v"0.0.0"))
-    @test resolve(rp, ["JSON"]; pins = Dict("JSON" => v"0.0.0")) === nothing
+    # ... and through a constrained `Problem`: no version of JSON can satisfy a
+    # pin at a version that doesn't exist
+    missing_pin = Resolver.Problem(["JSON"]; pin = Dict("JSON" => v"0.0.0"))
+    @test !issatisfiable(rp, missing_pin)
+    @test resolve(rp, missing_pin) === nothing
 end
 
 @testset "yanked packages" begin

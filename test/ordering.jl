@@ -117,9 +117,9 @@ end
                     for mk in (reversed, shuffled, partly), by in (hi, lo)
                         order = mk(m, n)
                         test_order_equivalence(data, Problem(reqs), order; by)
-                        compat, pins = random_constraints(m, n)
+                        compat, pin = random_constraints(m, n)
                         test_order_equivalence(
-                            data, Problem(reqs; compat, pins), order; by)
+                            data, Problem(reqs; compat, pin), order; by)
                     end
                 end
             end
@@ -140,12 +140,12 @@ end
                 order = mk(m, n)
                 by = rand((hi, lo))
                 test_order_equivalence(data, Problem(reqs), order; by)
-                compat, pins = random_constraints(m, n)
+                compat, pin = random_constraints(m, n)
                 test_order_equivalence(
-                    data, Problem(reqs; compat, pins), order; by)
+                    data, Problem(reqs; compat, pin), order; by)
                 # ... and the ordering must not disturb the bake-equivalence of
                 # the user constraints either
-                prob = Problem(reqs; compat, pins)
+                prob = Problem(reqs; compat, pin)
                 @test resolve(data, prob; by, order) ==
                       resolve(bake(bake_order(data, order), prob), reqs; by)
             end
@@ -165,11 +165,11 @@ end
             order = shuffled(m, n)
             for shapes in Iterators.product(ntuple(_ -> CONSTRAINT_SHAPES, m)...)
                 compat = Dict{Int,Vector{Int}}()
-                pins   = Dict{Int,Int}()
+                pin    = Dict{Int,Int}()
                 for (p, shape) in enumerate(shapes)
-                    constrain!(compat, pins, p, shape, n)
+                    constrain!(compat, pin, p, shape, n)
                 end
-                prob = Problem(reqs; compat, pins)
+                prob = Problem(reqs; compat, pin)
                 test_order_equivalence(data, prob, order; by = hi)
                 test_order_equivalence(data, prob, order; by = lo)
             end
@@ -192,8 +192,8 @@ end
             before = deepcopy(all_reqs)
             for reqs_bits = 1:2^m-1
                 reqs = collect(make_reqs(reqs_bits))
-                compat, pins = random_constraints(m, n)
-                for prob in (Problem(reqs), Problem(reqs; compat, pins)),
+                compat, pin = random_constraints(m, n)
+                for prob in (Problem(reqs), Problem(reqs; compat, pin)),
                     order in (CANONICAL, reversed(m, n), shuffled(m, n))
                     baked = bake_order(data, order)
                     @test resolve(all_reqs, prob; order) == resolve(baked, prob)

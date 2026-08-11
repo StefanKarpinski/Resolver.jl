@@ -49,29 +49,25 @@ end
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
     compat = Dict(:B => [:v1])
-    pins = Dict(:A => :v1)
+    pin = Dict(:A => :v1)
 
     # every shape of package data `resolve` accepts, with a `Problem` and with
-    # the convenience keywords that build one
+    # the bare requirements that build the unconstrained one
     deps = DepsProvider(p -> data[p], keys(data))
-    info = pkg_info(data, Problem([:A]; compat, pins))
+    info = pkg_info(data, Problem([:A]; compat, pin))
     for src in (data, deps, info)
         for prob in (Problem([:A]),
                      Problem([:A]; compat),
-                     Problem([:A]; pins),
-                     Problem([:A]; compat, pins),
+                     Problem([:A]; pin),
+                     Problem([:A]; compat, pin),
                      Problem([:A]; compat = Dict(:B => Symbol[])),
-                     Problem([:A]; pins = Dict(:B => :v9)),
+                     Problem([:A]; pin = Dict(:B => :v9)),
                      Problem([:A, :B]; compat = Dict(:Z => Symbol[])),
                      Problem(Symbol[]))
             @test issatisfiable(src, prob) == (resolve(src, prob) !== nothing)
         end
-        # the keyword forms are the same calls as the `Problem` ones
+        # bare requirements are the unconstrained problem
         @test issatisfiable(src, [:A]) == issatisfiable(src, Problem([:A]))
-        @test issatisfiable(src, [:A]; compat) ==
-              issatisfiable(src, Problem([:A]; compat))
-        @test issatisfiable(src, [:A]; compat, pins) ==
-              issatisfiable(src, Problem([:A]; compat, pins))
         # requirements may be a set as well as a vector, and default to the
         # whole universe
         @test issatisfiable(src, Set([:A])) == issatisfiable(src, [:A])
@@ -79,7 +75,7 @@ end
     end
 
     # ... and a SAT instance, the shape the others build internally
-    sat = SAT(prepare_pkg_info(info, Problem([:A]; compat, pins)))
+    sat = SAT(prepare_pkg_info(info, Problem([:A]; compat, pin)))
     try
         @test issatisfiable(sat, [:A]) == (resolve(sat, [:A]) !== nothing)
         @test issatisfiable(sat) == (resolve(sat) !== nothing)
@@ -184,9 +180,9 @@ end
             fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
             reqs = collect(make_reqs(rand(1:2^m-1)))
             for cs in (nothing, random_constraints(m, n))
-                compat, pins = cs === nothing ?
+                compat, pin = cs === nothing ?
                     (Dict{Int,Vector{Int}}(), Dict{Int,Int}()) : cs
-                prob = Problem(reqs; compat, pins)
+                prob = Problem(reqs; compat, pin)
                 verdict = issatisfiable(data, prob)
                 for by in (hi, lo), order in (nothing, up)
                     @test verdict ==

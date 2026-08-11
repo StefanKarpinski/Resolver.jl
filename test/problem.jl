@@ -9,7 +9,8 @@
 
 using Resolver: Problem, PkgData, PkgInfo, pkg_info, SAT, PicoSAT,
     exclusion_masks, is_excluded, finalize, sat_assume, sat_pop,
-    is_satisfiable, rank_pkg_info, prepare_pkg_info
+    is_satisfiable, rank_pkg_info, prepare_pkg_info, Constraint, Compat, Pins,
+    Predicate, excludes, named, relax
 
 # delete the versions `prob` excludes from each package's data, old-style
 function bake(
@@ -42,7 +43,7 @@ end
 # instance to stay solvable for a while.
 function random_constraints(m::Int, n::Int; mild::Bool = false)
     compat = Dict{Int,Vector{Int}}()
-    pins   = Dict{Int,Int}()
+    pin    = Dict{Int,Int}()
     subset() = mild ? [v for v = 1:n if rand(Bool) || v == rand(1:n)] :
                       [v for v = 1:n if rand(Bool)]
     for p = 1:m+1
@@ -52,16 +53,16 @@ function random_constraints(m::Int, n::Int; mild::Bool = false)
         elseif r == 4
             compat[p] = collect(1:n)  # allows everything
         elseif r == 5
-            pins[p] = rand(1:n)
+            pin[p] = rand(1:n)
         elseif r == 6
-            pins[p] = mild ? rand(1:n) : n + 1 # no such version
+            pin[p] = mild ? rand(1:n) : n + 1 # no such version
         elseif r == 7
             compat[p] = subset()
-            mild || (pins[p] = rand(1:n))
+            mild || (pin[p] = rand(1:n))
         end
         # r == 8: leave p unconstrained
     end
-    return compat, pins
+    return compat, pin
 end
 
 # the constraint shapes worth enumerating exhaustively for one package
@@ -75,22 +76,22 @@ const CONSTRAINT_SHAPES = [
     :pin_best,
     :pin_worst,
     :pin_missing, # pin at a version that doesn't exist
-    :pin_and_compat, # two constraint sources on one package
+    :pin_and_compat, # two constraints on one package
 ]
 
-function constrain!(compat, pins, p::Int, shape::Symbol, n::Int)
+function constrain!(compat, pin, p::Int, shape::Symbol, n::Int)
     shape == :none           ? nothing :
     shape == :allow_all      ? (compat[p] = collect(1:n)) :
     shape == :exclude_all    ? (compat[p] = Int[]) :
     shape == :best           ? (compat[p] = [1]) :
     shape == :worst          ? (compat[p] = [n]) :
     shape == :middle         ? (compat[p] = collect(2:n)) :
-    shape == :pin_best       ? (pins[p] = 1) :
-    shape == :pin_worst      ? (pins[p] = n) :
-    shape == :pin_missing    ? (pins[p] = n + 1) :
-    shape == :pin_and_compat ? (compat[p] = [1]; pins[p] = n) :
+    shape == :pin_best       ? (pin[p] = 1) :
+    shape == :pin_worst      ? (pin[p] = n) :
+    shape == :pin_missing    ? (pin[p] = n + 1) :
+    shape == :pin_and_compat ? (compat[p] = [1]; pin[p] = n) :
     error("unknown constraint shape: $shape")
-    return compat, pins
+    return compat, pin
 end
 
 # `resolve(data, prob)` must agree with the unconstrained resolve of the baked
@@ -105,9 +106,15 @@ end
 @testset "Problem: construction & masks" begin
     prob = Problem([:A, :B])
     @test prob.reqs == [:A, :B]
-    @test isempty(prob.compat) && isempty(prob.pins)
-    prob = Problem(Set([:A]); compat = Dict(:B => [:v1]), pins = Dict(:C => :v2))
-    @test prob isa Problem{Symbol,Symbol,Vector{Symbol}}
+    @test isempty(prob.constraints)
+    prob = Problem(Set([:A]); compat = Dict(:B => [:v1]), pin = Dict(:C => :v2))
+    # one namespace, keyed by kind. What a constraint is made of is not part of
+    # what it is: every kind is the same type, and only what it names differs
+    @test prob isa Problem{Symbol}
+    @test sort!(collect(keys(prob.constraints))) == [:compat, :pin]
+    @test valtype(prob.constraints) == Constraint{Symbol}
+    @test prob.constraints[:compat].named == Set([:B])
+    @test prob.constraints[:pin].named == Set([:C])
     @test !is_excluded(prob, :B, :v1)
     @test  is_excluded(prob, :B, :v2)
     @test !is_excluded(prob, :C, :v2)
@@ -133,17 +140,63 @@ end
         Problem([:A]; compat = Dict(:A => [:v1, :v2], :Z => Symbol[]))))
 end
 
+@testset "Problem: every keyword is a kind, and its shape is checked" begin
+    # a keyword's name *is* the kind's name, so a misspelling of a well-known
+    # one is a perfectly good name for a kind of its own; what catches it is
+    # that a dictionary is not a predicate. The message has to name the kind,
+    # since that is the word the caller has to change — the rest of its wording
+    # is not the test's business
+    for bad in (:(compt = Dict(:B => [:v1])),      # a dictionary, kind unknown
+                :(compat = (p, v) -> true),        # a callable where one is not
+                :(pin = [:v1, :v2]),               # not a dictionary at all
+                :(compat = Dict("B" => [:v1])))    # keyed by the wrong package
+        kind = String(bad.args[1])
+        e = @test_throws ArgumentError @eval Problem([:A]; $bad)
+        @test occursin(kind, e.value.msg)
+    end
+    # a kind of its own takes any callable, and reaches every package
+    prob = Problem([:A]; pre = (p, v) -> v == :v2)
+    @test prob.constraints[:pre].named === nothing  # it speaks about all of them
+    @test is_excluded(prob, :Z, :v2)
+end
+
+@testset "Problem: a constraint answers three questions" begin
+    # whatever its shape, a constraint says whether it forbids a version, which
+    # packages it speaks about, and what is left of it once some of them are
+    # relaxed — and nothing else. Everything above is a loop over those.
+    prob = Problem([:A]; compat = Dict(:A => [:v1]), pin = Dict(:B => :v2),
+                         pre = (p, v) -> v == :v3)
+    # relaxing a constraint for everything it names leaves nothing of it,
+    # which is what makes "relaxed outright" need no convention of its own
+    for (_, c) in prob.constraints
+        @test relax(c, c.named) === nothing
+        @test relax(c, Set{Symbol}()) !== nothing
+    end
+    compat = prob.constraints[:compat]
+    @test compat.named == Set([:A])
+    @test compat.forbids(:A, :v2) && !compat.forbids(:A, :v1)
+    @test !compat.forbids(:Z, :v2) # a package it doesn't name
+    pin = prob.constraints[:pin]
+    @test pin.named == Set([:B])
+    @test pin.forbids(:B, :v1) && !pin.forbids(:B, :v2)
+    pre = prob.constraints[:pre]
+    @test pre.named === nothing # a predicate cannot enumerate them
+    @test pre.forbids(:Z, :v3) && pre.forbids(:Y, :v3)
+    # ... but it can still be relaxed for a package, like anything else
+    @test !relax(pre, [:Z]).forbids(:Z, :v3)
+    @test  relax(pre, [:Z]).forbids(:Y, :v3)
+end
+
 @testset "Problem: the unconstrained case is free" begin
     # `Problem(reqs)` is on every convenience `resolve` path, so it must not
-    # allocate a pair of dictionaries just to say "no constraints": the empty
-    # compat and pins are one shared immutable value
+    # allocate a dictionary just to say "no constraints": the empty constraint
+    # map is one shared immutable value
     reqs = [:A, :B]
     a, b = Problem(reqs), Problem(reverse(reqs))
-    @test a.compat === b.compat
-    @test a.pins === b.pins
-    @test isempty(a.compat) && isempty(a.pins)
-    @test valtype(a.compat) == valtype(a.pins) == Any
-    @test !haskey(a.compat, :A) && get(a.pins, :A, nothing) === nothing
+    @test a.constraints === b.constraints
+    @test isempty(a.constraints)
+    @test !haskey(a.constraints, :compat)
+    @test get(a.constraints, :pin, nothing) === nothing
     # the mask dictionary of an unconstrained problem is shared the same way
     nocomp = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
     info = pkg_info(Dict(:A => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(), nocomp)),
@@ -153,33 +206,41 @@ end
     # a caller's dictionary is still copied, so later mutation can't reach in
     d = Dict(:B => [:v1])
     p = Problem(reqs; compat = d)
-    @test p.compat == d && p.compat !== d
+    @test !is_excluded(p, :B, :v1) && is_excluded(p, :B, :v2)
+    d[:B] = [:v2]  # mutating it afterwards cannot reach in
+    @test !is_excluded(p, :B, :v1) && is_excluded(p, :B, :v2)
 
-    # so building one allocates the requirements vector and the struct, and
-    # strictly less than the same call handed an (empty) dictionary to copy
+    # so building one allocates the requirements vector and the struct and
+    # nothing else. An empty dictionary names no constraint to make, so it gets
+    # the same shared map, and what it costs over the no-keyword case is the
+    # keyword itself rather than a dictionary — where an entry costs one
     build(::Nothing) = Problem(reqs)
     build(c::AbstractDict) = Problem(reqs; compat = c)
     empty_dict = Dict{Symbol,Any}()
-    build(nothing); build(empty_dict) # compile both
-    @test @allocated(build(nothing)) < @allocated(build(empty_dict))
+    one_entry = Dict(:B => [:v1])
+    build(nothing); build(empty_dict); build(one_entry) # compile all three
+    @test build(empty_dict).constraints === build(nothing).constraints
+    @test @allocated(build(empty_dict)) - @allocated(build(nothing)) < 64
+    @test @allocated(build(nothing)) < @allocated(build(one_entry))
 end
 
-@testset "Problem: resolve's convenience keywords" begin
-    # the requirements-and-keywords form of `resolve` just builds the Problem
+@testset "Problem: bare requirements are the unconstrained problem" begin
+    # `resolve` takes a `Problem` or bare requirements, and bare requirements
+    # are `Problem(reqs)`. Constraints are the `Problem`'s alone: there is no
+    # keyword here to pass them by, so `by`/`order` stay a closed set and a
+    # misspelled one is a `MethodError` rather than a constraint nobody meant
     nodeps = Dict{Symbol,Vector{Symbol}}()
     nocomp = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
     data = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B], :v1 => [:B]), nocomp),
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
-    compat = Dict(:B => [:v1])
-    pins = Dict(:A => :v1)
-    prob = Problem([:A]; compat, pins)
-    @test resolve(data, [:A]; compat, pins) == resolve(data, prob)
-    @test resolve(data, [:A]; compat) == resolve(data, Problem([:A]; compat))
+    info = pkg_info(data, keys(data); filter = false)
     @test resolve(data, [:A]) == resolve(data, Problem([:A]))
-    info = pkg_info(data, prob)
-    @test resolve(info, [:A]; compat, pins) == resolve(info, prob)
+    @test resolve(info, [:A]) == resolve(info, Problem([:A]))
+    @test issatisfiable(data, [:A]) == issatisfiable(data, Problem([:A]))
+    @test_throws MethodError resolve(data, [:A]; compat = Dict(:B => [:v1]))
+    @test_throws MethodError issatisfiable(data, [:A]; pin = Dict(:A => :v1))
 end
 
 @testset "Problem: exclusions constrain, they don't delete" begin
@@ -230,7 +291,7 @@ end
                       Dict(:v2 => Dict(:B => [:v2]))),
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
-    prob = Problem([:A, :B]; pins = Dict(:B => :v1))
+    prob = Problem([:A, :B]; pin = Dict(:B => :v1))
     info = pkg_info(data, prob)
     @test info[:B].versions == [:v2, :v1]
     @test resolve(data, prob) == Dict(:A => :v1, :B => :v1)
@@ -280,7 +341,7 @@ end
     # allow-all entries or entries for absent packages
     prob = Problem([:A];
         compat = Dict(:A => [:v1], :B => [:v1, :v2], :Z => Symbol[]),
-        pins   = Dict(:A => :v2))
+        pin    = Dict(:A => :v2))
     univ = rank_pkg_info(info, prob)
     sat = SAT(univ)
     try
@@ -307,7 +368,7 @@ end
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
     prob = Problem([:A, :B];
-        compat = Dict(:A => [:v1]), pins = Dict(:B => :v2))
+        compat = Dict(:A => [:v1]), pin = Dict(:B => :v2))
     info = pkg_info(data, prob; filter = false)
     univ = rank_pkg_info(info, prob)
     sat = SAT(univ)
@@ -329,11 +390,11 @@ end
 end
 
 @testset "Problem: exclusion kinds" begin
-    # `excludes` carries the *admission* knobs — "no prereleases" and the like —
-    # which are stated about versions rather than about packages, so they come as
-    # `kind => predicate` pairs instead of per-package entries.
-    # Semantically a kind is nothing but another constraint source: forbidding
-    # exactly the versions a compat entry forbids must be the same problem.
+    # a keyword of its own carries an *admission* knob — "no prereleases" and
+    # the like — which is stated about versions rather than about packages, so
+    # it comes as a predicate instead of per-package entries. Semantically a
+    # kind is nothing but another constraint: forbidding exactly the versions a
+    # compat entry forbids must be the same problem.
     nodeps = Dict{Symbol,Vector{Symbol}}()
     nocomp = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
     data = Dict(
@@ -342,8 +403,8 @@ end
     )
     info = pkg_info(data, keys(data); filter = false)
 
-    odd = :test => (p, v) -> v == :v2 # forbid :v2 of every package
-    prob = Problem([:A]; excludes = [odd])
+    odd = (p, v) -> v == :v2 # forbid :v2 of every package
+    prob = Problem([:A]; test = odd)
     @test  is_excluded(prob, :A, :v2)
     @test !is_excluded(prob, :A, :v1)
     @test  is_excluded(prob, :Z, :v2) # a kind applies to packages too
@@ -359,14 +420,14 @@ end
     @test resolve(data, prob) == resolve(data, both)
     test_bake_equivalence(data, prob)
 
-    # sources are indistinguishable once they have emptied a class -- and here
+    # kinds are indistinguishable once they have emptied a class -- and here
     # they have emptied none. Nothing tells :A's two versions apart, nor :B's,
     # so each package is one class; the kind forbids :v2 of each and the class
-    # survives through :v1. Three constraint sources on two packages, and
+    # survives through :v1. Three constraints on two packages, and
     # nothing at all for any of them to say to the solver
     @test info[:A].classes == info[:B].classes == [1, 1]
     prob = Problem([:A]; compat = Dict(:A => [:v1, :v2]),
-                         pins = Dict(:B => :v1), excludes = [odd])
+                         pin = Dict(:B => :v1), test = odd)
     univ = rank_pkg_info(info, prob)
     sat = SAT(univ)
     try
@@ -377,7 +438,7 @@ end
         finalize(sat)
     end
     # ... whereas a pin the kind contradicts leaves the class nothing at all
-    prob = Problem([:A]; pins = Dict(:B => :v2), excludes = [odd])
+    prob = Problem([:A]; pin = Dict(:B => :v2), test = odd)
     univ = rank_pkg_info(info, prob)
     sat = SAT(univ)
     try
@@ -387,12 +448,13 @@ end
         finalize(sat)
     end
 
-    # no kinds means no cost: the shared empty vector, and an unconstrained
+    # no kinds means no cost: the shared empty map, and an unconstrained
     # problem that still allocates nothing but its requirements
     a, b = Problem([:A]), Problem([:B])
-    @test a.excludes === b.excludes
-    @test isempty(a.excludes)
-    @test isempty(Problem([:A]; excludes = Pair{Symbol,Any}[]).excludes)
+    @test a.constraints === b.constraints
+    @test isempty(a.constraints)
+    @test Problem([:A]; compat = Dict{Symbol,Any}()).constraints ===
+          a.constraints # a kind with nothing in it is a kind that isn't there
     @test exclusion_masks(info, a) === exclusion_masks(info, b)
 end
 
@@ -408,13 +470,13 @@ end
             fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
             reqs = collect(make_reqs(rand(1:2^m-1)))
             allowed = Dict(p => [v for v = 1:n if rand(Bool)] for p = 1:m+1)
-            kinds = [:test => (p, v) -> !(v in get(allowed, p, 1:n))]
+            test = (p, v) -> !(v in get(allowed, p, 1:n))
             for cs in (nothing, random_constraints(m, n))
-                compat, pins = cs === nothing ?
+                compat, pin = cs === nothing ?
                     (Dict{Int,Vector{Int}}(), Dict{Int,Int}()) : cs
-                as_kind = Problem(reqs; compat, pins, excludes = kinds)
+                as_kind = Problem(reqs; compat, pin, test)
                 as_compat = Problem(reqs;
-                    compat = mergewith!(∩, Dict(compat), Dict(allowed)), pins)
+                    compat = mergewith!(∩, Dict(compat), Dict(allowed)), pin)
                 for by in (identity, p -> -p)
                     @test resolve(data, as_kind; by) ==
                           resolve(data, as_compat; by)
@@ -448,18 +510,18 @@ end
     )
     cases = [
         (A3B2, Problem([:A]; compat = Dict(:B => [:v1]))),
-        (A3B2, Problem([:A]; pins = Dict(:B => :v2))),
+        (A3B2, Problem([:A]; pin = Dict(:B => :v2))),
         (A3B2, Problem([:A]; compat = Dict(:A => [:v2]))),
         (A3B2, Problem([:A]; compat = Dict(:B => Symbol[]))),
-        (A3B2, Problem([:A]; pins = Dict(:B => :v9))),
+        (A3B2, Problem([:A]; pin = Dict(:B => :v9))),
         (A3B2, Problem([:A, :B]; compat = Dict(:Z => Symbol[]))),
         (A3B2, Problem([:A]; compat = Dict(:A => [:v1, :v2]),
-                             pins = Dict(:A => :v2))),
-        (conflict, Problem([:C]; pins = Dict(:B => :v2))),
+                             pin = Dict(:A => :v2))),
+        (conflict, Problem([:C]; pin = Dict(:B => :v2))),
         (conflict, Problem([:C]; compat = Dict(:A => [:v1, :v2]))),
         (conflict, Problem([:C, :B]; compat = Dict(:B => [:v1]))),
         (conflict, Problem([:C]; compat = Dict(:C => [:v2], :B => [:v1]))),
-        (conflict, Problem([:A, :B, :C]; pins = Dict(:A => :v3, :B => :v1))),
+        (conflict, Problem([:A, :B, :C]; pin = Dict(:A => :v3, :B => :v1))),
     ]
     lo = p -> -Int(first(string(p))) # reverse alphabetical priority
     for (data, prob) in cases, by in (identity, lo)
@@ -486,8 +548,8 @@ end
                 for reqs_bits = 0:2^m-1
                     reqs = collect(make_reqs(reqs_bits))
                     for _ = 1:4
-                        compat, pins = random_constraints(m, n)
-                        prob = Problem(reqs; compat, pins)
+                        compat, pin = random_constraints(m, n)
+                        prob = Problem(reqs; compat, pin)
                         test_bake_equivalence(data, prob)
                     end
                 end
@@ -510,11 +572,11 @@ end
             reqs = collect(make_reqs(rand(1:2^m-1)))
             for shapes in Iterators.product(ntuple(_ -> CONSTRAINT_SHAPES, m)...)
                 compat = Dict{Int,Vector{Int}}()
-                pins   = Dict{Int,Int}()
+                pin    = Dict{Int,Int}()
                 for (p, shape) in enumerate(shapes)
-                    constrain!(compat, pins, p, shape, n)
+                    constrain!(compat, pin, p, shape, n)
                 end
-                prob = Problem(reqs; compat, pins)
+                prob = Problem(reqs; compat, pin)
                 test_bake_equivalence(data, prob; by = hi)
                 test_bake_equivalence(data, prob; by = lo)
             end
@@ -534,8 +596,8 @@ end
             fill_data!(m, n, deps, comp, data)
             reqs = collect(make_reqs(rand(1:2^m-1)))
             for _ = 1:4
-                compat, pins = random_constraints(m, n)
-                prob = Problem(reqs; compat, pins)
+                compat, pin = random_constraints(m, n)
+                prob = Problem(reqs; compat, pin)
                 test_bake_equivalence(data, prob; by = rand((hi, lo)))
             end
         end
@@ -554,8 +616,8 @@ end
             deps = make_deps(0)
             comp = make_comp(0)
             reqs = collect(make_reqs(rand(1:2^m-1)))
-            compat, pins = random_constraints(m, n; mild = true)
-            prob = Problem(reqs; compat, pins)
+            compat, pin = random_constraints(m, n; mild = true)
+            prob = Problem(reqs; compat, pin)
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_bake_equivalence(data, prob)

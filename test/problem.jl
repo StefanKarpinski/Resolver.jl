@@ -9,8 +9,7 @@
 
 using Resolver: Problem, PkgData, PkgInfo, pkg_info, SAT, PicoSAT,
     exclusion_masks, is_excluded, finalize, sat_assume, sat_pop,
-    is_satisfiable, rank_pkg_info, prepare_pkg_info, Constraint, Compat, Pins,
-    Predicate, excludes, named, relax
+    is_satisfiable, rank_pkg_info, prepare_pkg_info, Constraint, relax
 
 # delete the versions `prob` excludes from each package's data, old-style
 function bake(

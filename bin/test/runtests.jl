@@ -9,8 +9,9 @@
 #
 # These are integration tests: they need the General registry installed and,
 # on a cold cache, network access to fetch the list of released Julia versions
-# (bin/julia_versions.json). They are intentionally *not* part of the package
-# test suite (test/runtests.jl), which is offline and exercises only src/.
+# (bin/julia_versions.json) and, for the manifest test, to download the packages
+# it resolves. They are intentionally *not* part of the package test suite
+# (test/runtests.jl), which is offline and exercises only src/.
 
 using Test
 import Base: UUID
@@ -42,6 +43,10 @@ const LIBSODIUM_JLL = UUID("a9144af2-ca23-56d9-984f-0d03f7b5ccf8")
 # carry a compat entry for a package that is not one of their dependencies.
 const PYTHON_JLL = UUID("93d3a430-8e7c-50da-8e8d-3dfcfb3baf05")
 const LIBMPDEC_JLL = UUID("7106de7a-f406-5ef1-84f7-3345f7341bd2")
+
+# MbedTLS_jll is a stdlib of Julia 1.10 but not of 1.11 and later, so it tells
+# the target Julia's stdlib set apart from the host's.
+const MBEDTLS_JLL = UUID("c8ffd9c3-330d-5841-b78e-0817d7145fa1")
 
 # Load packages from the installed registries (mirrors bin/resolve.jl).
 const packages = Dict{UUID,Vector{PkgEntry}}()
@@ -147,6 +152,29 @@ function resolve_versions(
         vers[UUID(m[1])] = VersionNumber(m[2])
     end
     return vers
+end
+
+# Resolve a project with the given dependencies for the given Julia, returning
+# the generated manifest -- or the script's stderr when it failed. Unlike
+# `resolve_versions` this drives manifest generation, which is a different code
+# path in the script: it builds a Pkg `Context`, downloads the resolved packages
+# and reads their project files for extension info.
+function resolve_manifest(
+    julia_version :: AbstractString;
+    deps          :: Vector{Pair{String,UUID}},
+)
+    dir = mktempdir()
+    open(joinpath(dir, "Project.toml"), "w") do io
+        println(io, "[deps]")
+        for (name, uuid) in deps
+            println(io, "$name = \"$uuid\"")
+        end
+    end
+    out, err = IOBuffer(), IOBuffer()
+    julia = Base.julia_cmd()[1]
+    cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-manifest --julia=$julia_version`
+    success(pipeline(cmd; stdout = out, stderr = err)) || return String(take!(err))
+    return String(take!(out))
 end
 
 @testset "bin/Registries.jl" begin
@@ -693,5 +721,19 @@ end
         for word in ("class", "literal", "assum", "clause", "solver")
             @test !occursin(word, msg)
         end
+    end
+
+    # Manifest generation resolves for the target Julia but then hands the
+    # result to Pkg, which needs to be told which Julia that was: the packages
+    # to download and the stdlib set to reconcile them against are the target's,
+    # not the host's. Left to default, Pkg assumed the host's version and looked
+    # for a source path for every package the *host* does not bundle -- so
+    # MbedTLS_jll, a stdlib on 1.10 but a downloadable package from 1.11 on,
+    # broke the build with "could not find source path" on any host past 1.10.
+    # (On a 1.10 host there is no version gap and this passes trivially.)
+    @testset "a manifest is generated for the target Julia" begin
+        manifest = resolve_manifest("1.10"; deps = ["MbedTLS_jll" => MBEDTLS_JLL])
+        @test occursin("julia_version = \"1.10", manifest)
+        @test occursin("MbedTLS_jll", manifest)
     end
 end

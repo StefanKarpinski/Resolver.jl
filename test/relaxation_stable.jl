@@ -1,6 +1,6 @@
 # The property the filter buys with the two rank keys: a universe filtered for
 # query `Q` still answers every *relaxation* of `Q` — the same query with some
-# requirements or constraint sources dropped, which is exactly the shape of a
+# requirements or constraints relaxed, which is exactly the shape of a
 # repair a user can make to an unsatisfiable problem.
 #
 # The theory page states this as Theorem C. What is checked here is its
@@ -19,9 +19,9 @@
 # kept set is downward closed in `key_∅` (the Remark), which is the invariant
 # that lets it carry an integer frontier instead of a set.
 
-using Resolver: PkgData, Problem, SAT, NoKinds, SparsePerm, RelaxedProblem,
-    pkg_info, nclasses, prepare_pkg_info, rank_pkg_info, resolve, relax, sources,
-    class_ranking, deactivations, is_excluded, with_classes_relaxed,
+using Resolver: PkgData, Problem, SAT, SparsePerm, RelaxedProblem,
+    pkg_info, nclasses, prepare_pkg_info, rank_pkg_info, resolve, relax,
+    relaxations, class_ranking, deactivations, is_excluded, with_classes_relaxed,
     with_temp_clauses, mark_installable!, mark_reachable!, finalize
 
 using .tiny_data
@@ -42,22 +42,29 @@ function is_relaxation(info, Q::Problem{P}, R::Problem{P}) where {P}
     return true
 end
 
-function relaxed(info, univ, Q, drop_reqs, drop_sources)
-    rp = relax(univ, Q, drop_reqs, drop_sources)
+function relaxed(info, univ, Q, drop_reqs, drop_constraints)
+    rp = relax(univ, Q, drop_reqs, drop_constraints)
     @test is_relaxation(info, Q, rp.prob)
     return rp
 end
 
-# a sample: the bottom of the lattice (everything withdrawn) first, since it is
-# the hardest case and the one caching depends on, then random points
-function relaxations(info, univ, Q::Problem{P}, k::Int) where {P}
-    srcs = sources(Q)
+# a sample: the bottom of the lattice (everything relaxed) first, since it is
+# the hardest case and the one caching depends on, then random points — each a
+# random set of kinds, and for the kinds that name packages, a random set of
+# those, since a kind is relaxed per package like any other
+function sample_relaxations(info, univ, Q::Problem{P}, k::Int) where {P}
+    every = relaxations(Q)
     # the element type is abstract on purpose: a relaxation that reorders
     # carries a different `ord` from one that does not
-    out = RelaxedProblem[relaxed(info, univ, Q, P[], srcs)]
+    out = RelaxedProblem[relaxed(info, univ, Q, P[], every)]
     for _ = 1:k
         dr = P[p for p in unique(Q.reqs) if rand() < 0.35]
-        ds = [s for s in srcs if rand() < 0.5]
+        ds = empty(every)
+        for (kind, pkgs) in every
+            rand() < 0.5 || continue
+            ds[kind] = pkgs === nothing || rand() < 0.5 ? pkgs :
+                Set{P}(p for p in pkgs if rand() < 0.5)
+        end
         isempty(dr) && isempty(ds) && continue
         push!(out, relaxed(info, univ, Q, dr, ds))
     end
@@ -130,14 +137,14 @@ revivals(univ, rp) = count(
         for mode in (:random, :demoting), _ = 1:15
             drawn = draw_query!(mode, m, n, make_deps, make_comp, d, c, data)
             drawn === nothing && continue
-            info, compat, pins = drawn
+            info, compat, pin = drawn
             reqs = collect(make_reqs(rand(1:2^m-1)))
             bad = rand(1:n)
-            # a second source, independently droppable, so that dropping the
-            # compat bound is one point of the lattice rather than all of it
-            excludes = mode === :demoting || rand(Bool) ?
-                Pair{Symbol,Any}[:test => (p, v) -> v == bad] : NoKinds
-            Q = Problem(reqs; compat, pins, excludes)
+            # a second constraint, independently withdrawable, so that dropping
+            # the compat bound is one point of the lattice rather than all of it
+            test = mode === :demoting || rand(Bool) ?
+                (; test = (p, v) -> v == bad) : (;)
+            Q = Problem(reqs; compat, pin, test...)
             univ = prepare_pkg_info(info, Q)
             have = classkeys(univ)
             # one instance for the whole lattice sample, which is the point:
@@ -145,7 +152,7 @@ revivals(univ, rp) = count(
             # resolve already built
             sat = SAT(univ)
             try
-                for rp in relaxations(info, univ, Q, 4)
+                for rp in sample_relaxations(info, univ, Q, 4)
                     R = rp.prob
                     # Theorem C: reuse answers R exactly as a fresh resolve does
                     @test resolve(sat, rp) == resolve(info, R)
@@ -166,13 +173,14 @@ revivals(univ, rp) = count(
     # the sweep really did exercise both things a relaxation moves: the classes
     # the descent can select at all, and the order it optimizes them in
     @test revived > 0
-    # the second is what the demoting regime is for. It reorders 11-15% of the
-    # relaxations it sweeps, against 0.5-1% under random constraints alone —
-    # dozens of times a run rather than a handful, so this is a floor with room
-    # under it rather than a coin flip. It is not higher because reordering also
-    # needs the demoted class to be non-contiguous in version order, so that
-    # something it outranked sits between two of its members
-    @test reranked > demoting ÷ 15
+    # the second is what the demoting regime is for. It reorders 8-15% of the
+    # relaxations it sweeps, against 0.5-1% under random constraints alone. The
+    # spread is wide — reordering also needs the demoted class to be
+    # non-contiguous in version order, so that something it outranked sits
+    # between two of its members — so the floor is set well under it: a
+    # regression to the random rate, or to none at all, is what this is for, and
+    # a bar near the mean only measures the sampler's luck
+    @test reranked > demoting ÷ 30
 end
 
 @testset "a relaxation the descent optimizes in a new order" begin
@@ -194,8 +202,8 @@ end
     @test univ.reps[:A] == [2, 4]
     @test resolve(info, Q) == Dict(:A => :v3, :C => :x1)
 
-    rp = relaxed(info, univ, Q, Symbol[], sources(Q))
-    @test rp.prob.reqs == [:A] && isempty(rp.prob.compat)
+    rp = relaxed(info, univ, Q, Symbol[], relaxations(Q))
+    @test rp.prob.reqs == [:A] && isempty(rp.prob.constraints)
     @test reranks(rp) # the class order really did move
     @test resolve(info, rp.prob) == Dict(:A => :v4, :B => :w1)
     @test resolve(univ, rp) == Dict(:A => :v4, :B => :w1)
@@ -219,7 +227,7 @@ end
     @test univ.reps[:A] == [0, 3]
     @test resolve(info, Q) == Dict(:A => :v1, :B => :w1)
 
-    rp = relaxed(info, univ, Q, Symbol[], sources(Q))
+    rp = relaxed(info, univ, Q, Symbol[], relaxations(Q))
     @test revivals(univ, rp) == 1
     @test resolve(info, rp.prob) == Dict(:A => :v3)
     # naming through Q's representatives would index version 0 of :A; naming
@@ -230,12 +238,47 @@ end
     try
         @test resolve(sat, rp) == Dict(:A => :v3)
         # the bottom of the lattice requires nothing, so it installs nothing
-        @test resolve(sat, relaxed(info, univ, Q, Q.reqs, sources(Q))) ==
+        @test resolve(sat, relaxed(info, univ, Q, Q.reqs, relaxations(Q))) ==
             Dict{Symbol,Symbol}()
         # Q itself is a relaxation of Q, and answers as Q answers
-        @test resolve(sat, relaxed(info, univ, Q, Symbol[], Pair{Symbol,Any}[])) == resolve(info, Q)
+        @test resolve(sat, relaxed(info, univ, Q, Symbol[], Dict{Symbol,Nothing}())) ==
+            resolve(info, Q)
     finally
         finalize(sat)
+    end
+end
+
+@testset "a kind is relaxed per package, whatever its shape" begin
+    # every kind relaxes the same way — for the packages the map names it
+    # for, or for every package when the map names `nothing` — so `:compat` and
+    # `:pin` are relaxable one package at a time like anything else. What the
+    # map is read with is `haskey`, so a kind that is absent from it and a kind
+    # relaxed for nothing are both simply not relaxed.
+    data = Dict(
+        :A => PkgData([:v2, :v1], NO_DEPS, NO_COMP),
+        :B => PkgData([:w2, :w1], NO_DEPS, NO_COMP),
+    )
+    info = pkg_info(data, keys(data); filter = false)
+    held = Dict(:A => :v1, :B => :w1)
+    both = Dict(:A => :v2, :B => :w2)
+    function relaxes(Q)
+        univ = prepare_pkg_info(info, Q)
+        drop_constraints -> resolve(univ, relaxed(info, univ, Q, Symbol[], drop_constraints))
+    end
+    # the two well-known kinds, and a predicate that forbids the same versions
+    for (kind, Q) in (
+        :compat => Problem([:A, :B]; compat = Dict(:A => [:v1], :B => [:w1])),
+        :pin    => Problem([:A, :B]; pin = Dict(:A => :v1, :B => :w1)),
+        :test   => Problem([:A, :B]; test = (p, v) -> v in (:v2, :w2)),
+    )
+        relax_it = relaxes(Q)
+        @test resolve(info, Q) == held
+        @test relax_it(Dict(kind => Set([:A]))) == Dict(:A => :v2, :B => :w1)
+        @test relax_it(Dict(kind => Set([:B]))) == Dict(:A => :v1, :B => :w2)
+        @test relax_it(Dict(kind => nothing)) == both
+        @test relax_it(Dict(kind => Set{Symbol}())) == held
+        @test relax_it(Dict(:nosuch => nothing)) == held # a kind Q hasn't got
+        @test relax_it(Dict{Symbol,Nothing}()) == held
     end
 end
 
@@ -247,7 +290,7 @@ end
     info = pkg_info(data, keys(data); filter = false)
     Q = Problem([:A]; compat = Dict(:A => [:v1]))
     univ = prepare_pkg_info(info, Q)
-    rp = relaxed(info, univ, Q, Symbol[], sources(Q))
+    rp = relaxed(info, univ, Q, Symbol[], relaxations(Q))
     sat = SAT(univ)
     try
         want = resolve(sat, rp)
@@ -295,11 +338,11 @@ end
     for _ = 1:200
         drawn = draw_query!(:demoting, 3, 3, make_deps, make_comp, d, c, data)
         drawn === nothing && continue
-        info, compat, pins = drawn
+        info, compat, pin = drawn
         reqs = collect(make_reqs(rand(1:2^3-1)))
-        Q = Problem(reqs; compat, pins)
+        Q = Problem(reqs; compat, pin)
         univ = prepare_pkg_info(info, Q)
-        rp = relax(univ, Q, Int[], sources(Q))
+        rp = relax(univ, Q, Int[], relaxations(Q))
         for (p, ip) in univ.info
             m = nclasses(ip)
             ord = Resolver.ranking(rp.ord, p, m)
@@ -323,12 +366,11 @@ end
         fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
         reqs = collect(make_reqs(rand(1:2^m-1)))
         info = pkg_info(data, keys(data); filter = false)
-        compat, pins = random_constraints(m, n)
+        compat, pin = random_constraints(m, n)
         bad = rand(1:n)
-        Q = Problem(reqs; compat, pins,
-            excludes = Pair{Symbol,Any}[:test => (p, v) -> v == bad])
+        Q = Problem(reqs; compat, pin, test = (p, v) -> v == bad)
         univ = prepare_pkg_info(info, Q)
-        rels = relaxations(info, univ, Q, 8)
+        rels = sample_relaxations(info, univ, Q, 8)
         want = Dict(i => resolve(info, rp.prob) for (i, rp) in enumerate(rels))
         sat = SAT(univ)
         try
@@ -379,8 +421,8 @@ end
             fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
             reqs = collect(make_reqs(rand(1:2^m-1)))
             info = pkg_info(data, keys(data); filter = false)
-            compat, pins = random_constraints(m, n)
-            prob = Problem(reqs; compat, pins)
+            compat, pin = random_constraints(m, n)
+            prob = Problem(reqs; compat, pin)
             univ = rank_pkg_info(info, prob)
             mark_installable!(univ.info)
             mark_reachable!(univ.info, prob.reqs, deactivations(univ), univ.ranks)

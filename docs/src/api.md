@@ -18,7 +18,7 @@ Resolver.Universe
 Resolver.prepare_pkg_info
 Resolver.version_permutations
 Resolver.class_ranking
-Resolver.sources
+Resolver.relaxations
 Resolver.relax
 Resolver.RelaxedProblem
 Resolver.SparsePerm

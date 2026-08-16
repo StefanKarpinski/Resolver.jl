@@ -248,14 +248,15 @@ is_bundled(uuid::UUID, v::VersionNumber) =
 #
 # Whether a query will accept prerelease versions is a *query* fact, not a
 # registry one: the versions exist either way. So the provider offers them all
-# and `--allow-pre` reaches the resolver as one of the `Problem`'s exclusion
-# kinds, forbidding the prereleases of the packages it was not given for -- which
-# is what deleting them used to accomplish, minus the need for a private universe.
+# and `--allow-pre` reaches the resolver as the predicate of a `Problem`
+# constraint kind (`prerelease`), forbidding the prereleases of the packages it
+# was not given for -- which is what deleting them used to accomplish, minus the
+# need for a private universe.
 #
 # `allow_pre` is keyed by package uuid with the zero uuid holding the default,
 # exactly as the flag parses it.
 prerelease_exclusion(allow_pre::Dict{UUID,Bool}) =
-    :prerelease => function (uuid::UUID, v::VersionNumber)
+    function (uuid::UUID, v::VersionNumber)
         isempty(v.prerelease) && return false
         return !get(allow_pre, uuid, get(allow_pre, UUID(0), false))
     end

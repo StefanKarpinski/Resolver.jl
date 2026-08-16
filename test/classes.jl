@@ -144,7 +144,7 @@ function class_emptying_problems(data, reqs)
             for v in sort!(collect(cls))
                 push!(probs, Problem(reqs;
                     compat = Dict(p => [w for w in vers if w != v])))
-                push!(probs, Problem(reqs; pins = Dict(p => v)))
+                push!(probs, Problem(reqs; pin = Dict(p => v)))
             end
         end
     end
@@ -199,7 +199,7 @@ end
     # a pin inside a class does not *refine* it — a class is one column, and a
     # user constraint has no way to split one. All it can do is move which
     # member stands for the class, and empty the classes it admits nothing of
-    prob = Problem([:A]; pins = Dict(:A => :v1))
+    prob = Problem([:A]; pin = Dict(:A => :v1))
     reps, cperms = class_ranking(info, prob)
     @test info[:A].members == [[1, 3], [2]] # the partition is untouched
     @test reps[:A] == [3, 0]  # {:v3, :v1} stands at :v1; {:v2} is empty
@@ -252,8 +252,8 @@ end
                         test_class_space(data, Problem(reqs); by)
                     end
                     for _ = 1:4
-                        compat, pins = random_constraints(m, n)
-                        test_class_space(data, Problem(reqs; compat, pins))
+                        compat, pin = random_constraints(m, n)
+                        test_class_space(data, Problem(reqs; compat, pin))
                     end
                 end
             end
@@ -271,8 +271,8 @@ end
             fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
             reqs = collect(make_reqs(rand(1:2^m-1)))
             for _ = 1:4
-                compat, pins = random_constraints(m, n)
-                test_class_space(data, Problem(reqs; compat, pins);
+                compat, pin = random_constraints(m, n)
+                test_class_space(data, Problem(reqs; compat, pin);
                                  by = rand((hi, lo)))
             end
         end
@@ -313,11 +313,11 @@ end
             reqs = collect(make_reqs(rand(1:2^m-1)))
             for shapes in Iterators.product(ntuple(_ -> CONSTRAINT_SHAPES, m)...)
                 compat = Dict{Int,Vector{Int}}()
-                pins   = Dict{Int,Int}()
+                pin    = Dict{Int,Int}()
                 for (p, shape) in enumerate(shapes)
-                    constrain!(compat, pins, p, shape, n)
+                    constrain!(compat, pin, p, shape, n)
                 end
-                prob = Problem(reqs; compat, pins)
+                prob = Problem(reqs; compat, pin)
                 test_class_space(data, prob; by = hi)
                 test_class_space(data, prob; by = lo)
             end
@@ -336,8 +336,8 @@ end
             deps = make_deps(0)
             comp = make_comp(0)
             reqs = collect(make_reqs(rand(1:2^m-1)))
-            compat, pins = random_constraints(m, n; mild = true)
-            prob = Problem(reqs; compat, pins)
+            compat, pin = random_constraints(m, n; mild = true)
+            prob = Problem(reqs; compat, pin)
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_class_space(data, prob)
@@ -387,8 +387,8 @@ permute_versions(data::AbstractDict, perms) = Dict(
                 # and the answer under the permuted ordering is the
                 # universe's answer all the same
                 test_class_space(perm, Problem(reqs))
-                compat, pins = random_constraints(m, n)
-                test_class_space(perm, Problem(reqs; compat, pins))
+                compat, pin = random_constraints(m, n)
+                test_class_space(perm, Problem(reqs; compat, pin))
             end
         end
     end
@@ -409,8 +409,8 @@ end
             for reqs_bits = 0:2^m-1
                 reqs = collect(make_reqs(reqs_bits))
                 specific = pkg_info(deps, reqs) # T1 over the closure of reqs
-                compat, pins = random_constraints(m, n)
-                for prob in (Problem(reqs), Problem(reqs; compat, pins))
+                compat, pin = random_constraints(m, n)
+                for prob in (Problem(reqs), Problem(reqs; compat, pin))
                     @test resolve(all_reqs, prob) == resolve(specific, prob)
                     @test resolve(all_reqs, prob) == resolve(data, prob)
                     # the T1 artifacts are reusable: resolving does not

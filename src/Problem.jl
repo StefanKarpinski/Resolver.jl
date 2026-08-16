@@ -11,27 +11,34 @@ Base.haskey(::EmptyDict, key) = false
 Base.get(::EmptyDict, key, default) = default
 Base.getindex(::EmptyDict, key) = throw(KeyError(key))
 
-# The kinds with no versions to forbid: the shared empty value for a problem's
-# `excludes`, for the same reason `EmptyDict` exists.
-const NoKinds = Pair{Symbol,Any}[]
+# What a constraint is made of matters only where it is built. Everywhere else
+# it answers two questions: does it forbid this version of this package, and
+# which packages does it speak about — `nothing` for one that speaks about every
+# package, a predicate having no way to list them.
+struct Constraint{P}
+    forbids :: Any                     # (p, v) -> Bool
+    named   :: Union{Nothing, Set{P}}  # the packages it names, or every package
+end
 
 """
-    Problem(reqs; compat = ..., pins = ..., excludes = ...)
+    Problem(reqs; compat = ..., pin = ..., \$kind = ...)
 
 A resolution problem: the required packages `reqs`, plus the constraints that say
 which versions are admissible. A `Problem` carries everything that determines
 *satisfiability*; orderings (the `by` priority order, the `order` version rank
 order) are `resolve` parameters instead.
 
-Three kinds of constraint, in two shapes:
+Every keyword is a constraint, and its name is the constraint's *kind*:
 
   * `compat`: per package, the set of allowed versions (queried with `in`).
-  * `pins`: per package, the one version it is held at.
-  * `excludes`: the *admission* knobs — "no prereleases" is the one the resolver's
-    own tooling uses — which say something about versions rather than about
-    particular packages, and so come as `kind => predicate` pairs, where
-    `predicate(p, v)` is true for the versions that source forbids and `kind` is a
-    symbol naming it.
+  * `pin`: per package, the one version it is held at.
+  * anything else: a predicate `(p, v) -> Bool`, true for the versions that kind
+    forbids — "no prereleases" is the one the resolver's own tooling uses. These
+    speak about versions rather than about particular packages, so they reach
+    every package.
+
+Two constraints cannot share a kind, which needs no checking: a repeated
+keyword is a syntax error.
 
 Constraints for packages that don't exist, and constraints that exclude nothing,
 are allowed and have no effect.
@@ -41,40 +48,84 @@ a deletion from a private one: that is what lets a single T1 artifact (see
 [`pkg_info`](@ref Resolver.pkg_info)) serve queries that admit different things,
 and what lets diagnostics eventually name the kind that ruled a version out.
 """
-struct Problem{P,V,S}
-    reqs   :: Vector{P}
-    # allowed-version sets, queried via `in(v, s)`, and exact-version pins.
-    # abstractly typed so that the unconstrained case can share one immutable
-    # empty dictionary instead of allocating two per problem
-    compat :: AbstractDict{P,S}
-    pins   :: AbstractDict{P,V}
-    # admission knobs: per kind, a predicate `(p, v) -> Bool` that is true for
-    # the versions that kind forbids ("no prereleases", say)
-    excludes :: Vector{Pair{Symbol,Any}}
+struct Problem{P, C<:AbstractDict{Symbol}}
+    reqs :: Vector{P}
+    # the constraints, by kind. Typed as a parameter so that an unconstrained
+    # problem can share one immutable empty dictionary rather than make one
+    constraints :: C
 end
 
-function Problem(
-    reqs   :: SetOrVec{P};
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
-    excludes = NoKinds,
+# the three ways to build one. A caller's dictionary is copied, so later
+# mutation cannot change the problem
+constraint(::Type{P}, ::Val{:compat}, d::AbstractDict) where {P} =
+    (e = Dict(d); Constraint{P}(
+        (p, v) -> (s = get(e, p, nothing); s !== nothing && v ∉ s), Set{P}(keys(e))))
+constraint(::Type{P}, ::Val{:pin}, d::AbstractDict) where {P} =
+    (e = Dict(d); Constraint{P}(
+        (p, v) -> (w = get(e, p, nothing); w !== nothing && v != w), Set{P}(keys(e))))
+constraint(::Type{P}, ::Val{K}, forbids) where {P,K} = Constraint{P}(forbids, nothing)
+
+# this constraint no longer applying to `pkgs`, or `nothing` when nothing of it
+# is left — so relaxing a kind for the packages it names relaxes it entirely,
+# whatever its shape, and `nothing` never has to mean two things
+relax(::Constraint, ::Nothing) = nothing
+function relax(c::Constraint{P}, pkgs) where {P}
+    isempty(pkgs) && return c
+    names = c.named === nothing ? nothing : setdiff(c.named, pkgs)
+    names !== nothing && isempty(names) && return nothing
+    forbids = c.forbids
+    return Constraint{P}((p, v) -> p ∉ pkgs && forbids(p, v)::Bool, names)
+end
+
+# `compat` and `pin` are dictionaries keyed by package; every other kind is a
+# predicate. Checked once, here, so that nothing downstream has to look.
+function check_constraints(::Type{P}, kinds::NamedTuple) where {P}
+    for (kind, value) in pairs(kinds)
+        want = kind in (:compat, :pin) ?
+            (value isa AbstractDict{P} ? nothing : "a dictionary keyed by package ($P)") :
+            (isempty(methods(value)) ? "a predicate, `(p, v) -> Bool`" : nothing)
+        want === nothing || throw(ArgumentError(
+            "constraint kind $(repr(kind)) wants $want; got a $(typeof(value))"))
+    end
+end
+
+function Problem(reqs::SetOrVec{P}; kinds...) where {P}
+    kws = values(kinds)
+    check_constraints(P, kws)
+    r = P[p for p in reqs]
+    # a kind that forbids nothing is no constraint, and the map is made only
+    # once there is one to put in it, so a problem that constrains nothing
+    # shares the empty map whether it named no kind or only empty ones
+    cs = nothing
+    for (kind, value) in pairs(kws)
+        value isa AbstractDict && isempty(value) && continue
+        cs === nothing && (cs = Dict{Symbol,Constraint{P}}())
+        cs[kind] = constraint(P, Val(kind), value)
+    end
+    return Problem(r, something(cs, EmptyDict{Symbol,Constraint{P}}()))
+end
+
+# `prob` no longer requiring `drop_reqs`, nor applying each constraint in
+# `drop_constraints` to the packages named there — a relaxation being the same problem
+# with demands lifted, and so built by lifting them
+function relax(
+    prob      :: Problem{P},
+    drop_reqs        :: SetOrVec{P},
+    drop_constraints :: AbstractDict{Symbol},
 ) where {P}
-    Problem{P, valtype(pins), valtype(compat)}(
-        P[p for p in reqs], adopt(compat), adopt(pins), adopt_kinds(excludes))
+    gone = Set{P}(drop_reqs)
+    cs = Dict{Symbol,Constraint{P}}()
+    for (kind, c) in prob.constraints
+        c′ = haskey(drop_constraints, kind) ? relax(c, drop_constraints[kind]) : c
+        c′ === nothing || (cs[kind] = c′)
+    end
+    r = P[p for p in prob.reqs if p ∉ gone]
+    return isempty(cs) ? Problem(r, EmptyDict{Symbol,Constraint{P}}()) : Problem(r, cs)
 end
-
-# a caller's dictionary is copied, so later mutation can't change the problem;
-# the shared empties are immutable and shared on purpose
-adopt(d::AbstractDict) = Dict(d)
-adopt(d::EmptyDict) = d
-
-adopt_kinds(kinds) = isempty(kinds) ? NoKinds :
-    Pair{Symbol,Any}[Symbol(kind) => forbids for (kind, forbids) in kinds]
 
 # does the problem constrain anything at all? the fast paths below lean on this:
 # an unconstrained resolve must not do any per-version work
-is_constrained(prob::Problem) =
-    !isempty(prob.compat) || !isempty(prob.pins) || !isempty(prob.excludes)
+is_constrained(prob::Problem) = !isempty(prob.constraints)
 
 # What a user constraint does, and the only thing it does, is forbid *members*
 # of interchangeability classes. Members are indistinguishable to everything in
@@ -94,16 +145,8 @@ is_constrained(prob::Problem) =
 # between.
 
 # does the problem forbid version v of package p?
-function is_excluded(prob::Problem{P}, p::P, v) where {P}
-    s = get(prob.compat, p, nothing)
-    s === nothing || v ∈ s || return true
-    w = get(prob.pins, p, nothing)
-    w === nothing || v == w || return true
-    for (_, forbids) in prob.excludes
-        forbids(p, v)::Bool && return true
-    end
-    return false
-end
+is_excluded(prob::Problem{P}, p::P, v) where {P} =
+    any(c -> c.forbids(p, v)::Bool, values(prob.constraints))
 
 # Which of the problem's constraints forbid version `v` of package `p`: one
 # symbol per source that does — `:compat` for an allowed-version set the version
@@ -112,21 +155,12 @@ end
 # problem admits the version. Every source is named, where `is_excluded` stops
 # at the first: lifting one source leaves the others in force, so what a
 # question about lifting one needs is all of them.
-function exclusion_sources(prob::Problem{P}, p::P, v) where {P}
-    srcs = Symbol[]
-    s = get(prob.compat, p, nothing)
-    s === nothing || v ∈ s || push!(srcs, :compat)
-    w = get(prob.pins, p, nothing)
-    w === nothing || v == w || push!(srcs, :pin)
-    for (kind, forbids) in prob.excludes
-        forbids(p, v)::Bool && push!(srcs, kind)
-    end
-    return srcs
-end
+exclusion_kinds(prob::Problem{P}, p::P, v) where {P} =
+    sort!(Symbol[k for (k, c) in prob.constraints if c.forbids(p, v)::Bool])
 
 # Why class `c` of package `p` holds nothing this problem admits: the class's
 # members in version order, each paired with the sources that exclude it
-# (`exclusion_sources`). A constraint forbids versions, and a class is empty
+# (`exclusion_kinds`). A constraint forbids versions, and a class is empty
 # when every member of it is forbidden — so the class is empty exactly when no
 # pair here has an empty source list, and these pairs are then the whole of what
 # emptied it: which versions the class holds, and what rules each one out.
@@ -139,17 +173,20 @@ function class_exclusions(
     c      :: Integer,
 ) where {P}
     vers = info_p.versions
-    return [vers[i] => exclusion_sources(prob, p, vers[i])
+    return [vers[i] => exclusion_kinds(prob, p, vers[i])
             for i in info_p.members[c]]
 end
 
-# the packages a constraint could forbid a version of. Compat bounds and pins
-# name their packages, and only a handful of packages are named, which is what
-# makes constraining cheap; an admission knob is stated about versions instead, so
-# it reaches every package in the universe.
-exclusion_candidates(info::AbstractDict{P}, prob::Problem{P}) where {P} =
-    isempty(prob.excludes) ?
-        union(keys(prob.compat), keys(prob.pins)) : keys(info)
+# the packages a constraint could forbid a version of: the ones its constraints
+# name, unless one of them speaks about every package
+function exclusion_candidates(info::AbstractDict{P}, prob::Problem{P}) where {P}
+    pkgs = Set{P}()
+    for c in values(prob.constraints)
+        c.named === nothing && return keys(info)
+        union!(pkgs, c.named)
+    end
+    return pkgs
+end
 
 """
     exclusion_masks(info, prob) :: AbstractDict{P, BitVector}

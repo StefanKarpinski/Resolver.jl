@@ -95,7 +95,7 @@ end
 
 """
     resolve(data, prob::Problem; by = identity) -> Union{Dict{P,V}, Nothing}
-    resolve(data, reqs; by = identity, compat = ..., pins = ...)
+    resolve(data, reqs; by = identity)
 
 Resolve the requirements `reqs` against the package universe described by
 `data`, returning the optimal solution as a dict mapping each needed package
@@ -104,10 +104,9 @@ satisfiable. The solution covers every requirement and is exactly the
 dependency closure of the requirements under its own chosen versions.
 
 A [`Problem`](@ref) additionally constrains the admissible versions with user
-compat bounds and pins; the answer is the one the same universe with those
-versions deleted would give. The requirements-and-keywords form builds one, so
-`resolve(data, reqs; compat, pins)` and `resolve(data, Problem(reqs; compat,
-pins))` are the same call.
+constraints; the answer is the one the same universe with those versions
+deleted would give. The requirements form is the unconstrained problem — a
+constrained resolve is spelled by building the `Problem`.
 
 The returned solution is the *layered solution*: requirements are optimized
 first, in the priority order induced by `by` (each package maximized to its
@@ -166,22 +165,17 @@ function resolve_prepared(
 end
 
 """
-    sources(prob) :: Vector{Pair{Symbol,Any}}
+    relaxations(prob) :: Dict{Symbol, Union{Nothing, Set{P}}}
 
-Every constraint source `prob` carries, as something a relaxation can release:
-`:compat => p` and `:pin => p` for the entries naming a package, and
-`:kind => k` for each admission kind. This is the vocabulary
-[`relax`](@ref Resolver.relax) takes, so `relax(univ, prob, prob.reqs,
-sources(prob))` is the bottom of the relaxation lattice — the empty query — and
-any subset of it is a point in between.
+Everything `prob` constrains, as the relaxation that lifts all of it: per kind,
+the packages that kind names, or `nothing` for one that speaks about every
+package. This is what [`relax`](@ref Resolver.relax) takes, so
+`relax(univ, prob, prob.reqs, relaxations(prob))` is the bottom of the
+relaxation lattice — the empty query — and any part of it is a point between.
 """
-function sources(prob::Problem{P}) where {P}
-    srcs = Pair{Symbol,Any}[]
-    for p in keys(prob.compat);  push!(srcs, :compat => p); end
-    for p in keys(prob.pins);    push!(srcs, :pin => p);    end
-    for (k, _) in prob.excludes; push!(srcs, :kind => k);   end
-    return srcs
-end
+relaxations(prob::Problem{P}) where {P} =
+    Dict{Symbol, Union{Nothing, Set{P}}}(
+        kind => c.named for (kind, c) in prob.constraints)
 
 """
     RelaxedProblem
@@ -212,17 +206,17 @@ struct RelaxedProblem{P, O}
 end
 
 """
-    relax(univ, Q, drop_reqs = P[], drop_sources = Pair{Symbol,Any}[]; order = nothing)
+    relax(univ, Q, drop_reqs = P[], drop_constraints = ...; order = nothing)
 
-The relaxation of `Q` that withdraws the requirements `drop_reqs` and releases
-the constraint sources `drop_sources`, ready to resolve against `univ` — the
-universe `prepare_pkg_info(info, Q; order)` produced. Withdrawing nothing gives
-`Q` itself, which is a relaxation of `Q`; withdrawing everything gives the empty
-query. Names that `Q` does not carry are ignored, a source that is not there
-being already released.
+The relaxation of `Q` that stops requiring `drop_reqs` and lifts the constraints
+`drop_constraints`, ready to resolve against `univ` — the universe
+`prepare_pkg_info(info, Q; order)` produced. Lifting nothing gives `Q` itself,
+which is a relaxation of `Q`; lifting everything
+([`relaxations`](@ref Resolver.relaxations)) gives the empty query. Anything `Q`
+does not carry is ignored, a constraint that is not there being already lifted.
 
-`drop_sources` names sources the way [`sources`](@ref Resolver.sources) lists
-them: `:compat => p`, `:pin => p`, `:kind => k`.
+`drop_constraints` maps a kind to the packages it is lifted for — or to `nothing`, which
+lifts it for every package it speaks about, and so lifts it entirely.
 
 `order` is the version preference ordering, as `resolve` takes it, and has to be
 the one `univ` was ranked in: it is what "better" means, and the universe and the
@@ -232,27 +226,11 @@ permutations it induces are computed once however often the result is resolved.
 function relax(
     univ :: Universe{P,V},
     Q    :: Problem{P},
-    drop_reqs    :: SetOrVec{P} = P[],
-    drop_sources :: SetOrVec{Pair{Symbol,Any}} = Pair{Symbol,Any}[];
+    drop_reqs        :: SetOrVec{P} = P[],
+    drop_constraints :: AbstractDict{Symbol} = EmptyDict{Symbol,Nothing}();
     order = nothing, # version ordering
 ) where {P,V}
-    nocomp, nopin = Set{P}(), Set{P}()
-    nokind = Set{Symbol}()
-    for (what, key) in drop_sources
-        what === :compat ? push!(nocomp, key) :
-        what === :pin    ? push!(nopin,  key) :
-        what === :kind   ? push!(nokind, key) :
-            throw(ArgumentError("no such constraint source: $(repr(what))"))
-    end
-    withdrawn = Set{P}(drop_reqs)
-    # a relaxation is `Q` with entries removed, so it is built by removing them
-    R = Problem(P[p for p in Q.reqs if p ∉ withdrawn];
-        compat = isempty(nocomp) ? Q.compat :
-            filter(kv -> first(kv) ∉ nocomp, Dict(Q.compat)),
-        pins = isempty(nopin) ? Q.pins :
-            filter(kv -> first(kv) ∉ nopin, Dict(Q.pins)),
-        excludes = isempty(nokind) ? Q.excludes :
-            Pair{Symbol,Any}[kv for kv in Q.excludes if first(kv) ∉ nokind])
+    R = relax(Q, drop_reqs, drop_constraints)
     # what `R` makes of the classes `Q` laid out, in one pass: the member each
     # class stands for under `R` and the order those members rank the classes
     # in. The universe is not relaid out — the clauses say which classes exist,
@@ -349,32 +327,26 @@ end
 resolve(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
-) where {P} = resolve(deps, Problem(reqs; compat, pins); by, order)
+) where {P} = resolve(deps, Problem(reqs); by, order)
 
 resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
-) where {P} = resolve(data, Problem(reqs; compat, pins); by, order)
+) where {P} = resolve(data, Problem(reqs); by, order)
 
 resolve(
     info :: AbstractDict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
-) where {P,V} = resolve(info, Problem(reqs; compat, pins); by, order)
+) where {P,V} = resolve(info, Problem(reqs); by, order)
 
 """
-    issatisfiable(data, reqs; compat = ..., pins = ...) -> Bool
+    issatisfiable(data, reqs) -> Bool
 
 Compute `resolve(data, reqs; ...) !== nothing` more efficiently, with a single
 satisfiability check instead of a full optimizing resolve. Use this when you
@@ -442,20 +414,14 @@ issatisfiable(
 issatisfiable(
     deps :: DepsProvider{P},
     reqs :: SetOrVec{P} = deps.packages;
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
-) where {P} = issatisfiable(deps, Problem(reqs; compat, pins))
+) where {P} = issatisfiable(deps, Problem(reqs))
 
 issatisfiable(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
-) where {P} = issatisfiable(data, Problem(reqs; compat, pins))
+) where {P} = issatisfiable(data, Problem(reqs))
 
 issatisfiable(
     info :: AbstractDict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
-    compat :: AbstractDict{P} = EmptyDict{P,Any}(),
-    pins   :: AbstractDict{P} = EmptyDict{P,Any}(),
-) where {P,V} = issatisfiable(info, Problem(reqs; compat, pins))
+) where {P,V} = issatisfiable(info, Problem(reqs))

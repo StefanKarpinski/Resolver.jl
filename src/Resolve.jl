@@ -94,14 +94,21 @@ function resolve_core(
 end
 
 """
-    resolve(data, prob::Problem; by = identity) -> Union{Dict{P,V}, Nothing}
-    resolve(data, reqs; by = identity)
+    resolve(data, prob::Problem; by = identity, diagnose = true)
+        -> Union{Dict{P,V}, Diagnosis{P,V}, Nothing}
+    resolve(data, reqs; by = identity, diagnose = true)
 
 Resolve the requirements `reqs` against the package universe described by
 `data`, returning the optimal solution as a dict mapping each needed package
-to its chosen version, or `nothing` when the requirements are not jointly
-satisfiable. The solution covers every requirement and is exactly the
+to its chosen version, or a [`Diagnosis`](@ref) when the requirements are not
+jointly satisfiable. The solution covers every requirement and is exactly the
 dependency closure of the requirements under its own chosen versions.
+
+A `Diagnosis` says which requirements cannot hold together, why, and what the
+user could change to make them; `show`ing it prints the report. Pass
+`diagnose = false` for the bare `nothing` instead, which is what a caller that
+only wants the verdict should do — the diagnosis costs several more solves and
+one resolve per fix it offers.
 
 A [`Problem`](@ref) additionally constrains the admissible versions with user
 constraints; the answer is the one the same universe with those versions
@@ -116,9 +123,11 @@ manual's Theory section for the precise semantics and the guarantees it
 carries.
 
 `data` may be a `DepsProvider`, a dict of `PkgData`, a dict of `PkgInfo`, or
-a `SAT` instance. The `SAT` method also accepts `restore::Bool = true`: when
-true the instance's clauses are restored before returning so the instance
-can be reused; `restore = false` is faster for single-use instances.
+a `SAT` instance. The `SAT` method takes bare requirements and so has no
+constraints to attribute a failure to: it answers `nothing`, and accepts
+`restore::Bool = true` instead of `diagnose` — when true the instance's clauses
+are restored before returning so the instance can be reused, and
+`restore = false` is faster for single-use instances.
 
 The other methods accept one more keyword:
 
@@ -155,10 +164,22 @@ function resolve_prepared(
     univ :: Universe{P,V},
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
+    order = nothing, # version ordering
+    diagnose :: Bool = false,
 ) where {P,V}
     sat = SAT(univ)
-    # the instance is single-use, so don't bother restoring its state
-    try resolve(sat, prob.reqs; by, restore=false)
+    try
+        # the instance is single-use, so don't bother restoring its state. an
+        # unsatisfiable resolve adds no clause anyway — it stops at the
+        # feasibility check, which only assumes — so the instance a diagnosis
+        # gets is the one the query posed, whichever way this is asked
+        sol = resolve(sat, prob.reqs; by, restore=false)
+        sol === nothing || return sol
+        diagnose || return nothing
+        # every question a diagnosis asks is a relaxation of `prob`, which this
+        # universe was filtered for and so answers (Theorem C): the artifact
+        # behind it is not needed and does not have to have been kept
+        return Diagnostics.diagnose(sat, prob, univ; by, order)
     finally
         finalize(sat)
     end
@@ -295,9 +316,11 @@ function resolve(
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
     order = nothing, # version ordering
+    diagnose :: Bool = true,
 ) where {P}
     info = pkg_info(deps, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob;
+        by, order, diagnose)
 end
 
 function resolve(
@@ -305,9 +328,11 @@ function resolve(
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
     order = nothing, # version ordering
+    diagnose :: Bool = true,
 ) where {P}
     info = pkg_info(data, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob;
+        by, order, diagnose)
 end
 
 # a caller-supplied info may be a reusable (or cached) T1 artifact, so this
@@ -317,8 +342,10 @@ function resolve(
     prob :: Problem{P};
     by   :: Function = identity, # package ordering
     order = nothing, # version ordering
+    diagnose :: Bool = true,
 ) where {P,V}
-    resolve_prepared(prepare_pkg_info(info, prob; order), prob; by)
+    resolve_prepared(prepare_pkg_info(info, prob; order), prob;
+        by, order, diagnose)
 end
 
 # convenience entry points: bare requirements, with the user constraints (if
@@ -329,29 +356,32 @@ resolve(
     reqs :: SetOrVec{P} = deps.packages;
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
-) where {P} = resolve(deps, Problem(reqs); by, order)
+    diagnose :: Bool = true,
+) where {P} = resolve(deps, Problem(reqs); by, order, diagnose)
 
 resolve(
     data :: AbstractDict{P,<:PkgData{P}},
     reqs :: SetOrVec{P} = keys(data);
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
-) where {P} = resolve(data, Problem(reqs); by, order)
+    diagnose :: Bool = true,
+) where {P} = resolve(data, Problem(reqs); by, order, diagnose)
 
 resolve(
     info :: AbstractDict{P,PkgInfo{P,V}},
     reqs :: SetOrVec{P} = keys(info);
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
-) where {P,V} = resolve(info, Problem(reqs); by, order)
+    diagnose :: Bool = true,
+) where {P,V} = resolve(info, Problem(reqs); by, order, diagnose)
 
 """
     issatisfiable(data, reqs) -> Bool
 
-Compute `resolve(data, reqs; ...) !== nothing` more efficiently, with a single
-satisfiability check instead of a full optimizing resolve. Use this when you
-want to know whether the requirements can be satisfied but don't need an
-actual solution.
+Compute `resolve(data, reqs; ..., diagnose = false) !== nothing` more
+efficiently, with a single satisfiability check instead of a full optimizing
+resolve. Use this when you want to know whether the requirements can be
+satisfied but don't need an actual solution — or a report on why not.
 
 `data` may be a `DepsProvider`, a dict of `PkgData`, a dict of `PkgInfo`, or a
 `SAT` instance, and a `Problem` may be passed in place of the requirements and

@@ -94,7 +94,7 @@ end
 function resolves(reqs::Vector{UUID}; julia::VersionSpec)
     prob = make_problem(reqs; julia)
     info = Resolver.pkg_info(reg, prob)
-    verdict = Resolver.resolve(info, prob) !== nothing
+    verdict = Resolver.resolve(info, prob; diagnose = false) !== nothing
     # this is exactly what `issatisfiable` answers on its own, so it must agree
     # with the descent's verdict here -- on real registry data, with the Julia
     # bound and the admission kinds in force
@@ -305,8 +305,10 @@ end
             prob = Resolver.Problem(reqs;
                 prerelease = prerelease_exclusion(allow_pre))
             old = bake(data, prob) # the versions deleted, as the provider used to
-            @test Resolver.resolve(data, prob) == Resolver.resolve(old, reqs)
-            @test Resolver.resolve(info, prob) == Resolver.resolve(old, reqs)
+            @test Resolver.resolve(data, prob; diagnose = false) ==
+                  Resolver.resolve(old, reqs; diagnose = false)
+            @test Resolver.resolve(info, prob; diagnose = false) ==
+                  Resolver.resolve(old, reqs; diagnose = false)
         end
 
         # and it is not inert: every Wine_jll in the registry is a prerelease, so
@@ -401,11 +403,13 @@ end
         for pre in ((;), (; prerelease = prerelease_exclusion(no_pre)))
             old = Resolver.Problem(reqs; yanked, pre...)
             new = Resolver.Problem(reqs; pre...)
-            @test Resolver.resolve(reg, new) == Resolver.resolve(kept, old)
-            @test Resolver.resolve(info, new) == Resolver.resolve(kept, old)
+            @test Resolver.resolve(reg, new; diagnose = false) ==
+                  Resolver.resolve(kept, old; diagnose = false)
+            @test Resolver.resolve(info, new; diagnose = false) ==
+                  Resolver.resolve(kept, old; diagnose = false)
             order = u -> (<)
-            @test Resolver.resolve(info, new; order) ==
-                  Resolver.resolve(kept, old; order)
+            @test Resolver.resolve(info, new; order, diagnose = false) ==
+                  Resolver.resolve(kept, old; order, diagnose = false)
         end
 
         # end to end: libsodium_jll's newest registered version is yanked, so
@@ -557,7 +561,7 @@ end
         end
         # and a bound no Julia satisfies is unsatisfiable, not silently widened
         @test isnothing(Resolver.resolve(info,
-            make_problem(reqs; julia = VersionSpec("99"))))
+            make_problem(reqs; julia = VersionSpec("99")); diagnose = false))
         @test !Resolver.issatisfiable(info,
             make_problem(reqs; julia = VersionSpec("99")))
     end
@@ -662,5 +666,32 @@ end
         @test !isnothing(tilde)
         @test tilde[STATISTICS] ∈ bundled_versions(VersionSpec("1.10"))[STATISTICS]
         @test tilde[JULIA_UUID] ∈ VersionSpec("1.10")
+    end
+
+    # An unsatisfiable project gets a report rather than a verdict: which
+    # requirements cannot be satisfied, which constraint is responsible, and
+    # what to change. The exit status is unchanged -- nonzero, which is what
+    # `resolve_versions` reads as "no solution".
+    @testset "an unsatisfiable project gets a report" begin
+        err = IOBuffer()
+        @test isnothing(resolve_versions("LinearAlgebra = \"99\"";
+            deps = ["LinearAlgebra" => LINEAR_ALGEBRA], err))
+        msg = String(take!(err))
+        @test occursin("Unsatisfiable", msg)
+        @test occursin("1 conflict", msg)
+        # the requirement, the package your bound emptied, and the imperative —
+        # by name, since a uuid is not what the reader knows the package as
+        @test occursin("cannot be satisfied", msg)
+        @test occursin("you require LinearAlgebra", msg)
+        @test occursin("no version of LinearAlgebra is available", msg)
+        # (the report is filled to a line width, so the clause may be broken)
+        @test occursin("are excluded by", msg)
+        @test occursin("Verified fixes:", msg)
+        @test occursin("relax your compat on LinearAlgebra", msg)
+        @test !occursin(string(LINEAR_ALGEBRA), msg)
+        # and nothing of how the answer was found
+        for word in ("class", "literal", "assum", "clause", "solver")
+            @test !occursin(word, msg)
+        end
     end
 end

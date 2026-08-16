@@ -14,8 +14,8 @@
 using Resolver.UnsatCores
 
 # instance plumbing, from Resolver proper: none of this is part of the API above
-using Resolver: PkgData, pkg_info, SAT, finalize, is_satisfiable,
-    is_unsatisfiable, sat_new_variable, sat_add, sat_add_var, with_temp_clauses
+using Resolver: PkgData, pkg_info, SAT, finalize, sat_solve,
+    sat_new_variable, sat_add, sat_add_var, with_temp_clauses
 
 # white-box, deliberately: the single-repair pair is unexported — the enumeration
 # is built out of it — and reaching past the export list is how its contracts get
@@ -373,7 +373,7 @@ end
             x = sat_new_variable(sat)
             sat_add_var(sat, x); sat_add(sat)
             sat_add_var(sat, -x); sat_add(sat)
-            @test is_unsatisfiable(sat)
+            @test !sat_solve(sat)
             @test isempty(sat_mus(sat, L))
             @test isempty(sat_disjoint_muses(sat, L))
             @test isempty(sat_mcses(sat, L))
@@ -383,7 +383,7 @@ end
             @test sat_mcs(sat, L) === nothing
         end
         # popping the contradiction restores the instance
-        @test is_satisfiable(sat)
+        @test sat_solve(sat)
         @test sat_mus(sat, L) == first(sat_disjoint_muses(sat, L))
     finally
         finalize(sat)

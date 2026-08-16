@@ -39,7 +39,7 @@ function resolve_core(
                 sat_assume(sat, p,
                     @inbounds ranking(ord, p, nclasses(sat.info[p]))[1])
             end
-            is_satisfiable(sat) && extract_solution!(sat, sol)
+            sat_solve(sat) && extract_solution!(sat, sol)
         end
         for p in layer
             optimize_version!(sat, sol, p, ord)

@@ -20,7 +20,7 @@
 using Resolver: PkgData, PkgInfo, Problem, SAT, PicoSAT, pkg_info, nclasses,
     rank_pkg_info, prepare_pkg_info, filter_pkg_info!, deactivations,
     mark_installable!, mark_necessary!, class_ranking, finalize,
-    sat_assume, sat_pop, is_satisfiable
+    sat_assume, sat_pop, is_satisfiable, sat_solve
 
 const NODEPS = Dict{Symbol,Vector{Symbol}}()
 const NOCOMP = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
@@ -357,12 +357,12 @@ end
         @test is_satisfiable(sat, [:P])
         # ... and :P's first class, the only thing that needs it, is out
         sat_assume(sat, :P, 1)
-        @test !is_satisfiable(sat)
+        @test !sat_solve(sat)
         # reactivate, and the cone is right there: choosing :P's first class
         # forces :R in
         sat_pop(sat)
         sat_assume(sat, :P, 1)
-        @test is_satisfiable(sat)
+        @test sat_solve(sat)
         @test PicoSAT.deref(sat.pico, sat.vars[:R]) > 0
     finally
         finalize(sat)

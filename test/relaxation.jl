@@ -15,7 +15,7 @@
 # bounds, pins, an admission kind, and every combination of the three.
 
 using Resolver: PkgData, Problem, SAT, PicoSAT, pkg_info, nclasses,
-    rank_pkg_info, finalize, is_satisfiable, is_excluded,
+    rank_pkg_info, finalize, is_satisfiable, sat_solve, is_excluded,
     exclusion_kinds, class_exclusions, installed_lit, forbidden_lit,
     with_classes_relaxed, with_temp_clauses, sat_assume_var, sat_push
 
@@ -76,7 +76,7 @@ function verdicts(sat::SAT{P}, assume::AbstractVector{Int} = Int[]) where {P}
         for l in lits
             sat_assume_var(sat, l)
         end
-        push!(out, is_satisfiable(sat))
+        push!(out, sat_solve(sat))
     end
     ask()
     for p in sort!(collect(keys(sat.vars)))

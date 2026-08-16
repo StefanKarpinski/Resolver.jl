@@ -441,12 +441,19 @@ installed_lit(sat::SAT{P}, p::P) where {P} = sat.vars[p]
 # assuming it says what that clause says, for one solve
 forbidden_lit(sat::SAT{P}, p::P, c::Integer) where {P} = -(sat.vars[p] + c)
 
-is_satisfiable(sat::SAT) =
+# Solve, consuming whatever has been assumed since the last solve — the caller
+# staged the question with `sat_assume`, this answers it. With nothing staged
+# the question is the instance itself, which installing no package satisfies,
+# so a caller asking about *requirements* wants `is_satisfiable(sat, reqs)`:
+# requirements are assumed, not asserted, and an unstaged solve reports them
+# satisfiable however unsatisfiable they are.
+sat_solve(sat::SAT) =
     PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
 
+# Are `reqs` jointly installable? The complete question, staged and answered.
 function is_satisfiable(sat::SAT{P}, reqs::Union{P,SetOrVec{P}}) where {P}
     sat_assume(sat, reqs)
-    is_satisfiable(sat)
+    sat_solve(sat)
 end
 
 const is_unsatisfiable = !is_satisfiable
@@ -484,7 +491,7 @@ end
 
 function solution(sat::SAT{P,V}) where {P,V}
     sol = Dict{P,V}()
-    is_satisfiable(sat) || return sol
+    sat_solve(sat) || return sol
     each_solution_index(sat) do p, i
         sol[p] = sat.info[p].versions[sat.reps[p][i]]
     end
@@ -580,7 +587,7 @@ function optimize_version!(
     # at all — one solve replaces the whole improvement loop
     if sol[p] != best
         sat_assume(sat, p, best)
-        if is_satisfiable(sat)
+        if sat_solve(sat)
             extract_solution!(sat, sol)
             @assert sol[p] == best
         end
@@ -597,7 +604,7 @@ function optimize_version!(
                 sat_add(sat, p, c)
             end
             sat_add(sat)
-            is_satisfiable(sat) || return false
+            sat_solve(sat) || return false
             extract_solution!(sat, sol)
             return true
         end

@@ -155,7 +155,7 @@ revivals(univ, rp) = count(
                 for rp in sample_relaxations(info, univ, Q, 4)
                     R = rp.prob
                     # Theorem C: reuse answers R exactly as a fresh resolve does
-                    @test resolve(sat, rp) == resolve(info, R)
+                    @test resolve(sat, rp) == resolve(info, R; diagnose = false)
                     # Theorem B, the sharper statement: nothing a fresh filter
                     # for R keeps is missing from the universe filtered for Q
                     @test isempty(setdiff(classkeys(prepare_pkg_info(info, R)), have))
@@ -371,7 +371,8 @@ end
         Q = Problem(reqs; compat, pin, test = (p, v) -> v == bad)
         univ = prepare_pkg_info(info, Q)
         rels = sample_relaxations(info, univ, Q, 8)
-        want = Dict(i => resolve(info, rp.prob) for (i, rp) in enumerate(rels))
+        want = Dict(i => resolve(info, rp.prob; diagnose = false)
+                    for (i, rp) in enumerate(rels))
         sat = SAT(univ)
         try
             # `verdicts` (relaxation.jl) is the instance's answers to every

@@ -1,6 +1,6 @@
 module Resolver
 
-export resolve, issatisfiable, Problem
+export resolve, issatisfiable, Problem, Diagnosis
 
 include("BitKernels.jl")
 include("DepsProvider.jl")
@@ -13,5 +13,7 @@ include("SAT.jl")
 include("UnsatCores.jl")
 using .UnsatCores # the API; not re-exported from Resolver
 include("Resolve.jl")
+include("Diagnostics.jl")
+using .Diagnostics: Diagnosis # `resolve`'s answer; nothing else re-exported
 
 end # module

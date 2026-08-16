@@ -309,7 +309,7 @@ end
     # the two kinds empty that one class between them
     univ = rank_pkg_info(info, prob)
     @test univ.reps[:A] == [0]
-    @test resolve(data, prob) === nothing
+    @test resolve(data, prob; diagnose = false) === nothing
 
     # relaxing either kind reactivates the same single class — there is no
     # "half" of this constraint set to be unsound about, and nothing that could

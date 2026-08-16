@@ -94,6 +94,7 @@ import Pkg.Registry: JULIA_UUID, PkgEntry, RegistryInstance,    init_package_inf
 import Pkg.Types: Context, EnvCache, Manifest, PackageEntry, get_last_stdlibs, write_manifest
 import Pkg.Versions: VersionSpec, semver_spec
 import Resolver: Resolver, DepsProvider, PkgData, Problem, resolve
+import Resolver.Diagnostics
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS
 import TOML
 
@@ -526,9 +527,46 @@ function yanked_notes()
     return notes
 end
 
-if sol === nothing
-    notes = yanked_notes()
-    error(join(["Unsatisfiable"; notes], "\n"))
+# A diagnosis is plain data, keyed by whatever the universe is keyed by -- here
+# uuids, which is not what the reader knows the packages as. So rebuild it over
+# names before printing it: exactly the "render your own report" the type is
+# shaped for, minus the rendering, since the default one is what we want.
+
+function named(d::Resolver.Diagnosis, name::Function)
+    Resolver.Diagnosis(
+        [Diagnostics.Conflict{String,VersionNumber}(
+            String[name(p) for p in c.reqs],
+            Diagnostics.Fact[named(f, name) for f in c.chain])
+         for c in d.conflicts],
+        [Diagnostics.Fix{String,VersionNumber}(
+            [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
+            Dict{String,VersionNumber}(
+                name(p) => v for (p, v) in fix.solution))
+         for fix in d.fixes])
+end
+
+named(f::Diagnostics.Requirement, name::Function) =
+    Diagnostics.Requirement(name(f.pkg))
+named(f::Diagnostics.Availability, name::Function) =
+    Diagnostics.Availability(name(f.pkg), f.members, f.excluded)
+
+function package_name(uuid::UUID)
+    uuid == JULIA_UUID && return "julia"
+    haskey(workspace_pkgs, uuid) && return workspace_pkgs[uuid][1]
+    haskey(packages, uuid) && return first(packages[uuid]).name
+    for (_, this_stdlibs) in STDLIBS_BY_VERSION
+        haskey(this_stdlibs, uuid) && return this_stdlibs[uuid].name
+    end
+    haskey(UNREGISTERED_STDLIBS, uuid) && return UNREGISTERED_STDLIBS[uuid].name
+    return string(uuid)
+end
+
+if sol isa Resolver.Diagnosis
+    show(stderr, MIME("text/plain"), named(sol, package_name))
+    for note in yanked_notes()
+        println(stderr, note)
+    end
+    exit(1)
 end
 
 ## output results

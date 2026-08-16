@@ -96,8 +96,11 @@ end
 # `resolve(data, prob)` must agree with the unconstrained resolve of the baked
 # data — including when both are `nothing`
 function test_bake_equivalence(data, prob; by::Function = identity)
-    sol = resolve(data, prob; by)
-    @test sol == resolve(bake(data, prob), prob.reqs; by)
+    # the answer, not the report an unsatisfiable resolve otherwise returns:
+    # the two sides here agree on the verdict, and a report about constraints
+    # only one side has is a different thing to compare (see test/diagnostics.jl)
+    sol = resolve(data, prob; by, diagnose = false)
+    @test sol == resolve(bake(data, prob), prob.reqs; by, diagnose = false)
     # and the cheap verdict agrees with the descent's, constraints and all
     @test issatisfiable(data, prob) == (sol !== nothing)
 end
@@ -278,7 +281,7 @@ end
         :B => PkgData([:v2, :v1], nodeps, nocomp),
     )
     prob = Problem([:A]; compat = Dict(:B => Symbol[]))
-    @test resolve(data, prob) === nothing
+    @test resolve(data, prob; diagnose = false) === nothing
     test_bake_equivalence(data, prob)
 
     # an excluded version must not dominate a non-excluded one: B@v2 has no
@@ -416,7 +419,8 @@ end
     # ... and it is the same problem as the equivalent compat bounds
     both = Problem([:A]; compat = Dict(:A => [:v1], :B => [:v1]))
     @test exclusion_masks(info, both) == excl
-    @test resolve(data, prob) == resolve(data, both)
+    @test resolve(data, prob; diagnose = false) ==
+          resolve(data, both; diagnose = false)
     test_bake_equivalence(data, prob)
 
     # kinds are indistinguishable once they have emptied a class -- and here
@@ -477,14 +481,14 @@ end
                 as_compat = Problem(reqs;
                     compat = mergewith!(∩, Dict(compat), Dict(allowed)), pin)
                 for by in (identity, p -> -p)
-                    @test resolve(data, as_kind; by) ==
-                          resolve(data, as_compat; by)
+                    @test resolve(data, as_kind; by, diagnose = false) ==
+                          resolve(data, as_compat; by, diagnose = false)
                     test_bake_equivalence(data, as_kind; by)
                 end
                 # ... and the ordering stays orthogonal to it
                 order = p -> (u, v) -> u > v
-                @test resolve(data, as_kind; order) ==
-                      resolve(bake(data, as_kind), reqs; order)
+                @test resolve(data, as_kind; order, diagnose = false) ==
+                      resolve(bake(data, as_kind), reqs; order, diagnose = false)
             end
         end
     end
@@ -525,7 +529,8 @@ end
     lo = p -> -Int(first(string(p))) # reverse alphabetical priority
     for (data, prob) in cases, by in (identity, lo)
         baked = bake(data, prob)
-        @test resolve(data, prob; by) == ref_resolve(baked, prob.reqs; by)
+        @test resolve(data, prob; by, diagnose = false) ==
+              ref_resolve(baked, prob.reqs; by)
         test_bake_equivalence(data, prob; by)
     end
     for (data, prob) in cases
@@ -620,7 +625,7 @@ end
             while true
                 fill_data!(m, n, deps, comp, data)
                 test_bake_equivalence(data, prob)
-                sol = resolve(data, prob)
+                sol = resolve(data, prob; diagnose = false)
                 sol === nothing && break
                 p = rand(collect(keys(sol)))
                 v = sol[p]

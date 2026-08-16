@@ -110,7 +110,7 @@ end
 @testset "resolve: single solution" begin
     for ex in tiny_data.examples
         data, reqs = ex.data, ex.reqs
-        sol = resolve(data, reqs)
+        sol = resolve(data, reqs; diagnose = false)
         # a package => version dict covering the requirements, or nothing
         if sol !== nothing
             @test sol isa Dict{Int,Int}
@@ -118,8 +118,8 @@ end
         end
         # deterministic: resolving again, and with the requirements supplied
         # in a different order, yields the same solution
-        @test resolve(data, reqs) == sol
-        @test resolve(data, reverse(collect(reqs))) == sol
+        @test resolve(data, reqs; diagnose = false) == sol
+        @test resolve(data, reverse(collect(reqs)); diagnose = false) == sol
     end
 end
 
@@ -135,7 +135,8 @@ end
             fill_data!(m, n, deps, comp, data)
             for reqs_bits = 0:2^m-1, by in (hi, lo)
                 reqs = collect(make_reqs(reqs_bits))
-                @test resolve(data, reqs; by) == ref_resolve(data, reqs; by)
+                @test resolve(data, reqs; by, diagnose = false) ==
+                      ref_resolve(data, reqs; by)
             end
         end
     end
@@ -180,8 +181,10 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses
             @test all(back[p].members == info[p].members for p in keys(info))
             @test all(nclasses(back[p]) == nclasses(info[p]) for p in keys(info))
             for prob in probs
-                @test resolve(back, prob) == resolve(info, prob)
-                @test resolve(back, prob) == resolve(data, prob)
+                @test resolve(back, prob; diagnose = false) ==
+                      resolve(info, prob; diagnose = false)
+                @test resolve(back, prob; diagnose = false) ==
+                      resolve(data, prob; diagnose = false)
             end
             rm(path)
         end
@@ -224,8 +227,8 @@ end
         :A => PkgData(Symbol[], nodeps, nocomp),
         :B => PkgData([:v1], nodeps, nocomp),
     )
-    @test resolve(data, [:A]) === nothing
-    @test resolve(data, [:A, :B]) === nothing
+    @test resolve(data, [:A]; diagnose = false) === nothing
+    @test resolve(data, [:A, :B]; diagnose = false) === nothing
     @test resolve(data, [:B]) == Dict(:B => :v1)
     @test isempty(resolve(data, Symbol[]))
     @test !haskey(pkg_info(data, [:A]), :A)
@@ -237,7 +240,7 @@ end
         :A => PkgData([:v1], Dict(:v1 => [:B]), nocomp),
         :B => PkgData(Symbol[], nodeps, nocomp),
     )
-    @test resolve(data, [:A]) === nothing
+    @test resolve(data, [:A]; diagnose = false) === nothing
     @test isempty(resolve(data, Symbol[]))
     @test isempty(pkg_info(data, [:A]))
     @test isempty(pkg_info(data, Symbol[]))
@@ -253,7 +256,7 @@ end
         :B => PkgData(Symbol[], nodeps, nocomp),
         :C => PkgData([:v1], Dict(:v1 => [:A]), nocomp),
     )
-    @test resolve(data, [:C]) === nothing
+    @test resolve(data, [:C]; diagnose = false) === nothing
     @test isempty(pkg_info(data, [:C]))
     test_resolver(data, [:C])
 
@@ -281,7 +284,7 @@ end
         :B => PkgData(Symbol[], nodeps, nocomp),
     )
     info = pkg_info(data, [:A]; filter = false)
-    @test resolve(info, [:A]) === nothing
+    @test resolve(info, [:A]; diagnose = false) === nothing
     data = Dict(
         :A => PkgData([:v2, :v1], Dict(:v2 => [:B]), nocomp),
         :B => PkgData(Symbol[], nodeps, nocomp),
@@ -299,6 +302,7 @@ include("classes.jl")
 include("class_space.jl")
 include("relaxation.jl")
 include("relaxation_stable.jl")
+include("diagnostics.jl")
 include("ordering.jl")
 
 @testset "registry resolve" begin
@@ -325,7 +329,7 @@ include("ordering.jl")
     # pin at a version that doesn't exist
     missing_pin = Resolver.Problem(["JSON"]; pin = Dict("JSON" => v"0.0.0"))
     @test !issatisfiable(rp, missing_pin)
-    @test resolve(rp, missing_pin) === nothing
+    @test resolve(rp, missing_pin; diagnose = false) === nothing
 end
 
 @testset "yanked packages" begin

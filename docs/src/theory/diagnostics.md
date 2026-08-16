@@ -1,0 +1,143 @@
+# Diagnosing an unsatisfiable resolve
+
+When the requirements cannot be satisfied there is more to say than that
+they cannot: which of them cannot hold together, why, and what a user
+could change so that they can. Every one of those answers comes from
+putting further questions to the universe the resolve was run against and
+the instance it failed on, and this page states what licenses them.
+
+Everything here is short, and two earlier results are why. Class space (see
+[the layered page](layered.md#Preprocessing-for-caching)) makes a user
+constraint's whole effect on the universe the set of classes it empties, so
+there is exactly one kind of thing to relax and it is already a unit fact of
+the instance. Relaxation-stable filtering (see the
+[previous page](relaxation.md)) makes the filtered universe answer for every
+relaxation, so there is exactly one universe to ask.
+
+## Relaxations
+
+Write ``Q`` for the failed query, ``\mathrm{reqs}_Q`` for its requirements,
+and ``E_Q`` for the set of classes its constraints empty — a class ``Q``
+admits no member of cannot be selected, and that is the whole of what a
+constraint does to the universe.
+
+A **withdrawal** from ``Q`` is a pair ``(A, B)`` with
+``A \subseteq \mathrm{reqs}_Q`` and ``B \subseteq E_Q``: it requires only
+``A`` and leaves empty only ``B``, so the requirements outside ``A`` are
+dropped and the classes in ``E_Q \setminus B`` are given back. A *solution*
+of it is one covering ``A`` and using no class in ``B``.
+
+!!! note "Observation (a withdrawal is an assumption subset)"
+    In the instance built for ``Q``, "``p`` is installed" is the unit
+    assumption ``p`` and "class ``c`` of ``p`` is empty" is the unit
+    assumption ``\lnot p@c``. Every other clause — dependency edges,
+    registry conflicts, the structural at-most-one — is the registry's and
+    is the same for every withdrawal. So ``(A, B)`` is satisfiable exactly
+    when the instance is satisfiable assuming
+    ``\{p : p \in A\} \cup \{\lnot p@c : p@c \in B\}``, and asking is one
+    solve.
+
+Every relaxation ``R \le Q`` in the previous page's sense is a withdrawal,
+but not conversely: nothing says some set of constraints picks out an
+arbitrary ``B \subseteq E_Q``. The questions below stay on the relaxations,
+and the reason is the *package* granularity they are asked at.
+
+## A package at a time
+
+A report is written a package at a time — what has become of a package's
+versions is one thing to say, and which of its constraints to relax is one
+thing to do — so the questions are asked a package at a time too, over one
+variable per package implying all of that package's assumptions
+(`with_emptied_packages`). Defining such a variable is a conservative
+extension: it occurs positively only in what is assumed, so every model of
+the instance extends to one of the instance with the definition.
+
+That granularity is also what keeps the questions on relaxations rather than
+on withdrawals at large, and it is worth saying why, because a per-class
+question would not.
+
+!!! note "Observation (a package's worth of ``E_Q`` is a constraint's worth)"
+    Let ``S`` be a set of packages and ``E_S`` the classes of ``E_Q``
+    belonging to them. Then the withdrawal ``(A, E_Q \setminus E_S)`` is the
+    relaxation ``R \le Q`` that requires ``A`` and lifts, for every
+    ``p \in S``, every kind of ``Q`` that excludes any version of ``p``.
+
+    *Proof.* After lifting those kinds nothing of ``Q`` forbids any version
+    of a ``p \in S``, so every class of every such ``p`` has an admitted
+    member and none of them is empty. The kinds are lifted for ``S`` alone,
+    so every other package's classes are emptied exactly as ``Q`` emptied
+    them. Hence ``R``'s empty set is ``E_Q \setminus E_S``, and its
+    requirements are ``A``. ∎
+
+The diagnosis only ever assumes a subset of the requirement literals and a
+subset of the package literals, so every question it puts to the solver is
+of that form — a genuine point of the previous page's lattice. A question
+about *one* class of a package would not be: no constraint need pick out one
+of a package's empty classes and leave its siblings empty.
+
+## The filtered universe answers for every relaxation
+
+The instance a resolve fails on is built over a universe that has been
+filtered — reachability and redundancy elimination, run with ``Q``'s
+constraints in force. The questions above are asked of that instance, so
+what has to hold is that filtering for ``Q`` did not delete anything a
+relaxation of ``Q`` would need.
+
+That is Theorem C of the previous page: ``\mathrm{Lay}(F_Q(D), R) =
+\mathrm{Lay}(D, R)`` for every ``R \le Q``, which is stronger than the
+satisfiability statement the questions here need and covers it. The filter
+is run under the rules that make it true, so nothing further is required of
+a diagnosis than to stay below ``Q`` in the order — which, by the
+observation above, everything it asks does.
+
+What the proof turns on is a design decision worth naming here too: a class
+the query empties is **deactivated, not deleted**. It keeps its row, its
+column in every partner, and its dependency columns, which is exactly what
+a question about giving it back needs to find still there.
+
+## Versions come from a resolve, not from the instance
+
+Theorem C is about the answer, but the questions above only ask about
+satisfiability. A report also says what the user would *get*, and that is
+the layered answer, which depends on the version ordering.
+
+The ordering a universe is laid out in belongs to the query. A class ranks
+where its best admitted member ranks (`class_ranking`), and a relaxation
+admits more members — so under a relaxation a class can compete at a better
+version than it competes at here. A version read off the failed instance is
+therefore a version of the query's universe, not of the relaxation's.
+
+So no version in a report is ever read off the failed instance. A fix is
+turned back into the withdrawal it is — the requirements it names dropped,
+the constraint kinds it names lifted for the packages they name — and
+[`relax`](@ref Resolver.relax) derives the relaxed problem from the query
+and computes what the relaxation makes of the classes the query laid out:
+the member each class stands for, and the order those members rank the
+classes in. Resolving that on the failed resolve's own instance runs the
+descent again under the relaxation's ranking, and the solution that comes
+back is what the report shows. It is the solution the user will get,
+because Theorem C says it is what a resolve of the relaxed problem from
+scratch would give.
+
+That a fix resolves at all is that theorem plus monotonicity: relaxing a
+constraint admits at least the version the repair asked for, and admitting
+more versions only adds models.
+
+## Attribution needs no license
+
+Why a class is empty is not a question about the instance. A constraint
+forbids versions, a class is empty when every member of it is forbidden,
+and which kinds forbid which version is read straight off the `Problem`
+(`exclusion_kinds`, `class_exclusions`). No solver is involved, so nothing
+has to be preserved by anything:
+
+```math
+\mathrm{reps}[p][c] = 0
+\quad\Longleftrightarrow\quad
+\text{every member of class } c \text{ of } p \text{ has an excluding kind.}
+```
+
+This is the one place a report can name a *user's* constraint at all —
+registry compatibility is in the conflict matrices, where it is
+indistinguishable from any other conflict — and it is why a story can say
+which bound emptied a class without asking anything.

@@ -21,6 +21,7 @@ makedocs(
             "The layered solution & filtering" => "theory/layered.md",
             "Pareto front optimality" => "theory/front.md",
             "Relaxation-stable filtering" => "theory/relaxation.md",
+            "Diagnosing an unsatisfiable resolve" => "theory/diagnostics.md",
         ],
     ],
 )

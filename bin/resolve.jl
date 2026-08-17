@@ -805,7 +805,7 @@ else # generate a manifest
         # getting extension info requires downloading packages
         # this half-installs packages, so don't pollute the real depot
         push!(DEPOT_PATH, mktempdir())
-        ctx = Context(; env)
+        ctx = Context(; env, julia_version)
         download_source(ctx)
         # metaprogram around Pkg internal API differences for
         # injecting extension information into the manifest

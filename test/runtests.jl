@@ -304,6 +304,7 @@ include("relaxation.jl")
 include("relaxation_stable.jl")
 include("diagnostics.jl")
 include("ordering.jl")
+include("weakdeps.jl")
 
 @testset "registry resolve" begin
     rp = registry.provider()

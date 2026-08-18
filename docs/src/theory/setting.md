@@ -35,6 +35,45 @@ A **solution** is a partial assignment ``s`` of versions to a support set
 
 Write ``\mathrm{rank}_s(p)`` for the rank of ``s(p)``.
 
+### Weak dependencies
+
+Dependencies and conflicts are separate pieces of data above, and nothing
+requires a conflict to be backed by a dependency edge. That separation is
+what a **weak dependency** is.
+
+A package that declares a weak dependency on ``q`` — Julia's `[weakdeps]`,
+carrying an extension that loads when ``q`` happens to be present — is saying
+two things at once, and only one of them is a dependency:
+
+- it does *not* need ``q`` installed, so there is no edge
+  ``q \in \mathrm{deps}(p, v)``, and clause 2 above never forces ``q`` in;
+- but if ``q`` *is* installed, the extension will load against it, so the
+  declared bound must hold: ``p@v`` conflicts with every ``q@w`` outside it,
+  exactly as for a strong dependency.
+
+So a weak dependency is a compat entry with no edge behind it, and the model
+needs no new machinery for it: conflict freedom is a condition on *assigned*
+versions, so a bound on an unassigned ``q`` is vacuous, and a bound on an
+assigned one binds. "When both are present, they must agree" is what clause 3
+already says.
+
+Two consequences worth stating, since both are relied on elsewhere:
+
+**The resolver core never learns which bounds are weak.** Only a provider
+distinguishes them, by merging a version's weak compat into its compat while
+adding nothing to its deps. `bin/Registries.jl` is the production instance of
+this translation.
+
+**The dependency closure may be walked using strong edges alone.** A package
+is installed only if it is required or some installed package depends on it,
+so the closure of ``\mathrm{reqs}`` under ``\mathrm{deps}`` already contains
+every package that can appear in any solution. A weak target that nothing
+pulls in cannot be assigned, and by the previous paragraph its bound is then
+vacuous — so omitting it from the universe changes no answer. Pkg's own graph
+walk *does* follow weak edges, which is why its closures are larger than ours
+on the same requirements; the difference is in how much of the registry each
+walk carries, not in what either concludes.
+
 ## Tightness and pruning
 
 The **closure** ``C(s)`` of a solution is the least set containing

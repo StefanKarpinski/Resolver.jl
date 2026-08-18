@@ -19,7 +19,7 @@
 # there is no oracle for English.
 
 using Resolver: Problem, PkgData, PkgInfo, SAT, Diagnosis, pkg_info, relax,
-    prepare_pkg_info, finalize, is_satisfiable, installed_lit, forbidden_lit,
+    prepare_pkg_info, finalize, sat_solve, installed_lit, forbidden_lit,
     with_classes_relaxed, class_exclusions, exclusion_kinds, nclasses,
     sat_assume_var
 using Resolver.Diagnostics: Diagnostics, Conflict, Fix, Action, Fact,
@@ -59,7 +59,7 @@ function sat_assuming(sat::SAT, lits)
     for l in lits
         sat_assume_var(sat, l)
     end
-    return is_satisfiable(sat)
+    return sat_solve(sat)
 end
 
 # the withdrawal a set of actions asks for, read off here rather than taken

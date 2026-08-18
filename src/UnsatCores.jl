@@ -20,7 +20,7 @@ module UnsatCores
 
 export sat_mus, sat_disjoint_muses, sat_mcses
 
-using ..Resolver: SAT, PicoSAT, sat_assume_var, is_satisfiable
+using ..Resolver: SAT, PicoSAT, sat_assume_var, sat_solve
 
 # Everything not exported is internal to this module: the solve wrapper, the
 # failed-assumption reader, the shrink pass, and the grow pass with the
@@ -73,7 +73,7 @@ function sat_solve_assuming(sat::SAT, lits)
     for l in lits
         sat_assume_var(sat, l)
     end
-    return is_satisfiable(sat)
+    return sat_solve(sat)
 end
 
 # the failed-assumption core of the solve that just returned unsatisfiable, as
@@ -95,7 +95,7 @@ any single literal dropped). `lits` must be distinct.
 
 Returns an empty vector when `sat` is satisfiable assuming all of `lits` — and
 also when `sat` is unsatisfiable on its own, since the empty set is then itself
-the minimal unsatisfiable subset. Call `is_satisfiable(sat)` to tell the two
+the minimal unsatisfiable subset. Call `sat_solve(sat)` to tell the two
 apart if the instance is not known to be satisfiable without assumptions.
 
 Deletion is attempted in the order given, so the result is biased away from the

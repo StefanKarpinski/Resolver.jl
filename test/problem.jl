@@ -9,7 +9,7 @@
 
 using Resolver: Problem, PkgData, PkgInfo, pkg_info, SAT, PicoSAT,
     exclusion_masks, is_excluded, finalize, sat_assume, sat_pop,
-    is_satisfiable, rank_pkg_info, prepare_pkg_info, Constraint, relax
+    is_satisfiable, sat_solve, rank_pkg_info, prepare_pkg_info, Constraint, relax
 
 # delete the versions `prob` excludes from each package's data, old-style
 function bake(
@@ -378,14 +378,14 @@ end
         @test length(sat.deact) == 2
         # :A's :v2 class is emptied by compat, :B's :v1 class by the pin
         sat_assume(sat, :A, 1)
-        @test !is_satisfiable(sat)
+        @test !sat_solve(sat)
         sat_assume(sat, :B, 2)
-        @test !is_satisfiable(sat)
+        @test !sat_solve(sat)
         # both jointly feasible once the frame is popped
         sat_pop(sat)
         sat_assume(sat, :A, 1)
         sat_assume(sat, :B, 2)
-        @test is_satisfiable(sat)
+        @test sat_solve(sat)
     finally
         finalize(sat)
     end

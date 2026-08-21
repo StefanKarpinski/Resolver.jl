@@ -405,7 +405,7 @@ end
 
         Conflict 1: R cannot be satisfied.
           • you require R
-          • P: p2 is excluded by your compat
+          • P: p2 excluded by your compat
           Fix it by any one of:
             1. relax your compat on P
                → allows: P p2, R r1
@@ -651,8 +651,8 @@ end
 
         Conflict 1: A cannot be satisfied.
           • you require A
-          • no version of B is available: w3 is excluded by your compat and your pin,
-            w2 by your compat, w1 by your pin
+          • no version of B is available: w3 excluded by your compat and your pin, w2
+            by your compat, w1 by your pin
           Fix it by any one of:
             1. relax your compat on B
                → allows: A v1, B w2

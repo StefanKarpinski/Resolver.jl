@@ -304,7 +304,7 @@ end
 # An availability fact as one line. The fact runs over the package's whole
 # version list, so every maximal run of versions excluded by the same kinds is a
 # range and gets one clause, and the runs it admits are simply not mentioned;
-# the clauses after the first drop the verb, as an English list of them would.
+# the clauses after the first drop "excluded", as an English list of them would.
 function availability_phrase(f::Availability)
     members, excluded = f.members, f.excluded
     clauses = String[]
@@ -315,10 +315,9 @@ function availability_phrase(f::Availability)
             j += 1
         end
         if !isempty(excluded[i])
-            verb = i == j ? "is" : "are"
             by = kinds_phrase(excluded[i])
             push!(clauses, isempty(clauses) ?
-                "$(range_phrase(members, i, j)) $verb excluded by $by" :
+                "$(range_phrase(members, i, j)) excluded by $by" :
                 "$(range_phrase(members, i, j)) by $by")
         end
         i = j + 1

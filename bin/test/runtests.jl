@@ -713,7 +713,7 @@ end
         @test occursin("you require LinearAlgebra", msg)
         @test occursin("no version of LinearAlgebra is available", msg)
         # (the report is filled to a line width, so the clause may be broken)
-        @test occursin("are excluded by", msg)
+        @test occursin("excluded by", msg)
         @test occursin("Fix it by any one of:", msg)
         @test occursin("relax your compat on LinearAlgebra", msg)
         @test !occursin(string(LINEAR_ALGEBRA), msg)

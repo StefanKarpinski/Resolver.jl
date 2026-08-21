@@ -144,7 +144,28 @@ anything. A MUS of it therefore exists, and it must contain ``c_i``, since
 withdrawing ``c_i`` as well is withdrawing all of ``M``, which does repair.
 And it contains no other literal of ``M``, because those were withdrawn
 before the question was asked. So the ``i``-th conflict gets a story about
-its own choice and nobody else's — one MUS extraction per coordinate.
+its own choice and nobody else's.
+
+A MUS is not the whole story, though, and the gap is one a report cannot
+afford. Several requirements can fail for one and the same reason; one of
+them is already enough to make that reason unsatisfiable, so a MUS names one
+of them — arbitrarily — and drops the rest as redundant. They are not
+redundant to the user: they are required, they are broken, and this
+conflict's fix is what rescues them. A report that omitted them would let
+someone relax the bound and never learn what else had been failing.
+
+So each requirement the MUS left out is asked one further question: is it
+satisfiable on its own, against the packages as this coordinate finds them
+(that is, with every *other* coordinate's choice already made)? If it is
+not, then it is one this coordinate rescues — because applying ``c_i`` on
+top is applying all of ``M``, and ``M`` repairs the query, so every
+requirement of the query is satisfiable afterwards. Each such requirement
+brings its own MUS, and the chain is the union.
+
+The chain is therefore a union of minimal conflicts rather than a single
+one: unsatisfiable, with every fact in it belonging to at least one of them,
+but not with every fact load-bearing for the whole. A conflict whose
+requirements fail *together* is the special case where there is only one.
 
 ### What the menus leave out
 

@@ -208,11 +208,17 @@ end
     Resolver.Diagnostics.Conflict{P,V}(reqs, chain, fixes)
 
 One independent choice the query leaves the user: the requirements `reqs`,
-which cannot hold together, `chain`, a short sequence of
+which cannot all hold, `chain`, a short sequence of
 [`Fact`](@ref Resolver.Diagnostics.Fact)s about the packages that says why, and
 `fixes`, the menu of [`Fix`](@ref Resolver.Diagnostics.Fix)es that settle it.
-Every fact in the chain is load-bearing — take any one of them away and the
-rest of the conflict dissolves.
+
+`reqs` is every requirement this conflict's fixes rescue, which need not be one
+thing that fails: requirements can fail together, or each on its own for a
+reason they have in common, and a conflict gathers both. So the chain is
+unsatisfiable and nothing in it is a passenger — every fact belongs to some
+minimal reason the requirements cannot hold — but it is a *union* of those
+reasons rather than a single one, and taking a fact away need not dissolve all
+of them.
 
 The conflicts of a [`Diagnosis`](@ref) are independent in that each has to be
 fixed and any fix of one goes with any fix of another. Their *stories* may well
@@ -380,8 +386,12 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis{P,V}) where {P,V}
     for (k, c) in enumerate(d.conflicts)
         println(io)
         subject = list_phrase(String[string(p) for p in c.reqs])
-        println(io, "Conflict $k: $subject cannot be satisfied",
-            length(c.reqs) > 1 ? " together." : ".")
+        # a conflict can gather requirements that fail together and
+        # requirements that each fail on their own, so what is said of them is
+        # what is true of both: the conjunction is what cannot hold
+        println(io, "Conflict $k: $subject cannot ",
+            length(c.reqs) == 1 ? "be satisfied." :
+            length(c.reqs) == 2 ? "both be satisfied." : "all be satisfied.")
         for f in c.chain
             f isa Requirement ?
                 println(io, "  • you require $(f.pkg)") :
@@ -425,6 +435,12 @@ end
 # and what a truncated enumeration costs is not a fix but a claim: the smallest
 # of the repairs found still factor into conflicts and their menus still repair
 # the query, but the report can no longer say that nothing else would.
+#
+# Truncation is deliberately reported as `:some` — the same thing a family that
+# is not a product reports — because the sentence is the same either way: there
+# are repairs the menus do not offer. It says less than it could, in a case that
+# is rare enough (the ceiling is an order of magnitude above what was measured)
+# that a third sentence would be a shape of report nobody has read.
 const MAX_REPAIRS = 256
 
 # The literals a diagnosis assumes, read back as what they say about the
@@ -497,12 +513,28 @@ function with_emptied_packages(body::Function, sat::SAT{P}, vm::VarMap{P}) where
     end
 end
 
-# The story of one conflict: the smallest set of the query's own facts that is
-# still unsatisfiable, drawn from the ones it is asked about. Deletion is
+# The story of one conflict: the query's own facts that this conflict's fix is
+# what rescues, and why each of them needs rescuing.
+#
+# The smallest unsatisfiable set of them is where it starts. Deletion is
 # attempted in the order given, so putting the requirements first drops the ones
-# the story does not need and keeps the facts the user can act on. The answer is
-# a subsequence of what was asked, so the requirements come back in the
-# problem's requirement order and the emptied packages in package order.
+# that set does not need and keeps the facts the user can act on.
+#
+# But "does not need" is the trap. Several requirements can fail for one and the
+# same reason, and one of them is enough to make that reason a conflict — so the
+# smallest set names one of them, arbitrarily, and the others go unmentioned
+# though this conflict's fix is what rescues them too. A user would fix the
+# bound and never learn the rest had been broken. So every requirement the set
+# left out is asked whether it can be satisfied on its own against the packages
+# as this conflict finds them; the ones that cannot are exactly the ones this
+# fix rescues, since the fixes of the other conflicts are already in force here
+# and carrying this one out satisfies the query. Each of those brings its own
+# smallest explanation, and the chain is all of them at once.
+#
+# One `sat_mus` call per requirement, which answers both questions: empty when
+# the requirement is satisfiable, and its explanation when it is not. What comes
+# back is a subsequence of what was asked, so the requirements are in the
+# problem's requirement order and the packages in package order.
 function conflict_story(
     sat     :: SAT{P,V},
     prob    :: Problem{P},
@@ -510,11 +542,17 @@ function conflict_story(
     emptied :: Dict{Int,P}, # per package literal, the package
     cands   :: Vector{Int},
 ) where {P,V}
-    mus = sat_mus(sat, cands)
+    named = Set{Int}(sat_mus(sat, cands))
+    pkgs = Int[l for l in cands if haskey(emptied, l)]
+    for l in cands
+        (haskey(emptied, l) || l in named) && continue
+        union!(named, sat_mus(sat, Int[l; pkgs]))
+    end
     reqs = P[]
     chain = Fact[]
     avails = Fact[]
-    for l in mus
+    for l in cands
+        l in named || continue
         p = get(emptied, l, nothing)
         if p === nothing
             q, _ = decode(vm, l)

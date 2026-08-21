@@ -69,6 +69,39 @@ function sat_assuming(sat::SAT, lits)
     return sat_solve(sat)
 end
 
+# Does the chain consist of exactly the reasons its requirements fail? Every
+# subset of its facts is put to the solver, the minimal unsatisfiable ones are
+# read off, and what has to hold is that between them they use every fact.
+#
+# This is the general form of "every fact is load-bearing", which is the case
+# where the only minimal subset is the whole chain — a conflict whose
+# requirements fail *together*. A conflict that gathers requirements failing
+# separately for a shared reason has one minimal subset per requirement, and
+# the test is that the chain is their union: no fact left over, and none of the
+# requirements dropped for being redundant.
+#
+# Brute force, which is what makes it an oracle; chains are a handful of facts,
+# and one too big to enumerate falls back to the unsatisfiability check alone.
+function chain_is_covered(sat::SAT, c::Conflict)
+    n = length(c.chain)
+    n ≤ 8 || return !sat_assuming(sat, conflict_literals(sat, c))
+    lits = [fact_literals(sat, f) for f in c.chain]
+    subset(bits) = reduce(vcat,
+        (lits[i] for i = 1:n if !iszero(bits & (1 << (i-1)))); init = Int[])
+    unsat = Bool[!sat_assuming(sat, subset(bits)) for bits = 0:(1 << n) - 1]
+    covered = falses(n)
+    for bits = 0:(1 << n) - 1
+        unsat[bits+1] || continue
+        # minimal iff dropping any one of its facts makes it satisfiable
+        any(i -> !iszero(bits & (1 << (i-1))) && unsat[(bits ⊻ (1 << (i-1)))+1],
+            1:n) && continue
+        for i = 1:n
+            iszero(bits & (1 << (i-1))) || (covered[i] = true)
+        end
+    end
+    return all(covered)
+end
+
 # the withdrawal a set of actions asks for, read off here rather than taken
 # from the diagnosis: `:drop` names a requirement to stop requiring, every
 # other kind names a constraint of the problem and a package to lift it for
@@ -161,12 +194,9 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
                 end
                 # the chain is a conflict: assuming just these facts fails
                 @test !sat_assuming(sat, lits)
-                # ... and every fact in it is load-bearing: take one away and
-                # what is left of the conflict is satisfiable
-                for f in c.chain
-                    drop = Set(fact_literals(sat, f))
-                    @test sat_assuming(sat, filter(∉(drop), lits))
-                end
+                # ... and nothing in it is a passenger: the minimal conflicts
+                # among its own facts cover every one of them
+                @test chain_is_covered(sat, c)
             end
         end
 
@@ -266,6 +296,16 @@ const shared_dep = Dict(
     :A => PkgData([:v1], Dict(:v1 => [:C]), COMP_NONE),
     :B => PkgData([:v1], Dict(:v1 => [:C]), COMP_NONE),
     :C => PkgData([:c1], DEPS_NONE, COMP_NONE),
+)
+
+# two requirements that each need :C at its newer version, and a bound of their
+# own holding each of them at the version that does. One bound on :C is what
+# breaks both, and relaxing it is the one cheapest fix — so the conflict has to
+# name both requirements, not whichever of them the search reached first
+const shared_bound = Dict(
+    :A => PkgData([:a2, :a1], Dict(:a2 => [:C]), Dict(:a2 => Dict(:C => [:c2]))),
+    :B => PkgData([:b2, :b1], Dict(:b2 => [:C]), Dict(:b2 => Dict(:C => [:c2]))),
+    :C => PkgData([:c2, :c1], DEPS_NONE, COMP_NONE),
 )
 
 # four requirements whose disagreements form a path — :C with :B, :B with :A,
@@ -438,6 +478,41 @@ end
     @test occursin("Other, larger solutions exist.", report)
 end
 
+@testset "diagnosis: one reason, every requirement it breaks" begin
+    # :A and :B are each unsatisfiable on their own, for the same reason, and
+    # one action rescues both. Either of them alone is enough to make that
+    # reason a conflict, so a story that stopped at the smallest one would name
+    # one of them and leave the other out of the report altogether — the user
+    # would relax the bound on :C and never learn the other had been broken
+    prob = Problem([:A, :B];
+        compat = Dict(:A => [:a2], :B => [:b2], :C => [:c1]))
+    d = check_diagnosis(shared_bound, prob)
+    c = only(d.conflicts)
+    # both requirements, each with the bound that pins it to the version that
+    # needs :C, and the bound on :C they share
+    @test c.reqs == [:A, :B]
+    @test c.chain == Fact[Requirement(:A), Requirement(:B),
+        Availability{Symbol,Symbol}(:A, [:a2, :a1], [Symbol[], [:compat]]),
+        Availability{Symbol,Symbol}(:B, [:b2, :b1], [Symbol[], [:compat]]),
+        Availability{Symbol,Symbol}(:C, [:c2, :c1], [[:compat], Symbol[]])]
+    @test [fix.actions for fix in c.fixes] == [[Action(:compat, :C)]]
+    @test only(c.fixes).solution == Dict(:A => :a2, :B => :b2, :C => :c2)
+    # ... and neither of them can be satisfied on its own, which is what makes
+    # leaving one out a lie rather than a shortening
+    for p in (:A, :B)
+        @test resolve(shared_bound, Problem([p];
+            compat = Dict(p => [Symbol("$(lowercase(string(p)))2")],
+                          :C => [:c1])); diagnose = false) === nothing
+    end
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("you require A", report)
+    @test occursin("you require B", report)
+    @test occursin("A and B cannot both be satisfied", report)
+    @test occursin("The only fix: relax your compat on C", report)
+    # the witness names both of them too
+    @test occursin("→ allows: A a2, B b2, C c2", report)
+end
+
 @testset "diagnosis: cheapest repairs that are not a product" begin
     # The disagreements form a path :C–:B–:A–:D, so the cheapest repairs are
     # {A,B}, {A,C} and {B,D} — three of them, which is not a product of menu
@@ -547,7 +622,7 @@ end
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 2 conflicts, every one of which has to be fixed:
 
-        Conflict 1: A and B cannot be satisfied together.
+        Conflict 1: A and B cannot both be satisfied.
           • you require A
           • you require B
           Fix it by any one of:
@@ -556,7 +631,7 @@ end
             2. drop requirement B
                → allows: A v1
 
-        Conflict 2: E and F cannot be satisfied together.
+        Conflict 2: E and F cannot both be satisfied.
           • you require E
           • you require F
           Fix it by any one of:

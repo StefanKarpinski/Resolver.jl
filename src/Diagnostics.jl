@@ -28,7 +28,7 @@ export Diagnosis, Conflict, Fix, Action, Fact, Requirement, Availability,
 
 using ..Resolver: SAT, Problem, Universe, relax, resolve, installed_lit,
     with_temp_clauses, with_classes_relaxed, sat_new_variable, sat_add_var,
-    sat_add, exclusion_kinds, class_exclusions
+    sat_add, sat_solve, exclusion_kinds, class_exclusions
 using ..UnsatCores: sat_mus, sat_mcses
 
 # What an unsatisfiable resolve says, and how it is found.
@@ -426,14 +426,17 @@ end
 
 ## the diagnosis
 
-# How many repairs to enumerate before settling for the ones already found.
-# What is enumerated over is the requirements and the packages this query left
-# short, of which there are few — 6 to 36 repairs on the registry queries this
-# was measured on — so it is a ceiling rather than the usual stopping point.
+# How many of the smallest repairs to enumerate before settling for the ones
+# already found. What is enumerated over is the requirements and the packages
+# this query left short, of which there are few, and only the smallest repairs
+# among them — a median of 2 of them on the registry queries this was measured
+# on — so it is a ceiling rather than the usual stopping point.
 # Independent conflicts multiply, though, so there can be exponentially many,
-# and what a truncated enumeration costs is not a fix but a claim: the smallest
-# of the repairs found still factor into conflicts and their menus still repair
-# the query, but the report can no longer say that nothing else would.
+# and what a truncated enumeration costs is not a fix but a claim: the repairs
+# found still factor into conflicts and their menus still repair the query, but
+# the report can no longer say that nothing else would, nor ask whether
+# anything larger exists — that question is put by ruling every one of the
+# smallest repairs out, so it needs all of them.
 #
 # Truncation is deliberately reported as `:some` — the same thing a family that
 # is not a product reports — because the sentence is the same either way: there
@@ -441,6 +444,116 @@ end
 # is rare enough (the ceiling is an order of magnitude above what was measured)
 # that a third sentence would be a shape of report nobody has read.
 const MAX_REPAIRS = 256
+
+# "At most `k` of `lits` hold", as clauses over counting variables: Sinz's
+# sequential counter, where the variable for `(i, j)` says that at least `j` of
+# the first `i` literals hold. Nothing forces one of those variables down, only
+# up, so the last clause of each row — which refuses a literal once `k` are
+# already counted — is the whole of what is being asked, and any assignment with
+# `k` or fewer literals true extends to a model by counting honestly.
+#
+# The counter is built for the bound it is asked about rather than for the whole
+# range, so a small bound costs a small counter, and nothing is asked at all
+# when the bound leaves the literals alone. `counts` is the caller's own store
+# of counting variables, extended here when a bound needs more than it holds: a
+# variable outlives the frame that gave it meaning and the solver goes on
+# deciding it afterwards, so a search that raises the bound step by step hands
+# the same store back and leaves one counter behind rather than one per step.
+function add_at_most!(sat::SAT, lits::Vector{Int}, k::Int, counts::Vector{Int})
+    n = length(lits)
+    @assert k ≥ 1
+    k < n || return sat
+    while length(counts) < (n-1)*k
+        push!(counts, sat_new_variable(sat))
+    end
+    at(i, j) = counts[(i-1)*k + j]
+    function clause(ls::Int...)
+        for l in ls
+            sat_add_var(sat, l)
+        end
+        sat_add(sat)
+    end
+    clause(-lits[1], at(1, 1))
+    for j = 2:k
+        clause(-at(1, j))
+    end
+    for i = 2:n-1
+        clause(-lits[i], at(i, 1))
+        clause(-at(i-1, 1), at(i, 1))
+        for j = 2:k
+            clause(-lits[i], -at(i-1, j-1), at(i, j))
+            clause(-at(i-1, j), at(i, j))
+        end
+        clause(-lits[i], -at(i-1, k))
+    end
+    clause(-lits[n], -at(n-1, k))
+    return sat
+end
+
+# Every repair of the smallest size there is, and nothing larger paid for along
+# the way.
+#
+# A repair is the candidates a model leaves unsatisfied, so "no repair larger
+# than `k`" is a bound on how many of them a model may leave — one at-most-`k`
+# constraint over their negations. Under that bound the instance is satisfiable
+# exactly when a repair that small exists, and its minimal correction sets are
+# exactly the query's own repairs of that size or less: a model the bound
+# admits is one the query admits, and anything smaller than a repair the bound
+# admits fits under the bound too, so minimal here and minimal at large are the
+# same thing.
+#
+# So the size of the smallest repair is found by raising the bound until the
+# instance gives way, and enumerating at that bound enumerates exactly the
+# smallest repairs. The sizes seen in practice are 2 to 6, so counting up costs
+# a handful of solves and keeps every counter as small as the answer; a bound of
+# `k-1` that failed is what makes `k` the smallest size, so what comes back at
+# `k` is all of the smallest repairs, not merely some.
+#
+# Dropping every candidate is a repair, so the last bound worth trying is the
+# one that forbids nothing — which is the plain enumeration, and also what a
+# query with no candidate to give up at all wants.
+function smallest_repairs(sat::SAT, cands::Vector{Int}, limit::Int)
+    relaxed = Int[-l for l in cands]
+    counts = Int[]
+    for k = 1:length(cands)-1
+        repairs = with_temp_clauses(sat) do
+            add_at_most!(sat, relaxed, k, counts)
+            sat_solve(sat) ? sat_mcses(sat, cands; limit) : nothing
+        end
+        repairs === nothing || return repairs
+    end
+    return sat_mcses(sat, cands; limit)
+end
+
+# Whether the query has a repair that costs more than the smallest ones do.
+#
+# `smallest` has to be all of the smallest repairs. Ask for a model that leaves
+# a candidate of each of them satisfied: one clause per repair, the plain
+# disjunction of its candidates, since the repair a model witnesses is the
+# candidates it does *not* satisfy. What that model witnesses is then a repair
+# holding none of the smallest ones, so the minimal repair inside it is none of
+# them either, and — all of the smallest being here — is a larger one.
+#
+# There is such a model whenever a larger repair exists: the model witnessing
+# that repair leaves exactly it unsatisfied, and no smallest repair sits inside
+# it, since one minimal repair never contains another. So the answer is exact.
+#
+# Each candidate says something the query asked for — this package installed,
+# this package's emptied classes left empty — so the candidates a model
+# satisfies are the ones the repair it witnesses does not touch, and ruling a
+# repair out is a disjunction of that repair's own literals rather than of their
+# negations.
+function larger_repair_exists(sat::SAT, smallest::Vector{Vector{Int}})
+    with_temp_clauses(sat) do
+        for repair in smallest
+            for l in repair
+                sat_add_var(sat, l)
+            end
+            sat_add(sat)
+        end
+        sat_solve(sat)
+    end
+end
 
 # The literals a diagnosis assumes, read back as what they say about the
 # universe. Package variables are laid out in blocks — the package itself, then
@@ -750,20 +863,17 @@ function diagnose(
             # relaxing a constraint to dropping a dependency, and so that a
             # story drops the requirements it does not need
             cands = [req_lits; pkg_lits]
-            repairs = sat_mcses(sat, cands; limit = MAX_REPAIRS)
-            # the instance is satisfiable with nothing assumed — install
-            # nothing — so there is always a repair to be found
-            @assert !isempty(repairs)
-            smallest = minimum(length, repairs)
-            cheapest = filter(r -> length(r) == smallest, repairs)
+            cheapest = smallest_repairs(sat, cands, MAX_REPAIRS)
             choices, whole = factor_repairs(cheapest)
             order_choices!(choices, cands, length(req_lits))
             # what the menus leave out: nothing when they reach every cheapest
-            # repair and no repair costs more than the cheapest. A truncated
-            # enumeration has both left to prove and repairs it never saw
+            # repair and no repair costs more than the cheapest. The second is
+            # a question to put to the instance, and putting it takes every
+            # cheapest repair, so a truncated enumeration has to leave both
+            # unanswered
             others =
-                length(repairs) ≥ MAX_REPAIRS || !whole ? :some :
-                length(cheapest) < length(repairs) ? :larger : :none
+                length(cheapest) ≥ MAX_REPAIRS || !whole ? :some :
+                larger_repair_exists(sat, cheapest) ? :larger : :none
             # A story explains one choice by settling all the others: drop the
             # rest of one repair from what may be assumed, and what is left is
             # still unsatisfiable, minimally so once this choice is made. The

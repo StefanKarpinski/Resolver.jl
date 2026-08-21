@@ -22,6 +22,11 @@
 # checked against a third oracle, in the cases small enough for it: every subset
 # of a pool of actions, resolved from the artifact, reduced to the minimal ones.
 #
+# Half of what `others` says is that no repair costs more than the ones on the
+# menus, which the diagnosis decides with a single solve against a bounded
+# enumeration. That gets a fourth oracle: the whole family of repairs,
+# enumerated with no bound at all, judged by its sizes.
+#
 # What the report says is checked separately, against hand-built cases, since
 # there is no oracle for English.
 
@@ -31,6 +36,7 @@ using Resolver: Problem, PkgData, PkgInfo, SAT, Diagnosis, pkg_info, relax,
     sat_assume_var
 using Resolver.Diagnostics: Diagnostics, Conflict, Fix, Action, Fact,
     Requirement, Availability, unavailable, action_phrase
+using Resolver.UnsatCores: sat_mcses
 
 using Pkg.Versions: VersionSpec
 
@@ -147,6 +153,30 @@ function minimal_repairs(info, prob::Problem{P}, pool::Vector{Action{P}};
     return Set(r for r in repairs if !any(s -> s ⊊ r, repairs))
 end
 
+# How many repairs to enumerate for the oracle below before giving up on it.
+const REPAIR_LIMIT = 512
+
+# Every repair of `prob` there is, as sets of the literals a diagnosis assumes,
+# or `nothing` when there are too many to enumerate. The oracle for what a
+# report says it leaves out: the diagnosis decides whether anything costs more
+# than its menus do with a single solve, and this decides it by enumerating the
+# whole family and looking at the sizes.
+#
+# It asks the same questions of the same instance `diagnose` does, so it goes
+# through the same helpers — and, like `diagnose`, leaves the instance as it
+# found it.
+function all_repairs(sat::SAT{P}, prob::Problem{P}) where {P}
+    vm = Diagnostics.VarMap(sat)
+    req_lits = Int[installed_lit(sat, p) for p in unique(prob.reqs)
+                   if haskey(vm, p)]
+    repairs = with_classes_relaxed(sat) do
+        Diagnostics.with_emptied_packages(sat, vm) do pkg_lits, _
+            sat_mcses(sat, [req_lits; pkg_lits]; limit = REPAIR_LIMIT)
+        end
+    end
+    return length(repairs) < REPAIR_LIMIT ? repairs : nothing
+end
+
 # every property a `Diagnosis` of `prob` claims, checked against the instance
 # it was drawn from and against fresh resolves of the artifact. Returns the
 # diagnosis, or `nothing` when the problem is satisfiable after all
@@ -259,6 +289,21 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
                     order, by) !== nothing
             end
         end
+
+        ## what the menus leave out
+        #
+        # Half of what `others` says is that no repair of the query costs more
+        # than the ones the menus reach. The diagnosis decides that by asking
+        # the instance for a repair holding none of the cheapest ones; this
+        # decides it by enumerating every repair there is and comparing sizes.
+        # `:some` claims nothing either way — it is what a family the menus do
+        # not cover reports, whatever else is true of it
+        repairs = all_repairs(sat, prob)
+        if repairs !== nothing && !isempty(repairs)
+            larger = maximum(length, repairs) > minimum(length, repairs)
+            d.others === :none   && @test !larger
+            d.others === :larger && @test larger
+        end
     finally
         finalize(sat)
     end
@@ -306,6 +351,19 @@ const shared_bound = Dict(
     :A => PkgData([:a2, :a1], Dict(:a2 => [:C]), Dict(:a2 => Dict(:C => [:c2]))),
     :B => PkgData([:b2, :b1], Dict(:b2 => [:C]), Dict(:b2 => Dict(:C => [:c2]))),
     :C => PkgData([:c2, :c1], DEPS_NONE, COMP_NONE),
+)
+
+# :A and :B both need :C, and :E and :F disagree about :G. With a bound that
+# leaves :C nothing, settling the first conflict cheaply takes one action and
+# settling it any other way takes two — so the smallest repairs are a product of
+# two menus and there are repairs beyond them that cost more
+const larger_repair = Dict(
+    :A => PkgData([:v1], Dict(:v1 => [:C]), COMP_NONE),
+    :B => PkgData([:v1], Dict(:v1 => [:C]), COMP_NONE),
+    :C => PkgData([:c1], DEPS_NONE, COMP_NONE),
+    :E => PkgData([:v1], Dict(:v1 => [:G]), Dict(:v1 => Dict(:G => [:v1]))),
+    :F => PkgData([:v1], Dict(:v1 => [:G]), Dict(:v1 => Dict(:G => [:v2]))),
+    :G => PkgData([:v2, :v1], DEPS_NONE, COMP_NONE),
 )
 
 # four requirements whose disagreements form a path — :C with :B, :B with :A,
@@ -476,6 +534,48 @@ end
     report = sprint(show, MIME("text/plain"), d)
     @test occursin("The only fix: relax your compat on C", report)
     @test occursin("Other, larger solutions exist.", report)
+end
+
+@testset "diagnosis: a costlier repair is asked about, not counted" begin
+    # Two queries whose menus have the same shape — a product of choices
+    # reaching every smallest repair — and that differ only in whether anything
+    # beyond those repairs exists at all. The oracle for both is every minimal
+    # repair drawn from the actions involved, resolved from scratch.
+
+    # relaxing the bound on :C is the cheap way to settle :A with :B, and
+    # dropping both of them is the expensive one; :E with :F is settled by
+    # dropping either. So the smallest repairs are two, and two more cost three
+    # actions each
+    prob = Problem([:A, :B, :E, :F]; compat = Dict(:C => Symbol[]))
+    d = check_diagnosis(larger_repair, prob)
+    pool = [Action(:compat, :C), Action(:drop, :A), Action(:drop, :B),
+            Action(:drop, :E), Action(:drop, :F)]
+    repairs = minimal_repairs(pkg_info(larger_repair, prob), prob, pool)
+    @test repairs == Set(Set(r) for r in (
+        [Action(:compat, :C), Action(:drop, :E)],
+        [Action(:compat, :C), Action(:drop, :F)],
+        [Action(:drop, :A), Action(:drop, :B), Action(:drop, :E)],
+        [Action(:drop, :A), Action(:drop, :B), Action(:drop, :F)]))
+    smallest = minimum(length, repairs)
+    # the menus are exactly the smallest of them ...
+    @test fix_combinations(d) == Set(r for r in repairs if length(r) == smallest)
+    # ... and what they leave out costs more, which is what the report says
+    @test all(length(r) > smallest
+              for r in setdiff(repairs, fix_combinations(d)))
+    @test d.others === :larger
+    @test occursin("Other, larger solutions exist.",
+        sprint(show, MIME("text/plain"), d))
+
+    # the same shape of menu over a query where every repair is a smallest one:
+    # two conflicts with nothing to do but drop a requirement from each
+    prob = Problem([:A, :B, :E, :F])
+    d = check_diagnosis(two_conflicts, prob)
+    pool = [Action(:drop, p) for p in (:A, :B, :E, :F)]
+    repairs = minimal_repairs(pkg_info(two_conflicts, prob), prob, pool)
+    @test allequal(length(r) for r in repairs)
+    @test fix_combinations(d) == repairs
+    @test d.others === :none
+    @test !occursin("Other", sprint(show, MIME("text/plain"), d))
 end
 
 @testset "diagnosis: one reason, every requirement it breaks" begin

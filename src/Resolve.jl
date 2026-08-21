@@ -108,7 +108,7 @@ A `Diagnosis` says which requirements cannot hold together, why, and what the
 user could change to make them; `show`ing it prints the report. Pass
 `diagnose = false` for the bare `nothing` instead, which is what a caller that
 only wants the verdict should do — the diagnosis costs several more solves and
-one resolve per fix it offers.
+one resolve per fix on the menus it offers.
 
 A [`Problem`](@ref) additionally constrains the admissible versions with user
 constraints; the answer is the one the same universe with those versions

@@ -15,6 +15,13 @@
 #     withdrawal of demands from a `Problem`, which is not this file's to check
 #     (test/problem.jl and test/relaxation_stable.jl do).
 #
+# A report hands out one menu per conflict and lets the reader choose from each
+# independently, so the claim it rests on is that *every* combination of choices
+# repairs the query. The menus are small, so every check_diagnosis checks every
+# combination, from scratch. What the combinations leave out (`others`) is
+# checked against a third oracle, in the cases small enough for it: every subset
+# of a pool of actions, resolved from the artifact, reduced to the minimal ones.
+#
 # What the report says is checked separately, against hand-built cases, since
 # there is no oracle for English.
 
@@ -81,6 +88,32 @@ fix_resolve(info, prob::Problem{P}, actions::Vector{Action{P}};
             order = nothing, by = identity) where {P} =
     resolve(info, relax(prob, withdrawal(actions)...); order, by, diagnose = false)
 
+# one fix out of every conflict's menu, as the actions to carry out together
+# (over copies, so that a one-conflict choice does not hand back the fix's own
+# vector for `unique!` to work on)
+combined(choice) = unique!(reduce(vcat, (copy(fix.actions) for fix in choice)))
+
+# every way of choosing one fix per conflict, as a set of action sets — the
+# fixes of the whole query the report offers
+fix_combinations(d::Diagnosis) =
+    Set(Set(combined(choice))
+        for choice in Iterators.product((c.fixes for c in d.conflicts)...))
+
+# every minimal repair drawn from `pool`, the slow way: each subset of it
+# prepared and resolved from the artifact, and the ones that resolve reduced to
+# the minimal ones. The oracle for what a report's combinations leave out
+function minimal_repairs(info, prob::Problem{P}, pool::Vector{Action{P}};
+                         order = nothing, by = identity) where {P}
+    repairs = Set{Set{Action{P}}}()
+    for bits = 0:(1 << length(pool)) - 1
+        actions = Action{P}[pool[i] for i in eachindex(pool)
+                            if !iszero(bits & (1 << (i-1)))]
+        fix_resolve(info, prob, actions; order, by) === nothing && continue
+        push!(repairs, Set(actions))
+    end
+    return Set(r for r in repairs if !any(s -> s ⊊ r, repairs))
+end
+
 # every property a `Diagnosis` of `prob` claims, checked against the instance
 # it was drawn from and against fresh resolves of the artifact. Returns the
 # diagnosis, or `nothing` when the problem is satisfiable after all
@@ -108,15 +141,11 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
 
         ## conflicts
 
-        # independent: no requirement is in two of them, and each names only
-        # requirements
-        seen = Set{P}()
+        # each names requirements of the query, and its chain names them in
+        # order and then the packages
         for c in d.conflicts
             @test !isempty(c.reqs)
             @test c.reqs ⊆ prob.reqs
-            @test isempty(intersect(seen, c.reqs))
-            union!(seen, c.reqs)
-            # the chain names the conflict's requirements, then packages
             @test [f.pkg for f in c.chain if f isa Requirement] == c.reqs
             @test allunique(f.pkg for f in c.chain if f isa Availability)
         end
@@ -166,21 +195,39 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
 
         ## fixes
 
-        for fix in d.fixes
-            @test !isempty(fix.actions)
-            @test allunique(fix.actions)
-            # the central property: carrying the actions out resolves, and to
-            # exactly the solution the fix shows — the diagnosis answered the
-            # relaxation on the universe filtered for the query, this answers it
-            # on a universe filtered for the relaxation itself
-            @test fix_resolve(info, prob, fix.actions; order, by) == fix.solution
+        for (i, c) in enumerate(d.conflicts)
+            for fix in c.fixes
+                @test !isempty(fix.actions)
+                @test allunique(fix.actions)
+                # a fix shows what it gets you when the other conflicts are
+                # fixed the first way their menus offer, so that is what is
+                # resolved here — the diagnosis answered the relaxation on the
+                # universe filtered for the query, this answers it on a
+                # universe filtered for the relaxation itself
+                actions = combined([j == i ? fix : first(d.conflicts[j].fixes)
+                                    for j in eachindex(d.conflicts)])
+                @test fix_resolve(info, prob, actions; order, by) == fix.solution
+            end
+            # minimal and distinct: within one menu, no fix asks for a strict
+            # superset of another's actions, and no two ask for the same things
+            sets = [Set(fix.actions) for fix in c.fixes]
+            @test allunique(sets)
+            for a in sets, b in sets
+                @test !(b ⊊ a)
+            end
         end
-        # minimal and distinct: no fix asks for a strict superset of another's
-        # actions, and no two ask for the same things
-        sets = [Set(fix.actions) for fix in d.fixes]
-        @test allunique(sets)
-        for a in sets, b in sets
-            @test !(b ⊊ a)
+
+        ## every combination is a fix
+        #
+        # The claim the whole report rests on: the menus are independent, so
+        # any one fix from each of them repairs the query. Checked from
+        # scratch, exhaustively — the menus are small enough that they can be
+        menus = [c.fixes for c in d.conflicts]
+        if !isempty(menus) && prod(length, menus) ≤ 64
+            for choice in Iterators.product(menus...)
+                @test fix_resolve(info, prob, combined(choice);
+                    order, by) !== nothing
+            end
         end
     finally
         finalize(sat)
@@ -212,17 +259,51 @@ const needs_dep = Dict(
     :B => PkgData([:w3, :w2, :w1], DEPS_NONE, COMP_NONE),
 )
 
+# two requirements, one dependency between them: giving :C back fixes both at
+# once, and dropping both requirements is the only other way — a repair that
+# gives up strictly more, so a report that offers the first has left it out
+const shared_dep = Dict(
+    :A => PkgData([:v1], Dict(:v1 => [:C]), COMP_NONE),
+    :B => PkgData([:v1], Dict(:v1 => [:C]), COMP_NONE),
+    :C => PkgData([:c1], DEPS_NONE, COMP_NONE),
+)
+
+# four requirements whose disagreements form a path — :C with :B, :B with :A,
+# :A with :D — so the cheapest repairs are {A,B}, {A,C} and {B,D}, which is
+# three of them and therefore not a product of anything
+const conflict_path = Dict(
+    :A => PkgData([:v1], Dict(:v1 => [:P, :Q]),
+        Dict(:v1 => Dict(:P => [:p1], :Q => [:q1]))),
+    :B => PkgData([:v1], Dict(:v1 => [:P, :R]),
+        Dict(:v1 => Dict(:P => [:p2], :R => [:r1]))),
+    :C => PkgData([:v1], Dict(:v1 => [:R]), Dict(:v1 => Dict(:R => [:r2]))),
+    :D => PkgData([:v1], Dict(:v1 => [:Q]), Dict(:v1 => Dict(:Q => [:q2]))),
+    :P => PkgData([:p2, :p1], DEPS_NONE, COMP_NONE),
+    :Q => PkgData([:q2, :q1], DEPS_NONE, COMP_NONE),
+    :R => PkgData([:r2, :r1], DEPS_NONE, COMP_NONE),
+)
+
 @testset "diagnosis: independent conflicts come out separately" begin
-    d = check_diagnosis(two_conflicts, Problem([:A, :B, :E, :F]))
+    prob = Problem([:A, :B, :E, :F])
+    d = check_diagnosis(two_conflicts, prob)
     @test d isa Diagnosis
     @test length(d.conflicts) == 2
     @test Set(Set(c.reqs) for c in d.conflicts) ==
         Set([Set([:A, :B]), Set([:E, :F])])
-    # repairing needs one requirement out of each conflict: 2 × 2 ways
-    @test length(d.fixes) == 4
-    @test Set(Set(a.pkg for a in fix.actions) for fix in d.fixes) ==
-        Set(Set([x, y]) for x in (:A, :B), y in (:E, :F))
-    @test all(a.kind === :drop for fix in d.fixes for a in fix.actions)
+    # each conflict is settled by dropping one of its own requirements, and
+    # says nothing about the other's: 2 and 2, not 2 × 2
+    for c in d.conflicts
+        @test Set(Set(a.pkg for a in fix.actions) for fix in c.fixes) ==
+            Set(Set([p]) for p in c.reqs)
+        @test all(a.kind === :drop for fix in c.fixes for a in fix.actions)
+    end
+    # ... and one from each is a repair, in all 2 × 2 ways. There is nothing
+    # else: the combinations are exactly the minimal repairs, which is what
+    # entitles the report to say nothing further
+    pool = [Action(:drop, p) for p in (:A, :B, :E, :F)]
+    @test fix_combinations(d) ==
+        minimal_repairs(pkg_info(two_conflicts, prob), prob, pool)
+    @test d.others === :none
     # and the requirements the conflict does not need stay out of it
     d = check_diagnosis(two_conflicts, Problem([:A, :B, :C]))
     @test length(d.conflicts) == 1
@@ -259,10 +340,11 @@ end
     @test unavailable(c.chain[2])
     # the cheapest version to give back costs one kind, so that is the fix —
     # and not requiring :A is the other
-    @test [fix.actions for fix in d.fixes] ==
+    @test [fix.actions for fix in c.fixes] ==
         [[Action(:compat, :B)], [Action(:drop, :A)]]
-    @test d.fixes[1].solution == Dict(:A => :v1, :B => :w2)
-    @test isempty(d.fixes[2].solution)
+    @test c.fixes[1].solution == Dict(:A => :v1, :B => :w2)
+    @test isempty(c.fixes[2].solution)
+    @test d.others === :none
 end
 
 @testset "diagnosis: a package with a version left over" begin
@@ -279,16 +361,15 @@ end
     @test f.excluded == [[:compat], Symbol[]]
     @test !unavailable(f)
     @test sprint(show, MIME("text/plain"), d) == """
-        Unsatisfiable — 1 conflict, 2 fixes:
+        Unsatisfiable — 1 conflict:
 
         Conflict 1: R cannot be satisfied.
           • you require R
           • P: p2 is excluded by your compat
-
-        Verified fixes:
-          1. relax your compat on P
-             → allows: P p2, R r1
-          2. drop requirement R
+          Fix it by any one of:
+            1. relax your compat on P
+               → allows: P p2, R r1
+            2. drop requirement R
         """
 end
 
@@ -301,9 +382,10 @@ end
     @test f.excluded == [[:prerelease], [:prerelease], [:yanked]]
     # one kind is enough to give the package back, and the best version it
     # would give back costs the prerelease one
-    @test [fix.actions for fix in d.fixes] ==
+    fixes = only(d.conflicts).fixes
+    @test [fix.actions for fix in fixes] ==
         [[Action(:prerelease, :B)], [Action(:drop, :A)]]
-    @test d.fixes[1].solution == Dict(:A => :v1, :B => :w3)
+    @test fixes[1].solution == Dict(:A => :v1, :B => :w3)
     @test occursin("allow prerelease versions of B",
         sprint(show, MIME("text/plain"), d))
 end
@@ -320,10 +402,62 @@ end
         Availability{Symbol,Symbol}(:A, Symbol[], Vector{Symbol}[])]
     # nothing this query does is what took it away, so dropping it is all that
     # could help — and :B still resolves once it is gone
-    @test [fix.actions for fix in d.fixes] == [[Action(:drop, :A)]]
-    @test only(d.fixes).solution == Dict(:B => :v1)
-    @test occursin("no version of A is available",
-        sprint(show, MIME("text/plain"), d))
+    fixes = only(d.conflicts).fixes
+    @test [fix.actions for fix in fixes] == [[Action(:drop, :A)]]
+    @test only(fixes).solution == Dict(:B => :v1)
+    @test d.others === :none
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("no version of A is available", report)
+    # one thing to do reads as one thing to do, not as a menu of one
+    @test occursin("The only fix: drop requirement A", report)
+    @test !occursin("any one of", report)
+end
+
+@testset "diagnosis: a repair that gives up more is not on the menu" begin
+    # :A and :B both need :C, and the bound leaves :C with nothing. Giving :C
+    # back is the one cheapest repair; dropping both requirements is a repair
+    # too, and gives up strictly more, so the report says there is more
+    prob = Problem([:A, :B]; compat = Dict(:C => Symbol[]))
+    d = check_diagnosis(shared_dep, prob)
+    c = only(d.conflicts)
+    @test [fix.actions for fix in c.fixes] == [[Action(:compat, :C)]]
+    @test only(c.fixes).solution == Dict(:A => :v1, :B => :v1, :C => :c1)
+    # the oracle: the minimal repairs are those two, and the report offers the
+    # smaller of them and nothing else
+    info = pkg_info(shared_dep, prob)
+    pool = [Action(:compat, :C), Action(:drop, :A), Action(:drop, :B)]
+    repairs = minimal_repairs(info, prob, pool)
+    @test repairs == Set([Set([Action(:compat, :C)]),
+                          Set([Action(:drop, :A), Action(:drop, :B)])])
+    @test fix_combinations(d) == Set([Set([Action(:compat, :C)])])
+    # ... and every repair it left out is bigger than the ones it offers
+    @test all(length(r) > 1 for r in setdiff(repairs, fix_combinations(d)))
+    @test d.others === :larger
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("The only fix: relax your compat on C", report)
+    @test occursin("Other, larger solutions exist.", report)
+end
+
+@testset "diagnosis: cheapest repairs that are not a product" begin
+    # The disagreements form a path :C–:B–:A–:D, so the cheapest repairs are
+    # {A,B}, {A,C} and {B,D} — three of them, which is not a product of menu
+    # sizes. The report offers the largest rectangle in that family and says
+    # there is more of it
+    prob = Problem([:A, :B, :C, :D])
+    d = check_diagnosis(conflict_path, prob)
+    info = pkg_info(conflict_path, prob)
+    pool = [Action(:drop, p) for p in (:A, :B, :C, :D)]
+    repairs = minimal_repairs(info, prob, pool)
+    @test repairs == Set(Set([Action(:drop, x), Action(:drop, y)])
+                         for (x, y) in ((:A, :B), (:A, :C), (:B, :D)))
+    # what the report offers is a proper part of that, all of it cheapest
+    offered = fix_combinations(d)
+    @test offered ⊊ repairs
+    @test length(offered) == 2
+    @test d.others === :some
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("Other solutions exist.", report)
+    @test !occursin("larger", report)
 end
 
 @testset "diagnosis: the instance is left as it was found" begin
@@ -406,47 +540,50 @@ end
 ## rendering
 
 @testset "diagnosis: the report" begin
+    # each conflict carries its own menu, and the menus do not multiply: two
+    # menus of two, not one of four. There is no closing sentence — every
+    # combination of them is a repair and there are no others
     d = resolve(two_conflicts, Problem([:A, :B, :E, :F]))
     @test sprint(show, MIME("text/plain"), d) == """
-        Unsatisfiable — 2 conflicts, 4 fixes:
+        Unsatisfiable — 2 conflicts, every one of which has to be fixed:
 
         Conflict 1: A and B cannot be satisfied together.
           • you require A
           • you require B
+          Fix it by any one of:
+            1. drop requirement A
+               → allows: B v1
+            2. drop requirement B
+               → allows: A v1
 
         Conflict 2: E and F cannot be satisfied together.
           • you require E
           • you require F
-
-        Verified fixes:
-          1. drop requirement B and drop requirement F
-             → allows: A v1, E v1
-          2. drop requirement B and drop requirement E
-             → allows: A v1, F v1
-          3. drop requirement A and drop requirement F
-             → allows: B v1, E v1
-          4. drop requirement A and drop requirement E
-             → allows: B v1, F v1
+          Fix it by any one of:
+            1. drop requirement E
+               → allows: F v1
+            2. drop requirement F
+               → allows: E v1
         """
-    # the one-line summary
+    # the one-line summary counts the ways of repairing the whole query
     @test sprint(show, d) == "Diagnosis: 2 conflicts, 4 fixes"
 
     # every kind that excludes a version is named, and a long line is filled
     d = resolve(needs_dep,
         Problem([:A]; compat = Dict(:B => [:w1]), pin = Dict(:B => :w2)))
     @test sprint(show, MIME("text/plain"), d) == """
-        Unsatisfiable — 1 conflict, 2 fixes:
+        Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
           • you require A
           • no version of B is available: w3 is excluded by your compat and your pin,
             w2 by your compat, w1 by your pin
-
-        Verified fixes:
-          1. relax your compat on B
-             → allows: A v1, B w2
-          2. drop requirement A
+          Fix it by any one of:
+            1. relax your compat on B
+               → allows: A v1, B w2
+            2. drop requirement A
         """
+    @test sprint(show, d) == "Diagnosis: 1 conflict, 2 fixes"
 end
 
 @testset "diagnosis: the report says nothing about how it was found" begin
@@ -492,9 +629,10 @@ end
                 diag = check_diagnosis(data, prob; by)
                 diag === nothing && continue
                 diagnoses += 1
-                fixes += length(diag.fixes)
+                fixes += sum(c -> length(c.fixes), diag.conflicts)
                 relaxations += count(a.kind !== :drop
-                    for fix in diag.fixes for a in fix.actions)
+                    for c in diag.conflicts for fix in c.fixes
+                    for a in fix.actions)
             end
         end
     end
@@ -540,10 +678,10 @@ end
     @test any(f isa Availability && f.pkg == "PrettyTables" && unavailable(f)
               for f in c.chain)
     # relaxing either bound is a fix, and so is not requiring DataFrames
-    sets = Set(Set(fix.actions) for fix in d.fixes)
+    sets = Set(Set(fix.actions) for fix in c.fixes)
     @test Set([Action(:compat, "PrettyTables")]) ∈ sets
     @test Set([Action(:drop, "DataFrames")]) ∈ sets
-    for fix in d.fixes
+    for fix in c.fixes
         fix.actions == [Action(:compat, "PrettyTables")] || continue
         @test fix.solution["DataFrames"] ∈ VersionSpec("1")
         @test haskey(fix.solution, "PrettyTables")

@@ -95,6 +95,72 @@ the query empties is **deactivated, not deleted**. It keeps its row, its
 column in every partner, and its dependency columns, which is exactly what
 a question about giving it back needs to find still there.
 
+## Conflicts are the coordinates of the repairs
+
+A report hands out one menu per conflict and invites the reader to choose
+from each of them independently. What that claims is that *every*
+combination of choices repairs the query, and it is not something checked
+after the fact: it is how the conflicts are found in the first place.
+
+Write ``F`` for the minimal correction sets of the assumptions above — every
+set of them whose withdrawal is satisfiable and no proper subset of which is
+(`sat_mcses`) — and ``F_{\min} \subseteq F`` for the ones of smallest size.
+A member of ``F_{\min}`` gives up as few of the user's own facts as any
+repair of the query can.
+
+!!! note "Observation (a family that counts right is a product)"
+    Let ``C_1, \dots, C_k`` partition the literals ``F_{\min}`` uses, and
+    suppose every ``M \in F_{\min}`` contains exactly one literal of each
+    ``C_i``, and that ``|F_{\min}| = \prod_i |C_i|``. Then
+    ``F_{\min} = C_1 \times \dots \times C_k``.
+
+    *Proof.* Sending each ``M`` to the tuple of its literals is well defined
+    by the first hypothesis and injective because a set is determined by its
+    elements. An injection between finite sets of equal size is a bijection,
+    so every tuple is some ``M``. ∎
+
+Both hypotheses are cheap to check, and the partition to check them against
+is forced: literals of the same ``C_i`` never share a repair, so the
+candidate partition is the connected components of "never share a repair",
+and if any partition works that one does. So the report offers ``C_i`` as
+its ``i``-th conflict and the literals of ``C_i`` as that conflict's menu.
+Every path through the menus is a member of ``F_{\min}`` — a repair, and one
+of the cheapest. Nothing is left to compose and nothing is left to warn
+about.
+
+It also follows that there are exactly as many conflicts as a cheapest
+repair has literals. The conflict count is not an artifact of how the search
+went: it is the size of the smallest fix.
+
+### The story of a coordinate
+
+A menu says what to choose between without saying why. Fix any
+``M \in F_{\min}``, and for the ``i``-th coordinate let ``c_i`` be its
+literal of ``M``. Withdraw ``M \setminus \{c_i\}`` — every *other*
+coordinate settled the way ``M`` settles it — and ask what is left.
+
+It is unsatisfiable: ``M`` is minimal, so no proper subset of it repairs
+anything. A MUS of it therefore exists, and it must contain ``c_i``, since
+withdrawing ``c_i`` as well is withdrawing all of ``M``, which does repair.
+And it contains no other literal of ``M``, because those were withdrawn
+before the question was asked. So the ``i``-th conflict gets a story about
+its own choice and nobody else's — one MUS extraction per coordinate.
+
+### What the menus leave out
+
+Two things can be true beyond what the menus say, and they are independent:
+
+* ``F \ne F_{\min}``: repairs exist that give up more than these do.
+* ``F_{\min}`` is not a product: then the best that can be offered is the
+  largest *rectangle* in it — a set of literals every repair in the
+  rectangle shares, together with the alternatives that complete it — and
+  the repairs outside the rectangle are cheapest ones the menus never reach.
+
+A report says nothing when neither holds, "Other, larger solutions exist."
+when only the first does, and "Other solutions exist." whenever the second
+does. Exploring those other solutions is a question this page does not
+answer.
+
 ## Versions come from a resolve, not from the instance
 
 Theorem C is about the answer, but the questions above only ask about

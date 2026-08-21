@@ -4,8 +4,8 @@ A package version resolver built on a real SAT solver (PicoSAT). Given
 package data — versions, dependencies, and compatibility constraints — and a
 set of required packages, [`resolve`](@ref) returns a single optimal solution
 mapping each needed package to a version, or a [`Diagnosis`](@ref) — which
-requirements cannot hold together, why, and a menu of verified fixes — when
-they cannot be satisfied.
+requirements cannot hold together, why, and a menu of verified fixes for
+each of them — when they cannot be satisfied.
 
 What "optimal" means, precisely, and why the resolver's aggressive problem
 filtering provably does not change the answer, is worked out in the Theory

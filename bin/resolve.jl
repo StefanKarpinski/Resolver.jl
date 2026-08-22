@@ -550,6 +550,12 @@ named(f::Diagnostics.Requirement, name::Function) =
     Diagnostics.Requirement(name(f.pkg))
 named(f::Diagnostics.Availability, name::Function) =
     Diagnostics.Availability(name(f.pkg), f.members, f.excluded)
+named(f::Diagnostics.Dependency, name::Function) =
+    Diagnostics.Dependency(name(f.pkg), f.versions, name(f.dep),
+        f.offering, f.allowed)
+named(f::Diagnostics.Incompatibility, name::Function) =
+    Diagnostics.Incompatibility(name(f.pkg), f.versions, name(f.other),
+        f.offering, f.allowed)
 
 function package_name(uuid::UUID)
     uuid == JULIA_UUID && return "julia"

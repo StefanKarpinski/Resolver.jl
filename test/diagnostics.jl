@@ -35,7 +35,8 @@ using Resolver: Problem, PkgData, PkgInfo, SAT, Diagnosis, pkg_info, relax,
     with_classes_relaxed, class_exclusions, exclusion_kinds, nclasses,
     sat_assume_var
 using Resolver.Diagnostics: Diagnostics, Conflict, Fix, Action, Fact,
-    Requirement, Availability, unavailable, action_phrase
+    Requirement, Availability, Dependency, Incompatibility, unavailable,
+    action_phrase
 using Resolver.UnsatCores: sat_mcses
 
 using Pkg.Versions: VersionSpec
@@ -64,6 +65,14 @@ fact_literals(sat::SAT{P}, f::Availability{P}) where {P} =
     haskey(sat.vars, f.pkg) ? Int[forbidden_lit(sat, f.pkg, c)
         for c in eachindex(sat.reps[f.pkg]) if iszero(sat.reps[f.pkg][c])] : Int[]
 
+# A dependency and an incompatibility claim none: they say what the registry
+# says, which is not something this query could relax, so there is nothing for
+# the solver to be asked about them and nothing taking one away would give
+# back. What they say is checked against the universe instead, by
+# `relations_are_true` below
+fact_literals(::SAT{P}, ::Dependency{P}) where {P} = Int[]
+fact_literals(::SAT{P}, ::Incompatibility{P}) where {P} = Int[]
+
 conflict_literals(sat::SAT, c::Conflict) =
     reduce(vcat, (fact_literals(sat, f) for f in c.chain); init = Int[])
 
@@ -89,11 +98,16 @@ end
 # Brute force, which is what makes it an oracle; chains are a handful of facts,
 # and one too big to enumerate falls back to the unsatisfiability check alone.
 function chain_is_covered(sat::SAT, c::Conflict)
-    n = length(c.chain)
-    n ≤ 8 || return !sat_assuming(sat, conflict_literals(sat, c))
+    # only the facts that claim literals are enumerated over: the rest say what
+    # the registry says, which no subset of assumptions can turn off, so they
+    # are in every subset and in none of them alike
     lits = [fact_literals(sat, f) for f in c.chain]
+    claim = Int[i for i in eachindex(lits) if !isempty(lits[i])]
+    n = length(claim)
+    n ≤ 8 || return !sat_assuming(sat, conflict_literals(sat, c))
     subset(bits) = reduce(vcat,
-        (lits[i] for i = 1:n if !iszero(bits & (1 << (i-1)))); init = Int[])
+        (lits[claim[i]] for i = 1:n if !iszero(bits & (1 << (i-1))));
+        init = Int[])
     unsat = Bool[!sat_assuming(sat, subset(bits)) for bits = 0:(1 << n) - 1]
     covered = falses(n)
     for bits = 0:(1 << n) - 1
@@ -106,6 +120,103 @@ function chain_is_covered(sat::SAT, c::Conflict)
         end
     end
     return all(covered)
+end
+
+# What one class of `p` says about `q`: whether it depends on it, and which of
+# `q`'s versions it admits. Read straight off the universe's matrices, which is
+# where a relation fact's claim has to be checked — the solver is never asked
+# about a dependency edge or a registry bound, so it has nothing to say here
+function class_relation(sat::SAT{P}, p::P, c::Int, q::P) where {P}
+    info_p, info_q = sat.info[p], sat.info[q]
+    k = findfirst(==(q), info_p.depends)
+    dep = k !== nothing && info_p.conflicts[c, k]
+    allowed = fill(true, length(info_q.versions))
+    if haskey(info_p.interacts, q)
+        b = info_p.interacts[q]
+        for j = 1:nclasses(info_q), i in info_q.members[j]
+            allowed[i] = !info_p.conflicts[c, b + j]
+        end
+    end
+    return dep, allowed
+end
+
+# the versions of `p` a fact speaks for, as indices into what `p` offers
+fact_indices(sat::SAT{P}, p::P, versions) where {P} =
+    Int[findfirst(==(v), sat.info[p].versions) for v in versions]
+
+# Does every relation in the chain say something true of the universe, in the
+# only direction it may be said in?
+#
+#   * a dependency is stated only where the registry has one. `PkgInfo` records
+#     compatibility symmetrically, so a bound cannot be attributed to a package
+#     that merely has one — that is what the other kind is for;
+#   * an incompatibility is stated where the versions it speaks for do not
+#     depend on what it speaks about, so there is no side to put the bound on
+#     and it puts it on neither. Reading it the other way round says the same
+#     thing, since that is what symmetric means;
+#   * the versions it speaks for are versions the query admits, they are a run
+#     of what the package offers, and every one of them says exactly what the
+#     fact says. A fact that averaged over versions that disagree would be a
+#     bound none of them declares.
+function relations_are_true(sat::SAT{P}, prob::Problem{P}, c::Conflict) where {P}
+    for f in c.chain
+        f isa Dependency || f isa Incompatibility || continue
+        p = f.pkg
+        q = f isa Dependency ? f.dep : f.other
+        info_p, info_q = sat.info[p], sat.info[q]
+        @test f.offering == info_q.versions
+        idx = fact_indices(sat, p, f.versions)
+        @test idx == first(idx):last(idx)  # a run of what `p` offers
+        for i in idx
+            v = info_p.versions[i]
+            @test isempty(exclusion_kinds(prob, p, v))
+            dep, allowed = class_relation(sat, p, info_p.classes[i], q)
+            @test dep == (f isa Dependency)
+            f.allowed === nothing || @test allowed == f.allowed
+        end
+        # the other way round: reading an incompatibility from `q`'s side picks
+        # out the same pairs
+        f isa Incompatibility || continue
+        for (j, u) in enumerate(info_q.versions)
+            _, back = class_relation(sat, q, info_q.classes[j], p)
+            @test f.allowed[j] == all(back[i] for i in idx)
+        end
+    end
+end
+
+# A relation with no bound says only that the package is needed. That is
+# enough where something else in the story says what would have done instead —
+# the next step, whose subject is the versions this one would have named, or
+# the relation the story ends on — and enough where the query has left the
+# package nothing at all, since then every bound would be starved alike. It is
+# not enough anywhere else: dropping a bound there would drop the answer
+function bounds_are_stated(sat::SAT{P}, c::Conflict{P}) where {P}
+    rels = Fact[f for f in c.chain
+                if f isa Dependency || f isa Incompatibility]
+    # a package the story goes on from, or that some bound speaks about
+    spoken = Set{P}(f.pkg for f in rels)
+    for f in rels
+        f.allowed === nothing ||
+            push!(spoken, f isa Dependency ? f.dep : f.other)
+    end
+    return all(rels) do f
+        f isa Dependency && f.allowed === nothing || return true
+        return f.dep in spoken || all(iszero, sat.reps[f.dep])
+    end
+end
+
+# Do the relations in a chain hang together — every package one speaks of
+# either something the conflict requires, or something an earlier relation
+# already brought in? A relation about packages nothing else in the story
+# mentions would be true and beside the point
+function relations_connect(c::Conflict{P}) where {P}
+    reached = Set{P}(c.reqs)
+    for f in c.chain
+        f isa Dependency || f isa Incompatibility || continue
+        f.pkg in reached || return false
+        push!(reached, f isa Dependency ? f.dep : f.other)
+    end
+    return true
 end
 
 # the withdrawal a set of actions asks for, read off here rather than taken
@@ -228,6 +339,14 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
                 # among its own facts cover every one of them
                 @test chain_is_covered(sat, c)
             end
+        end
+
+        # the registry's own facts say what the registry says, in a direction
+        # it licenses, about packages the rest of the story reaches
+        for c in d.conflicts
+            relations_are_true(sat, prob, c)
+            @test relations_connect(c)
+            @test bounds_are_stated(sat, c)
         end
 
         # availability facts say what the problem says about the versions, class
@@ -366,6 +485,34 @@ const larger_repair = Dict(
     :G => PkgData([:v2, :v1], DEPS_NONE, COMP_NONE),
 )
 
+# :A's versions disagree about :C: a3 wants c3, the older two want c2. A bound
+# leaving only c1 breaks all of them, and for different reasons — so a story
+# that gave one bound for the package would be giving one none of its versions
+# declares
+const varied_bound = Dict(
+    :A => PkgData([:a3, :a2, :a1],
+        Dict(:a3 => [:C], :a2 => [:C], :a1 => [:C]),
+        Dict(:a3 => Dict(:C => [:c3]), :a2 => Dict(:C => [:c2]),
+             :a1 => Dict(:C => [:c2]))),
+    :C => PkgData([:c3, :c2, :c1], DEPS_NONE, COMP_NONE),
+)
+
+# :A needs :B needs :C, and the bound is on :C. Nothing relates :A to :C, so a
+# story drawn only from the packages the chain names would have nothing to say
+const two_hops = Dict(
+    :A => PkgData([:a1], Dict(:a1 => [:B]), COMP_NONE),
+    :B => PkgData([:b1], Dict(:b1 => [:C]), Dict(:b1 => Dict(:C => [:c2]))),
+    :C => PkgData([:c2, :c1], DEPS_NONE, COMP_NONE),
+)
+
+# :P names :W in its compat and does not depend on it — a weak dependency,
+# which is a bound with no edge behind it. :S is what pulls :W in
+const weak_bound = Dict(
+    :P => PkgData([:p1], DEPS_NONE, Dict(:p1 => Dict(:W => [:w1]))),
+    :S => PkgData([:s1], Dict(:s1 => [:W]), COMP_NONE),
+    :W => PkgData([:w2, :w1], DEPS_NONE, COMP_NONE),
+)
+
 # four requirements whose disagreements form a path — :C with :B, :B with :A,
 # :A with :D — so the cheapest repairs are {A,B}, {A,C} and {B,D}, which is
 # three of them and therefore not a product of anything
@@ -432,10 +579,14 @@ end
     @test length(d.conflicts) == 1
     c = only(d.conflicts)
     @test c.reqs == [:A]
+    # the middle fact is the one the user did not write: :A needs :B, and no
+    # bound of :A's is what the story turns on, since the query has left :B
+    # with nothing whatever :A would have taken
     @test c.chain == Fact[Requirement(:A),
+        Dependency{Symbol,Symbol}(:A, [:v1], :B, [:w3, :w2, :w1], nothing),
         Availability{Symbol,Symbol}(:B, [:w3, :w2, :w1],
             [[:compat, :pin], [:compat], [:pin]])]
-    @test unavailable(c.chain[2])
+    @test unavailable(c.chain[3])
     # the cheapest version to give back costs one kind, so that is the fix —
     # and not requiring :A is the other
     @test [fix.actions for fix in c.fixes] ==
@@ -453,7 +604,11 @@ end
         :P => PkgData([:p2, :p1], DEPS_NONE, COMP_NONE),
     )
     d = check_diagnosis(data, Problem([:R]; compat = Dict(:P => [:p1])))
-    f = d.conflicts[1].chain[2]::Availability
+    # here there is a bound to state: :P has a version left, just not one
+    # :R will take
+    @test d.conflicts[1].chain[2] ==
+        Dependency{Symbol,Symbol}(:R, [:r1], :P, [:p2, :p1], [true, false])
+    f = d.conflicts[1].chain[3]::Availability
     @test f.pkg == :P
     @test f.members == [:p2, :p1]
     @test f.excluded == [[:compat], Symbol[]]
@@ -463,6 +618,7 @@ end
 
         Conflict 1: R cannot be satisfied.
           • you require R
+          • R r1 requires P at p2
           • P: p2 excluded by your compat
           Fix it by any one of:
             1. relax your compat on P
@@ -471,12 +627,86 @@ end
         """
 end
 
+@testset "diagnosis: a bound that differs across versions" begin
+    # :C has a version left, and every version of :A wants a different one it
+    # has not got. What each of them wants is a fact about that version, so
+    # the story states it once per version that agrees
+    d = check_diagnosis(varied_bound, Problem([:A]; compat = Dict(:C => [:c1])))
+    c = only(d.conflicts)
+    @test c.chain == Fact[Requirement(:A),
+        Dependency{Symbol,Symbol}(:A, [:a3], :C, [:c3, :c2, :c1],
+            [true, false, false]),
+        Dependency{Symbol,Symbol}(:A, [:a2, :a1], :C, [:c3, :c2, :c1],
+            [false, true, false]),
+        Availability{Symbol,Symbol}(:C, [:c3, :c2, :c1],
+            [[:compat], [:compat], Symbol[]])]
+    @test sprint(show, MIME("text/plain"), d) == """
+        Unsatisfiable — 1 conflict:
+
+        Conflict 1: A cannot be satisfied.
+          • you require A
+          • A a3 requires C at c3
+          • A a1–a2 requires C at c2
+          • C: c2–c3 excluded by your compat
+          Fix it by any one of:
+            1. relax your compat on C
+               → allows: A a3, C c3
+            2. drop requirement A
+        """
+end
+
+@testset "diagnosis: a story that spans more than one hop" begin
+    # the query names :A and :C, and it is :B in between that explains them
+    d = check_diagnosis(two_hops, Problem([:A]; compat = Dict(:C => [:c1])))
+    c = only(d.conflicts)
+    # the step to :B says only that :B is needed. What :A will take of it is
+    # not what the query left nothing of, and the versions it would name are
+    # the subject of the next step anyway
+    @test c.chain == Fact[Requirement(:A),
+        Dependency{Symbol,Symbol}(:A, [:a1], :B, [:b1], nothing),
+        Dependency{Symbol,Symbol}(:B, [:b1], :C, [:c2, :c1], [true, false]),
+        Availability{Symbol,Symbol}(:C, [:c2, :c1], [[:compat], Symbol[]])]
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("A a1 requires B\n", report)
+    @test occursin("B b1 requires C at c2\n", report)
+    # ... and :B is not something the query said anything about: the middle of
+    # the story is the part only the registry knows
+    @test :B ∉ [f.pkg for f in c.chain
+                if f isa Requirement || f isa Availability]
+end
+
+@testset "diagnosis: a bound with no dependency behind it" begin
+    # :P's bound on :W is a weak dependency: a compat entry with no edge. The
+    # universe records compatibility symmetrically, so which of the two
+    # declared it is not recoverable — and saying ":P requires :W" would be
+    # attributing a bound to a package that does not even depend on the other
+    prob = Problem([:P, :S]; compat = Dict(:W => [:w2]))
+    d = check_diagnosis(weak_bound, prob)
+    c = only(d.conflicts)
+    @test c.chain == Fact[Requirement(:P), Requirement(:S),
+        Dependency{Symbol,Symbol}(:S, [:s1], :W, [:w2, :w1], nothing),
+        Incompatibility{Symbol,Symbol}(:P, [:p1], :W, [:w2, :w1],
+            [false, true]),
+        Availability{Symbol,Symbol}(:W, [:w2, :w1], [Symbol[], [:compat]])]
+    # the only dependency stated is the one the registry has
+    @test [(f.pkg, f.dep) for f in c.chain if f isa Dependency] == [(:S, :W)]
+    @test !any(f isa Dependency && (f.pkg == :P || f.dep == :P) for f in c.chain)
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("S s1 requires W\n", report)
+    @test occursin("P p1 works with W only at w1\n", report)
+    @test !occursin("P p1 requires", report)
+    # ... and it really is a weak dependency: :P on its own installs no :W, so
+    # nothing about it can be a dependency of :P
+    sol = resolve(weak_bound, [:P])
+    @test sol !== nothing && !haskey(sol, :W)
+end
+
 @testset "diagnosis: any kind is a constraint like any other" begin
     prob = Problem([:A];
         prerelease = (p, v) -> p === :B && v !== :w1,
         yanked     = (p, v) -> p === :B && v === :w1)
     d = check_diagnosis(needs_dep, prob)
-    f = d.conflicts[1].chain[2]::Availability
+    f = d.conflicts[1].chain[3]::Availability
     @test f.excluded == [[:prerelease], [:prerelease], [:yanked]]
     # one kind is enough to give the package back, and the best version it
     # would give back costs the prerelease one
@@ -594,6 +824,8 @@ end
     @test c.chain == Fact[Requirement(:A), Requirement(:B),
         Availability{Symbol,Symbol}(:A, [:a2, :a1], [Symbol[], [:compat]]),
         Availability{Symbol,Symbol}(:B, [:b2, :b1], [Symbol[], [:compat]]),
+        Dependency{Symbol,Symbol}(:A, [:a2], :C, [:c2, :c1], [true, false]),
+        Dependency{Symbol,Symbol}(:B, [:b2], :C, [:c2, :c1], [true, false]),
         Availability{Symbol,Symbol}(:C, [:c2, :c1], [[:compat], Symbol[]])]
     @test [fix.actions for fix in c.fixes] == [[Action(:compat, :C)]]
     @test only(c.fixes).solution == Dict(:A => :a2, :B => :b2, :C => :c2)
@@ -608,6 +840,10 @@ end
     @test occursin("you require A", report)
     @test occursin("you require B", report)
     @test occursin("A and B cannot both be satisfied", report)
+    # both of them need :C at the version the bound took, and naming one of
+    # them would leave the other's failure unexplained
+    @test occursin("A a2 requires C at c2", report)
+    @test occursin("B b2 requires C at c2", report)
     @test occursin("The only fix: relax your compat on C", report)
     # the witness names both of them too
     @test occursin("→ allows: A a2, B b2, C c2", report)
@@ -717,7 +953,9 @@ end
 @testset "diagnosis: the report" begin
     # each conflict carries its own menu, and the menus do not multiply: two
     # menus of two, not one of four. There is no closing sentence — every
-    # combination of them is a repair and there are no others
+    # combination of them is a repair and there are no others. The versions
+    # shown are of every package the conflict names, :C and :G included: they
+    # are named because the story is about them
     d = resolve(two_conflicts, Problem([:A, :B, :E, :F]))
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 2 conflicts, each of which must be fixed:
@@ -725,20 +963,24 @@ end
         Conflict 1: A and B cannot both be satisfied.
           • you require A
           • you require B
+          • A v1 requires C at v1
+          • B v1 requires C at v2
           Fix it by any one of:
             1. drop requirement A
-               → allows: B v1
+               → allows: B v1, C v2
             2. drop requirement B
-               → allows: A v1
+               → allows: A v1, C v1
 
         Conflict 2: E and F cannot both be satisfied.
           • you require E
           • you require F
+          • E v1 requires G at v1
+          • F v1 requires G at v2
           Fix it by any one of:
             1. drop requirement E
-               → allows: F v1
+               → allows: F v1, G v2
             2. drop requirement F
-               → allows: E v1
+               → allows: E v1, G v1
         """
     # the one-line summary counts the ways of repairing the whole query
     @test sprint(show, d) == "Diagnosis: 2 conflicts, 4 fixes"
@@ -751,6 +993,7 @@ end
 
         Conflict 1: A cannot be satisfied.
           • you require A
+          • A v1 requires B
           • no version of B is available: w3 excluded by your compat and your pin, w2
             by your compat, w1 by your pin
           Fix it by any one of:
@@ -861,7 +1104,55 @@ end
         @test fix.solution["DataFrames"] ∈ VersionSpec("1")
         @test haskey(fix.solution, "PrettyTables")
     end
+    # the middle of the story: that DataFrames is what needs PrettyTables, and
+    # which versions of it do. No bound is stated, since the query has left
+    # PrettyTables with nothing whatever DataFrames would have taken
+    f = only(x for x in c.chain if x isa Dependency)
+    @test f.pkg == "DataFrames" && f.dep == "PrettyTables"
+    @test f.allowed === nothing
+    @test all(v -> v ∈ VersionSpec("1"), f.versions)
     report = sprint(show, MIME("text/plain"), d)
     @test occursin("no version of PrettyTables is available", report)
     @test occursin("relax your compat on PrettyTables", report)
+    @test occursin(
+        "DataFrames $(f.versions[end])–$(f.versions[1]) requires PrettyTables\n",
+        report)
+
+    # ... and a query that leaves PrettyTables something DataFrames will not
+    # take is where the bound itself is the story
+    prob = Problem(["DataFrames"];
+        compat = Dict("DataFrames" => VersionSpec("1.4 - 1.7"),
+                      "PrettyTables" => VersionSpec("1")))
+    d = check_diagnosis(rp, prob)
+    @test d isa Diagnosis{String,VersionNumber}
+    f = only(x for x in only(d.conflicts).chain if x isa Dependency)
+    @test f.pkg == "DataFrames" && f.dep == "PrettyTables"
+    @test all(v -> v ∈ VersionSpec("1.4 - 1.7"), f.versions)
+    # what it will take is PrettyTables 2, which is what the bound rules out
+    @test all(v ∈ VersionSpec("2") for (v, ok) in zip(f.offering, f.allowed) if ok)
+    @test any(f.allowed)
+    @test occursin("requires PrettyTables at ",
+        sprint(show, MIME("text/plain"), d))
+
+    # a bound that differs across the depending package's versions, on real
+    # data: Plots has wanted a different RecipesBase over the years, and a
+    # query holding it at 1 and RecipesBase at 0.4 is stopped by all of them
+    prob = Problem(["Plots"];
+        compat = Dict("Plots" => VersionSpec("1"),
+                      "RecipesBase" => VersionSpec("0.4")))
+    d = check_diagnosis(rp, prob)
+    @test d isa Diagnosis{String,VersionNumber}
+    deps = Dependency{String,VersionNumber}[f for f in only(d.conflicts).chain
+                                            if f isa Dependency]
+    @test all(f -> f.pkg == "Plots" && f.dep == "RecipesBase", deps)
+    # several of them, because the versions of Plots disagree — and what they
+    # disagree about is exactly what makes them several
+    @test length(deps) > 1
+    @test allunique(f.allowed for f in deps)
+    # each speaks for its own versions, and between them they run newest to
+    # oldest over the versions of Plots the query admits
+    spoken = vcat((f.versions for f in deps)...)
+    @test allunique(spoken)
+    @test issorted(spoken; rev = true)
+    @test all(v -> v ∈ VersionSpec("1"), spoken)
 end

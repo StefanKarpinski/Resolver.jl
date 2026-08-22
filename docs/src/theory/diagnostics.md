@@ -284,3 +284,74 @@ This is the one place a report can name a *user's* constraint at all —
 registry compatibility is in the conflict matrices, where it is
 indistinguishable from any other conflict — and it is why a story can say
 which bound emptied a class without asking anything.
+
+## Why one package matters to another
+
+A chain of requirements and availabilities says what the query asked for and
+what its constraints left of the packages, and stops there. The step between
+the two — that these versions of one package need that other one, at these
+versions of it — belongs to the registry, and it is the only part of the
+story the user could not have written down themselves.
+
+It is read off the universe and nothing else. For a class ``c`` of ``p``, the
+dependency columns of ``p``'s matrix say which packages ``c`` depends on and
+the interaction blocks say which classes of each partner ``c`` admits. Both
+are registry facts, untouched by any constraint. What has to be decided is
+which of them to say.
+
+The walk that decides is a *forced descent*. Write ``A(p)`` for the classes of
+``p`` this query admits, and ``\mathrm{adm}_p(S, q)`` for the classes of ``q``
+that some class in ``S`` of ``p`` admits. Start from the conflict's
+requirements with ``L(p) = A(p)`` and iterate two rules:
+
+* **forcing** — if ``p`` is forced and *every* class in ``L(p)`` depends on
+  ``q``, then ``q`` is forced. No choice of a version of ``p`` avoids it.
+* **narrowing** — for forced ``p`` and forced ``q``,
+  ``L(q) \leftarrow L(q) \cap \mathrm{adm}_p(L(p), q)``. Two packages both
+  installed have to agree, however the bound got there.
+
+Both rules only add to the forced set and only remove from the ``L``'s, so the
+iteration settles. It stops at the first pass that leaves a forced ``q`` with
+``L(q) = \emptyset``: that ``q`` is where the story ends.
+
+The walk answers with a set per package rather than pairing versions up, so
+the union inside ``\mathrm{adm}`` over-approximates what is really reachable.
+That is the safe direction: ``L(q) = \emptyset`` really does mean no version
+of ``q`` can be installed, while ``L(q) \ne \emptyset`` promises nothing.
+A walk that finds nothing costs the report a sentence; it never invents one.
+And nothing it emits is a claim about satisfiability — the requirements and
+the availabilities carry that, and the solver checked them.
+
+What the report says of the starved ``q`` is the packages whose bounds left it
+nothing, cut down to a set that still does — and then, exactly as with the
+requirements above, every one of the rest that starves ``q`` on its own, since
+otherwise minimality would name one of several and drop the others. Each comes
+with the forcing steps that put it in the query's way, so every package the
+story names is one the story has already reached.
+
+A step also has to decide whether to state its bound at all. On the last
+one it is the whole point: it is what the query's own constraints have left
+nothing of, and the reader wants to know what would have done instead. On the
+steps that lead there it is decoration — and worse, because versions that
+agree about needing a package often disagree about which of it they will
+take, so a step carrying its bound is several sentences where one was
+wanted, and the versions it would name are the subject of the next step
+anyway. So only the relations about the starved package carry a bound.
+
+### Which way round a bound may be said
+
+`PkgInfo` records compatibility symmetrically: a conflict between class ``c``
+of ``p`` and class ``d`` of ``q`` sits in both matrices, and which side's
+`Project.toml` declared it is not recoverable. So "``p`` requires ``q`` at
+``V``" is not a sentence the instance licenses on its own. What it does
+license is the dependency: the columns saying that ``c`` depends on ``q`` are
+``p``'s own, and the package that declares a dependency is the one whose
+`[compat]` entry a bound on it would be in.
+
+A directed sentence is therefore stated exactly where every version it speaks
+for depends on the package it speaks about; versions that merely have to get
+along with it get the symmetric sentence, which attributes nothing to either
+side. Splitting the versions of ``p`` by what they say about ``q`` is what
+makes this a decision per fact rather than per package: a package whose older
+versions depend on ``q`` and whose newer ones do not is two facts, not one
+averaged over both.

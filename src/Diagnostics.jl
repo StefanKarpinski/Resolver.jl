@@ -6,10 +6,11 @@ questions to the universe a failed resolve was run against and the instance it
 failed on, and answers with a [`Diagnosis`](@ref): the independent
 [`Conflict`](@ref Resolver.Diagnostics.Conflict)s — sets of requirements that
 cannot hold together, each with a chain of
-[`Fact`](@ref Resolver.Diagnostics.Fact)s about the packages that says why —
-and a menu of [`Fix`](@ref Resolver.Diagnostics.Fix)es, each a set of
+[`Fact`](@ref Resolver.Diagnostics.Fact)s about the packages that says why, and
+a menu of [`Fix`](@ref Resolver.Diagnostics.Fix)es for it, each a set of
 [`Action`](@ref Resolver.Diagnostics.Action)s the user could carry out together
-with the solution that carrying them out yields.
+with the solution that carrying them out yields. One fix from every conflict's
+menu, chosen any way at all, repairs the query.
 
 A `Diagnosis` is plain data, so a caller can render its own report from one
 without asking the resolver anything further; `show(io, MIME("text/plain"), d)`
@@ -27,8 +28,8 @@ export Diagnosis, Conflict, Fix, Action, Fact, Requirement, Availability,
 
 using ..Resolver: SAT, Problem, Universe, relax, resolve, installed_lit,
     with_temp_clauses, with_classes_relaxed, sat_new_variable, sat_add_var,
-    sat_add, exclusion_kinds, class_exclusions
-using ..UnsatCores: sat_mus, sat_disjoint_muses, sat_mcses
+    sat_add, sat_solve, exclusion_kinds, class_exclusions
+using ..UnsatCores: sat_mus, sat_mcses
 
 # What an unsatisfiable resolve says, and how it is found.
 #
@@ -58,6 +59,15 @@ using ..UnsatCores: sat_mus, sat_disjoint_muses, sat_mcses
 # deleting candidates in order, so a requirement the story does not need drops
 # out of it.
 #
+# The two questions are answered together, and that is what lets the report
+# come apart. The cheapest repairs are enumerated first, and they factor into
+# independent choices (`factor_repairs`); each choice is a conflict, its menu
+# is what the choice is between, and its story is what is left unsatisfiable
+# once every other choice has been made. So a conflict explains the menu under
+# it rather than being arrived at separately, and one fix from each menu —
+# chosen any way at all — is a repair of the whole query, without anything
+# further being asked. See the manual's Diagnostics page.
+#
 # Both are asked a *package* at a time, over one assumable literal per package
 # the query left short (`with_emptied_packages`). That is the granularity of
 # both answers: a report says what has become of a package's versions, and a
@@ -76,9 +86,10 @@ using ..UnsatCores: sat_mus, sat_disjoint_muses, sat_mcses
 # problem — never from a model of the failed instance. The instance's classes
 # were given representatives under constraints a fix relaxes, and were laid out
 # in the order those representatives induce, so a version read off it is a
-# version that fix would not produce. A fix is verified by resolving the
-# relaxation `relax` derives from it, and the solution that comes back is what
-# the report shows.
+# version that fix would not produce. A fix's witness comes from resolving the
+# relaxation `relax` derives from carrying it out — together with the first fix
+# of every other conflict, since it is a combination that repairs the query —
+# and the solution that comes back is what the report shows.
 
 ## the report
 
@@ -178,14 +189,15 @@ Base.hash(a::Availability, h::UInt) =
 """
     Resolver.Diagnostics.Fix{P,V}(actions, solution)
 
-One repair of the whole problem: a set of
-[`Action`](@ref Resolver.Diagnostics.Action)s to carry out, and `solution`,
-what resolving with them carried out actually yields. The solution is a real
-resolve of the relaxed problem, so the versions in it are the versions the user
-would get.
+One way of fixing one [`Conflict`](@ref Resolver.Diagnostics.Conflict): a set
+of [`Action`](@ref Resolver.Diagnostics.Action)s to carry out, and `solution`,
+what carrying them out actually yields. Fixing every conflict is what repairs
+the query, so `solution` is a real resolve of the problem this fix and the
+first fix of every *other* conflict relax — the versions in it are the versions
+the user would get if that is how the rest are fixed.
 
-No fix's actions are a superset of another's, and no two fixes ask for the same
-things.
+No two fixes in a conflict's menu ask for the same things, and none of them
+asks for more than another: the menu is a choice, not an order.
 """
 struct Fix{P,V}
     actions  :: Vector{Action{P}}
@@ -193,20 +205,30 @@ struct Fix{P,V}
 end
 
 """
-    Resolver.Diagnostics.Conflict{P,V}(reqs, chain)
+    Resolver.Diagnostics.Conflict{P,V}(reqs, chain, fixes)
 
-One independent reason the query fails: the requirements `reqs`, which cannot
-hold together, and `chain`, a short sequence of
-[`Fact`](@ref Resolver.Diagnostics.Fact)s about the packages that says why.
-Every fact in the chain is load-bearing — take any one of them away and the
-rest of the conflict dissolves.
+One independent choice the query leaves the user: the requirements `reqs`,
+which cannot all hold, `chain`, a short sequence of
+[`Fact`](@ref Resolver.Diagnostics.Fact)s about the packages that says why, and
+`fixes`, the menu of [`Fix`](@ref Resolver.Diagnostics.Fix)es that settle it.
 
-Conflicts within a [`Diagnosis`](@ref) share no requirement, so each is a
-separate thing to fix.
+`reqs` is every requirement this conflict's fixes rescue, which need not be one
+thing that fails: requirements can fail together, or each on its own for a
+reason they have in common, and a conflict gathers both. So the chain is
+unsatisfiable and nothing in it is a passenger — every fact belongs to some
+minimal reason the requirements cannot hold — but it is a *union* of those
+reasons rather than a single one, and taking a fact away need not dissolve all
+of them.
+
+The conflicts of a [`Diagnosis`](@ref) are independent in that each has to be
+fixed and any fix of one goes with any fix of another. Their *stories* may well
+overlap: two conflicts can be about the same requirement without being the same
+thing to do about it.
 """
 struct Conflict{P,V}
     reqs  :: Vector{P}
     chain :: Vector{Fact}
+    fixes :: Vector{Fix{P,V}}
 end
 
 """
@@ -215,9 +237,18 @@ end
 What [`resolve`](@ref) returns instead of a solution when the requirements
 cannot be satisfied: the independent
 [`Conflict`](@ref Resolver.Diagnostics.Conflict)s, each with the chain of facts
-that explains it, and a menu of verified
-[`Fix`](@ref Resolver.Diagnostics.Fix)es, each of which repairs the whole
-problem.
+that explains it and its own menu of
+[`Fix`](@ref Resolver.Diagnostics.Fix)es. Every conflict has to be fixed, and
+one fix from each — chosen any way at all — repairs the query, so the fixes of
+the whole problem are the combinations.
+
+`others` says what those combinations leave out:
+
+  * `:none` — nothing at all. They are exactly the minimal fixes of the query,
+    and every one of them changes as few things as any fix can.
+  * `:larger` — only fixes that change more things than these do. Every
+    smallest fix is a combination of these menus.
+  * `:some` — fixes that change no more than these do, as well.
 
 `show(io, MIME("text/plain"), d)` prints the report; the fields are plain data,
 so a caller that wants a different report can build one from them without
@@ -228,7 +259,7 @@ the verdict is wanted.
 """
 struct Diagnosis{P,V}
     conflicts :: Vector{Conflict{P,V}}
-    fixes     :: Vector{Fix{P,V}}
+    others    :: Symbol
 end
 
 ## rendering
@@ -273,7 +304,7 @@ end
 # An availability fact as one line. The fact runs over the package's whole
 # version list, so every maximal run of versions excluded by the same kinds is a
 # range and gets one clause, and the runs it admits are simply not mentioned;
-# the clauses after the first drop the verb, as an English list of them would.
+# the clauses after the first drop "excluded", as an English list of them would.
 function availability_phrase(f::Availability)
     members, excluded = f.members, f.excluded
     clauses = String[]
@@ -284,10 +315,9 @@ function availability_phrase(f::Availability)
             j += 1
         end
         if !isempty(excluded[i])
-            verb = i == j ? "is" : "are"
             by = kinds_phrase(excluded[i])
             push!(clauses, isempty(clauses) ?
-                "$(range_phrase(members, i, j)) $verb excluded by $by" :
+                "$(range_phrase(members, i, j)) excluded by $by" :
                 "$(range_phrase(members, i, j)) by $by")
         end
         i = j + 1
@@ -322,59 +352,208 @@ end
 count_phrase(n::Int, one::String, many::String) =
     n == 0 ? "no $many" : n == 1 ? "1 $one" : "$n $many"
 
+# how many ways there are to repair the query: one fix out of every conflict's
+# menu, chosen independently
+nfixes(d::Diagnosis) =
+    isempty(d.conflicts) ? 0 : prod(c -> length(c.fixes), d.conflicts)
+
 function Base.show(io::IO, d::Diagnosis)
     print(io, "Diagnosis: ",
         count_phrase(length(d.conflicts), "conflict", "conflicts"), ", ",
-        count_phrase(length(d.fixes), "fix", "fixes"))
+        count_phrase(nfixes(d), "fix", "fixes"))
+end
+
+# What the menus leave out, once the reader has made a choice in each of them.
+# Nothing to say when they leave out nothing.
+others_phrase(others::Symbol) =
+    others === :larger ? "Larger solutions also exist." :
+                         "Other solutions also exist."
+
+# what the fix gets the user, of the packages this conflict has named; a fix
+# that installs none of them has nothing to show here
+function print_allows(io::IO, fix::Fix{P}, named::Vector{P},
+                      lead::String, rest::String) where {P}
+    allows = String["$p $(fix.solution[p])" for p in named
+                    if haskey(fix.solution, p)]
+    isempty(allows) || print_wrapped(io, join(allows, ", "), lead, rest)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis{P,V}) where {P,V}
     println(io, "Unsatisfiable — ",
-        count_phrase(length(d.conflicts), "conflict", "conflicts"), ", ",
-        count_phrase(length(d.fixes), "fix", "fixes"), ":")
+        count_phrase(length(d.conflicts), "conflict", "conflicts"),
+        length(d.conflicts) > 1 ? ", each of which must be fixed:" : ":")
     for (k, c) in enumerate(d.conflicts)
         println(io)
         subject = list_phrase(String[string(p) for p in c.reqs])
-        println(io, "Conflict $k: $subject cannot be satisfied",
-            length(c.reqs) > 1 ? " together." : ".")
+        # a conflict can gather requirements that fail together and
+        # requirements that each fail on their own, so what is said of them is
+        # what is true of both: the conjunction is what cannot hold
+        println(io, "Conflict $k: $subject cannot ",
+            length(c.reqs) == 1 ? "be satisfied." :
+            length(c.reqs) == 2 ? "both be satisfied." : "all be satisfied.")
         for f in c.chain
             f isa Requirement ?
                 println(io, "  • you require $(f.pkg)") :
                 print_wrapped(io,
                     availability_phrase(f::Availability), "  • ", "    ")
         end
+        # the versions worth showing are the ones this conflict is about
+        named = P[]
+        for f in c.chain
+            p = f isa Requirement ? f.pkg : (f::Availability).pkg
+            p in named || push!(named, p)
+        end
+        sort!(named)
+        if length(c.fixes) == 1
+            # nothing to choose between: this is the one thing that can be done
+            fix = only(c.fixes)
+            print_wrapped(io, list_phrase(map(action_phrase, fix.actions)),
+                "  The only fix: ", "    ")
+            print_allows(io, fix, named, "    → allows: ", "      ")
+        else
+            println(io, "  Fix it by any one of:")
+            for (j, fix) in enumerate(c.fixes)
+                print_wrapped(io, list_phrase(map(action_phrase, fix.actions)),
+                    lpad(j, 5) * ". ", "       ")
+                print_allows(io, fix, named, "       → allows: ", "         ")
+            end
+        end
     end
-    isempty(d.fixes) && return
+    d.others === :none && return
     println(io)
-    println(io, "Verified fixes:")
-    # the versions worth showing are the ones the report has been talking about
-    named = P[]
-    for c in d.conflicts, f in c.chain
-        p = f isa Requirement ? f.pkg : (f::Availability).pkg
-        p in named || push!(named, p)
-    end
-    sort!(named)
-    for (k, fix) in enumerate(d.fixes)
-        print_wrapped(io, list_phrase(map(action_phrase, fix.actions)),
-            lpad(k, 3) * ". ", "     ")
-        # what the fix gets the user, of the packages the report has named; a
-        # fix that installs none of them has nothing to show here
-        allows = String["$p $(fix.solution[p])" for p in named
-                        if haskey(fix.solution, p)]
-        isempty(allows) ||
-            print_wrapped(io, join(allows, ", "), "     → allows: ", "       ")
-    end
+    print_wrapped(io, others_phrase(d.others), "", "")
 end
 
 ## the diagnosis
 
-# How many repairs to enumerate before settling for the ones already found.
-# Independent conflicts multiply, so there can be exponentially many, and a menu
-# is only useful while it is short; deduplication and dominance cut this down
-# further. What is enumerated over is the requirements and the packages this
-# query left short, of which there are few, so this is a ceiling rather than the
-# usual stopping point.
-const MAX_FIXES = 32
+# How many of the smallest repairs to enumerate before settling for the ones
+# already found. What is enumerated over is the requirements and the packages
+# this query left short, of which there are few, and only the smallest repairs
+# among them — a median of 2 of them on the registry queries this was measured
+# on — so it is a ceiling rather than the usual stopping point.
+# Independent conflicts multiply, though, so there can be exponentially many,
+# and what a truncated enumeration costs is not a fix but a claim: the repairs
+# found still factor into conflicts and their menus still repair the query, but
+# the report can no longer say that nothing else would, nor ask whether
+# anything larger exists — that question is put by ruling every one of the
+# smallest repairs out, so it needs all of them.
+#
+# Truncation is deliberately reported as `:some` — the same thing a family that
+# is not a product reports — because the sentence is the same either way: there
+# are repairs the menus do not offer. It says less than it could, in a case that
+# is rare enough (the ceiling is an order of magnitude above what was measured)
+# that a third sentence would be a shape of report nobody has read.
+const MAX_REPAIRS = 256
+
+# "At most `k` of `lits` hold", as clauses over counting variables: Sinz's
+# sequential counter, where the variable for `(i, j)` says that at least `j` of
+# the first `i` literals hold. Nothing forces one of those variables down, only
+# up, so the last clause of each row — which refuses a literal once `k` are
+# already counted — is the whole of what is being asked, and any assignment with
+# `k` or fewer literals true extends to a model by counting honestly.
+#
+# The counter is built for the bound it is asked about rather than for the whole
+# range, so a small bound costs a small counter, and nothing is asked at all
+# when the bound leaves the literals alone. `counts` is the caller's own store
+# of counting variables, extended here when a bound needs more than it holds: a
+# variable outlives the frame that gave it meaning and the solver goes on
+# deciding it afterwards, so a search that raises the bound step by step hands
+# the same store back and leaves one counter behind rather than one per step.
+function add_at_most!(sat::SAT, lits::Vector{Int}, k::Int, counts::Vector{Int})
+    n = length(lits)
+    @assert k ≥ 1
+    k < n || return sat
+    while length(counts) < (n-1)*k
+        push!(counts, sat_new_variable(sat))
+    end
+    at(i, j) = counts[(i-1)*k + j]
+    function clause(ls::Int...)
+        for l in ls
+            sat_add_var(sat, l)
+        end
+        sat_add(sat)
+    end
+    clause(-lits[1], at(1, 1))
+    for j = 2:k
+        clause(-at(1, j))
+    end
+    for i = 2:n-1
+        clause(-lits[i], at(i, 1))
+        clause(-at(i-1, 1), at(i, 1))
+        for j = 2:k
+            clause(-lits[i], -at(i-1, j-1), at(i, j))
+            clause(-at(i-1, j), at(i, j))
+        end
+        clause(-lits[i], -at(i-1, k))
+    end
+    clause(-lits[n], -at(n-1, k))
+    return sat
+end
+
+# Every repair of the smallest size there is, and nothing larger paid for along
+# the way.
+#
+# A repair is the candidates a model leaves unsatisfied, so "no repair larger
+# than `k`" is a bound on how many of them a model may leave — one at-most-`k`
+# constraint over their negations. Under that bound the instance is satisfiable
+# exactly when a repair that small exists, and its minimal correction sets are
+# exactly the query's own repairs of that size or less: a model the bound
+# admits is one the query admits, and anything smaller than a repair the bound
+# admits fits under the bound too, so minimal here and minimal at large are the
+# same thing.
+#
+# So the size of the smallest repair is found by raising the bound until the
+# instance gives way, and enumerating at that bound enumerates exactly the
+# smallest repairs. The sizes seen in practice are 2 to 6, so counting up costs
+# a handful of solves and keeps every counter as small as the answer; a bound of
+# `k-1` that failed is what makes `k` the smallest size, so what comes back at
+# `k` is all of the smallest repairs, not merely some.
+#
+# Dropping every candidate is a repair, so the last bound worth trying is the
+# one that forbids nothing — which is the plain enumeration, and also what a
+# query with no candidate to give up at all wants.
+function smallest_repairs(sat::SAT, candidates::Vector{Int}, limit::Int)
+    relaxed = Int[-l for l in candidates]
+    counts = Int[]
+    for k = 1:length(candidates)-1
+        repairs = with_temp_clauses(sat) do
+            add_at_most!(sat, relaxed, k, counts)
+            sat_solve(sat) ? sat_mcses(sat, candidates; limit) : nothing
+        end
+        repairs === nothing || return repairs
+    end
+    return sat_mcses(sat, candidates; limit)
+end
+
+# Whether the query has a repair that costs more than the smallest ones do.
+#
+# `smallest` has to be all of the smallest repairs. Ask for a model that leaves
+# a candidate of each of them satisfied: one clause per repair, the plain
+# disjunction of its candidates, since the repair a model witnesses is the
+# candidates it does *not* satisfy. What that model witnesses is then a repair
+# holding none of the smallest ones, so the minimal repair inside it is none of
+# them either, and — all of the smallest being here — is a larger one.
+#
+# There is such a model whenever a larger repair exists: the model witnessing
+# that repair leaves exactly it unsatisfied, and no smallest repair sits inside
+# it, since one minimal repair never contains another. So the answer is exact.
+#
+# Each candidate says something the query asked for — this package installed,
+# this package's emptied classes left empty — so the candidates a model
+# satisfies are the ones the repair it witnesses does not touch, and ruling a
+# repair out is a disjunction of that repair's own literals rather than of their
+# negations.
+function larger_repair_exists(sat::SAT, smallest::Vector{Vector{Int}})
+    with_temp_clauses(sat) do
+        for repair in smallest
+            for l in repair
+                sat_add_var(sat, l)
+            end
+            sat_add(sat)
+        end
+        sat_solve(sat)
+    end
+end
 
 # The literals a diagnosis assumes, read back as what they say about the
 # universe. Package variables are laid out in blocks — the package itself, then
@@ -446,25 +625,46 @@ function with_emptied_packages(body::Function, sat::SAT{P}, vm::VarMap{P}) where
     end
 end
 
-# The story of one conflict: the smallest set of the query's own facts that is
-# still unsatisfiable. Deletion is attempted in the order given, so putting the
-# requirements first drops the ones the story does not need and keeps the facts
-# the user can act on. The answer is a subsequence of what was asked, so the
-# requirements come back in the problem's requirement order and the emptied
-# packages in package order.
+# The story of one conflict: the query's own facts that this conflict's fix is
+# what rescues, and why each of them needs rescuing.
+#
+# The smallest unsatisfiable set of them is where it starts. Deletion is
+# attempted in the order given, so putting the requirements first drops the ones
+# that set does not need and keeps the facts the user can act on.
+#
+# But "does not need" is the trap. Several requirements can fail for one and the
+# same reason, and one of them is enough to make that reason a conflict — so the
+# smallest set names one of them, arbitrarily, and the others go unmentioned
+# though this conflict's fix is what rescues them too. A user would fix the
+# bound and never learn the rest had been broken. So every requirement the set
+# left out is asked whether it can be satisfied on its own against the packages
+# as this conflict finds them; the ones that cannot are exactly the ones this
+# fix rescues, since the fixes of the other conflicts are already in force here
+# and carrying this one out satisfies the query. Each of those brings its own
+# smallest explanation, and the chain is all of them at once.
+#
+# One `sat_mus` call per requirement, which answers both questions: empty when
+# the requirement is satisfiable, and its explanation when it is not. What comes
+# back is a subsequence of what was asked, so the requirements are in the
+# problem's requirement order and the packages in package order.
 function conflict_story(
-    sat      :: SAT{P,V},
-    prob     :: Problem{P},
-    vm       :: VarMap{P},
-    cluster  :: Vector{Int},
-    emptied  :: Dict{Int,P}, # per package literal, the package
-    pkg_lits :: Vector{Int},
+    sat        :: SAT{P,V},
+    prob       :: Problem{P},
+    vm         :: VarMap{P},
+    emptied    :: Dict{Int,P}, # per package literal, the package
+    candidates :: Vector{Int}, # the literals a repair may withdraw
 ) where {P,V}
-    mus = sat_mus(sat, [cluster; pkg_lits])
+    named = Set{Int}(sat_mus(sat, candidates))
+    pkgs = Int[l for l in candidates if haskey(emptied, l)]
+    for l in candidates
+        (haskey(emptied, l) || l in named) && continue
+        union!(named, sat_mus(sat, Int[l; pkgs]))
+    end
     reqs = P[]
     chain = Fact[]
     avails = Fact[]
-    for l in mus
+    for l in candidates
+        l in named || continue
         p = get(emptied, l, nothing)
         if p === nothing
             q, _ = decode(vm, l)
@@ -475,10 +675,14 @@ function conflict_story(
         end
     end
     append!(chain, avails)
-    return Conflict{P,V}(reqs, chain)
+    return reqs, chain
 end
 
-# The user actions one correction set asks for. Dropping a requirement is
+# relaxations before drops, so a set of actions reads as an instruction
+sort_actions!(actions::Vector{<:Action}) =
+    sort!(actions; by = a -> (a.kind === :drop, a.pkg, a.kind))
+
+# The user actions one literal of a repair asks for. Dropping a requirement is
 # already an action; giving a package's versions back is not, since what the
 # user relaxes is a *constraint* — so for each class the query emptied, take the
 # member that costs the fewest kinds (ties going to the better version) and name
@@ -489,34 +693,112 @@ function correction_actions(
     prob    :: Problem{P},
     vm      :: VarMap{P},
     emptied :: Dict{Int,P}, # per package literal, the package
-    mcs     :: Vector{Int},
-    dropped :: Vector{P},
+    lit     :: Int,
 ) where {P}
+    p = get(emptied, lit, nothing)
+    if p === nothing
+        q, _ = decode(vm, lit)
+        return Action{P}[Action{P}(:drop, q)]
+    end
     actions = Action{P}[]
-    for l in mcs
-        p = get(emptied, l, nothing)
-        if p === nothing
-            q, _ = decode(vm, l)
-            push!(actions, Action{P}(:drop, q))
-            continue
+    reps_p = sat.reps[p]
+    for c in eachindex(reps_p)
+        iszero(reps_p[c]) || continue
+        ex = class_exclusions(prob, p, sat.info[p], c)
+        best = argmin(i -> (length(ex[i][2]), i), eachindex(ex))
+        for kind in ex[best][2]
+            push!(actions, Action{P}(kind, p))
         end
-        reps_p = sat.reps[p]
-        for c in eachindex(reps_p)
-            iszero(reps_p[c]) || continue
-            ex = class_exclusions(prob, p, sat.info[p], c)
-            best = argmin(i -> (length(ex[i][2]), i), eachindex(ex))
-            for kind in ex[best][2]
-                push!(actions, Action{P}(kind, p))
+    end
+    return sort_actions!(unique!(actions))
+end
+
+# One fix out of every conflict's menu, as the actions to carry out together
+combined_actions(parts::Vector{Vector{Action{P}}}) where {P} =
+    sort_actions!(unique!(reduce(vcat, parts; init = Action{P}[])))
+
+# The smallest repairs, factored into independent choices.
+#
+# Two literals belong to the same choice when no repair contains both — taking
+# one of them is what makes the other unnecessary — so the choices are the
+# connected components of that relation. The family is exactly their product
+# when every repair takes one literal from each and there are as many repairs as
+# there are ways of doing that: a repair is determined by its literals, so the
+# map from repairs to combinations is injective already, and once the counts
+# agree it is onto. Every combination is then a repair, which is what lets the
+# menus be offered separately.
+#
+# The second answer is whether the choices cover the whole family. When they do
+# not, what comes back is the largest *rectangle* in it — a set of literals
+# every repair in the rectangle shares, and the alternatives that complete it —
+# and the family holds smallest repairs the menus do not reach.
+function factor_repairs(repairs::Vector{Vector{Int}})
+    lits = sort!(unique!(reduce(vcat, repairs; init = Int[])))
+    n = length(lits)
+    at = Dict{Int,Int}(l => i for (i, l) in enumerate(lits))
+    shared = falses(n, n) # do the two literals appear in a repair together?
+    for r in repairs, a in r, b in r
+        shared[at[a], at[b]] = true
+    end
+    group = zeros(Int, n)
+    ngroups = 0
+    for i = 1:n
+        group[i] == 0 || continue
+        group[i] = (ngroups += 1)
+        stack = Int[i]
+        while !isempty(stack)
+            u = pop!(stack)
+            for v = 1:n
+                group[v] == 0 && !shared[u, v] || continue
+                group[v] = ngroups
+                push!(stack, v)
             end
         end
     end
-    for p in dropped
-        push!(actions, Action{P}(:drop, p))
+    choices = Vector{Int}[Int[lits[i] for i = 1:n if group[i] == g]
+                          for g = 1:ngroups]
+    length(repairs) == prod(length, choices; init = 1) &&
+        all(r -> all(c -> count(in(c), r) == 1, choices), repairs) &&
+        return choices, true
+    return largest_rectangle(repairs)
+end
+
+# The largest rectangle in a family of same-sized repairs: a core of literals
+# every repair in it contains, and the alternatives that complete it. A core one
+# literal short of a repair is completed by exactly one literal of every repair
+# that contains it, so every such core is a rectangle and there are few enough
+# of them to try each one. The cores are tried in an order of their own, so that
+# which rectangle wins a tie does not depend on the order the repairs were
+# discovered in.
+function largest_rectangle(repairs::Vector{Vector{Int}})
+    cores = sort!(unique!(Vector{Int}[sort!(Int[k for k in r if k ≠ l])
+                                      for r in repairs for l in r]))
+    core = alts = Int[]
+    for c in cores
+        a = sort!(Int[k for s in repairs if c ⊆ s for k in s if k ∉ c])
+        length(a) > length(alts) || continue
+        core, alts = c, a
     end
-    unique!(actions)
-    # relaxations before drops, so the menu reads as an instruction
-    sort!(actions; by = a -> (a.kind === :drop, a.pkg, a.kind))
-    return actions
+    choices = push!(Vector{Int}[Int[k] for k in core], alts)
+    return choices, length(alts) == length(repairs)
+end
+
+# Presentation order for the choices and the alternatives within them, given the
+# order the repairs were asked for in. Within a choice, relaxing a constraint
+# comes before dropping a requirement, which is the same preference the
+# candidate order states by putting the requirements first; the choices
+# themselves go in the order their earliest alternative was offered in.
+function order_choices!(
+    choices    :: Vector{Vector{Int}},
+    candidates :: Vector{Int},
+    nreqs      :: Int,
+)
+    at = Dict{Int,Int}(l => i for (i, l) in enumerate(candidates))
+    for c in choices
+        sort!(c; by = l -> (at[l] ≤ nreqs, at[l]))
+    end
+    sort!(choices; by = c -> minimum(at[l] for l in c))
+    return choices
 end
 
 # The withdrawal a set of actions asks for, in the two parts `relax` takes it:
@@ -540,10 +822,10 @@ end
 
 Why the resolve of `prob` against the instance `sat` failed, and what would
 make it succeed. `univ` is the universe `sat` was built from — the one
-`prepare_pkg_info(info, prob; order)` produced, filtered for `prob` — and each
-fix is verified by resolving on it the relaxation of `prob` that carrying the
-fix out gives, with the same `by` and `order` the failed resolve used. The
-solution that comes back is the fix's witness. Filtering for `prob` deletes
+`prepare_pkg_info(info, prob; order)` produced, filtered for `prob` — and every
+fix comes with a witness: the relaxation of `prob` that carrying it out (along
+with the first fix of every other conflict) gives, resolved on `univ` with the
+same `by` and `order` the failed resolve used. Filtering for `prob` deletes
 nothing such a relaxation needs, which is the manual's Theorem C, so no fix
 needs a universe of its own.
 
@@ -563,56 +845,81 @@ function diagnose(
     # a requirement the universe holds no installable version of is not
     # something the instance can be asked about: it has no variable, and no
     # constraint of this query is what took it away, since a constraint empties
-    # classes rather than deleting them. It is a conflict of its own, and every
-    # fix has to drop it
+    # classes rather than deleting them. It is a conflict of its own, and
+    # dropping it is the only thing that could settle that conflict
     gone = P[p for p in reqs if !haskey(vm, p)]
     req_lits = Int[installed_lit(sat, p) for p in reqs if haskey(vm, p)]
 
-    conflicts = Conflict{P,V}[
-        Conflict{P,V}([p], Fact[Requirement(p),
+    # per conflict, in report order: the story it tells and its menu, each
+    # alternative on it a set of actions
+    stories = Tuple{Vector{P},Vector{Fact}}[
+        (P[p], Fact[Requirement(p),
             Availability{P,V}(p, V[], Vector{Symbol}[])]) for p in gone]
+    menus = Vector{Vector{Action{P}}}[
+        Vector{Action{P}}[Action{P}[Action{P}(:drop, p)]] for p in gone]
 
-    # partition the requirements into independent conflicts, with the query
-    # exactly as production posed it
-    clusters = sat_disjoint_muses(sat, req_lits)
-
-    # distinct correction sets can ask for the same actions, and one action set
-    # can be a strict superset of another; keep the minimal ones, in
-    # enumeration order. Doing this before the witnesses are resolved saves the
-    # resolves the surviving fixes do not need
-    action_sets = Vector{Action{P}}[]
-    seen = Set{Set{Action{P}}}()
+    others = :none
     with_classes_relaxed(sat) do
         with_emptied_packages(sat, vm) do pkg_lits, pkgs
             emptied = Dict{Int,P}(zip(pkg_lits, pkgs))
-            for cluster in clusters
-                push!(conflicts,
-                    conflict_story(sat, prob, vm, cluster, emptied, pkg_lits))
-            end
-            # every minimal repair, requirements first so they are kept and the
-            # menu prefers relaxing a constraint to dropping a dependency
-            for mcs in sat_mcses(sat, [req_lits; pkg_lits]; limit = MAX_FIXES)
-                actions = correction_actions(sat, prob, vm, emptied, mcs, gone)
-                key = Set(actions)
-                key in seen && continue
-                push!(seen, key)
-                push!(action_sets, actions)
+            # requirements first, so that a repair keeps them and prefers
+            # relaxing a constraint to dropping a dependency, and so that a
+            # story drops the requirements it does not need
+            candidates = [req_lits; pkg_lits]
+            cheapest = smallest_repairs(sat, candidates, MAX_REPAIRS)
+            choices, whole = factor_repairs(cheapest)
+            order_choices!(choices, candidates, length(req_lits))
+            # what the menus leave out: nothing when they reach every cheapest
+            # repair and no repair costs more than the cheapest. The second is
+            # a question to put to the instance, and putting it takes every
+            # cheapest repair, so a truncated enumeration has to leave both
+            # unanswered
+            others =
+                length(cheapest) ≥ MAX_REPAIRS || !whole ? :some :
+                larger_repair_exists(sat, cheapest) ? :larger : :none
+            # A story explains one choice by settling all the others: drop the
+            # rest of one repair from what may be assumed, and what is left is
+            # still unsatisfiable, minimally so once this choice is made. The
+            # repair's own minimality is what puts this choice's literal in the
+            # conflict and keeps the other choices' literals out of it.
+            settled = Int[first(c) for c in choices]
+            for (i, choice) in enumerate(choices)
+                rest = Set{Int}(settled[j] for j in eachindex(settled) if j ≠ i)
+                push!(stories, conflict_story(sat, prob, vm, emptied,
+                    Int[l for l in candidates if l ∉ rest]))
+                push!(menus, Vector{Action{P}}[
+                    correction_actions(sat, prob, vm, emptied, l)
+                    for l in choice])
             end
         end
     end
-    filter!(a -> !any(b -> Set(b) ⊊ Set(a), action_sets), action_sets)
 
     # the instance is back as the query posed it, which is what answering a
-    # relaxation on it needs — the deactivation frame in place for it to lift
-    fixes = Fix{P,V}[]
-    for actions in action_sets
-        sol = resolve(sat, relax(univ, prob, withdrawal(actions)...; order); by)
-        # relaxing a kind admits at least what the correction set asked for and
-        # never less, so a repair the instance verified resolves here too
-        @assert sol !== nothing
-        push!(fixes, Fix{P,V}(actions, sol))
+    # relaxation on it needs — the deactivation frame in place for it to lift.
+    # A fix repairs one conflict, so what it is resolved with is the first fix
+    # of every other one; those combinations repeat, and a solution is a
+    # resolve, so they are answered once each
+    defaults = Vector{Action{P}}[first(menu) for menu in menus]
+    solutions = Dict{Vector{Action{P}},Dict{P,V}}()
+    conflicts = Conflict{P,V}[]
+    for (i, (creqs, chain)) in enumerate(stories)
+        fixes = Fix{P,V}[]
+        for actions in menus[i]
+            together = combined_actions(Vector{Action{P}}[
+                j == i ? actions : defaults[j] for j in eachindex(menus)])
+            sol = get!(solutions, together) do
+                s = resolve(sat,
+                    relax(univ, prob, withdrawal(together)...; order); by)
+                # relaxing a kind admits at least what the repair asked for and
+                # never less, so a repair the instance found resolves here too
+                @assert s !== nothing
+                s
+            end
+            push!(fixes, Fix{P,V}(actions, sol))
+        end
+        push!(conflicts, Conflict{P,V}(creqs, chain, fixes))
     end
-    return Diagnosis{P,V}(conflicts, fixes)
+    return Diagnosis{P,V}(conflicts, others)
 end
 
 end # module

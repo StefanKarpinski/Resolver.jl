@@ -95,6 +95,149 @@ the query empties is **deactivated, not deleted**. It keeps its row, its
 column in every partner, and its dependency columns, which is exactly what
 a question about giving it back needs to find still there.
 
+## Conflicts are the coordinates of the repairs
+
+A report hands out one menu per conflict and invites the reader to choose
+from each of them independently. What that claims is that *every*
+combination of choices repairs the query, and it is not something checked
+after the fact: it is how the conflicts are found in the first place.
+
+Write ``F`` for the minimal correction sets of the assumptions above — every
+set of them whose withdrawal is satisfiable and no proper subset of which is
+(`sat_mcses`) — and ``F_{\min} \subseteq F`` for the ones of smallest size.
+A member of ``F_{\min}`` gives up as few of the user's own facts as any
+repair of the query can.
+
+Only ``F_{\min}`` is ever enumerated, and the way to enumerate just it is to
+refuse to look at anything bigger. A repair is the set of assumptions a model
+leaves unsatisfied, so "no repair bigger than ``k``" is an at-most-``k``
+constraint over their negations — a few clauses over counting variables — and
+the bound turns the enumeration into the one that is wanted.
+
+!!! note "Observation (a bound cuts the family off rather than changing it)"
+    Let ``B_k`` be the instance together with a constraint that at most ``k``
+    of the assumptions go unsatisfied. Then ``B_k`` is satisfiable exactly
+    when ``F`` has a member of size ``k`` or less, and the minimal correction
+    sets of ``B_k`` are exactly those members.
+
+    *Proof.* A model of ``B_k`` is a model of the instance leaving at most
+    ``k`` assumptions unsatisfied, and the set it leaves unsatisfied is a
+    correction set, which contains a minimal one; conversely a member of
+    ``F`` of size ``k`` or less is witnessed by a model that leaves exactly
+    it unsatisfied, and that model satisfies ``B_k``. So the two are
+    satisfiable together.
+
+    Let ``C`` be a minimal correction set of ``B_k``, witnessed by a model
+    ``\mu`` of ``B_k``. The assumptions ``\mu`` leaves unsatisfied are a
+    subset of ``C`` and a correction set of ``B_k``, so by minimality they
+    are ``C`` itself, and ``|C| \le k``. And ``C`` is minimal for the
+    instance: anything strictly inside it is smaller than ``k`` too, so it is
+    a correction set of ``B_k`` if it is one at all, which minimality
+    forbids. The converse is the same statement read backwards — a correction
+    set of the instance of size ``k`` or less is one of ``B_k``, and
+    minimality for the instance is minimality for ``B_k`` since ``B_k`` has
+    the fewer models. ∎
+
+So raising ``k`` from 1 until ``B_k`` becomes satisfiable finds the size of a
+smallest repair — ``k`` is 2 to 6 on the registry queries this was measured on,
+so it is a handful of solves, and each counter is as small as the answer — and
+enumerating at that bound enumerates ``F_{\min}`` and nothing else.
+
+!!! note "Observation (a family that counts right is a product)"
+    Let ``C_1, \dots, C_k`` partition the literals ``F_{\min}`` uses, and
+    suppose every ``M \in F_{\min}`` contains exactly one literal of each
+    ``C_i``, and that ``|F_{\min}| = \prod_i |C_i|``. Then
+    ``F_{\min} = C_1 \times \dots \times C_k``.
+
+    *Proof.* Sending each ``M`` to the tuple of its literals is well defined
+    by the first hypothesis and injective because a set is determined by its
+    elements. An injection between finite sets of equal size is a bijection,
+    so every tuple is some ``M``. ∎
+
+Both hypotheses are cheap to check, and the partition to check them against
+is forced: literals of the same ``C_i`` never share a repair, so the
+candidate partition is the connected components of "never share a repair",
+and if any partition works that one does. So the report offers ``C_i`` as
+its ``i``-th conflict and the literals of ``C_i`` as that conflict's menu.
+Every path through the menus is a member of ``F_{\min}`` — a repair, and one
+of the cheapest. Nothing is left to compose and nothing is left to warn
+about.
+
+It also follows that there are exactly as many conflicts as a cheapest
+repair has literals. The conflict count is not an artifact of how the search
+went: it is the size of the smallest fix.
+
+### The story of a coordinate
+
+A menu says what to choose between without saying why. Fix any
+``M \in F_{\min}``, and for the ``i``-th coordinate let ``c_i`` be its
+literal of ``M``. Withdraw ``M \setminus \{c_i\}`` — every *other*
+coordinate settled the way ``M`` settles it — and ask what is left.
+
+It is unsatisfiable: ``M`` is minimal, so no proper subset of it repairs
+anything. A MUS of it therefore exists, and it must contain ``c_i``, since
+withdrawing ``c_i`` as well is withdrawing all of ``M``, which does repair.
+And it contains no other literal of ``M``, because those were withdrawn
+before the question was asked. So the ``i``-th conflict gets a story about
+its own choice and nobody else's.
+
+A MUS is not the whole story, though, and the gap is one a report cannot
+afford. Several requirements can fail for one and the same reason; one of
+them is already enough to make that reason unsatisfiable, so a MUS names one
+of them — arbitrarily — and drops the rest as redundant. They are not
+redundant to the user: they are required, they are broken, and this
+conflict's fix is what rescues them. A report that omitted them would let
+someone relax the bound and never learn what else had been failing.
+
+So each requirement the MUS left out is asked one further question: is it
+satisfiable on its own, against the packages as this coordinate finds them
+(that is, with every *other* coordinate's choice already made)? If it is
+not, then it is one this coordinate rescues — because applying ``c_i`` on
+top is applying all of ``M``, and ``M`` repairs the query, so every
+requirement of the query is satisfiable afterwards. Each such requirement
+brings its own MUS, and the chain is the union.
+
+The chain is therefore a union of minimal conflicts rather than a single
+one: unsatisfiable, with every fact in it belonging to at least one of them,
+but not with every fact load-bearing for the whole. A conflict whose
+requirements fail *together* is the special case where there is only one.
+
+### What the menus leave out
+
+Two things can be true beyond what the menus say, and they are independent:
+
+* ``F \ne F_{\min}``: repairs exist that give up more than these do. With
+  ``F_{\min}`` in hand this is decided exactly, by one solve.
+* ``F_{\min}`` is not a product: then the best that can be offered is the
+  largest *rectangle* in it — a set of literals every repair in the
+  rectangle shares, together with the alternatives that complete it — and
+  the repairs outside the rectangle are cheapest ones the menus never reach.
+
+!!! note "Observation (one solve decides whether anything larger exists)"
+    Let ``F_{\min} = \{M_1, \dots, M_t\}`` be *all* the repairs of smallest
+    size, and add to the instance the clause ``\bigvee_{c \in M_i} c`` for
+    each ``i``. The result is satisfiable exactly when ``F \ne F_{\min}``.
+
+    *Proof.* Write ``U(\mu)`` for the assumptions a model ``\mu`` leaves
+    unsatisfied; it is a correction set, and the clause for ``M_i`` says
+    exactly that ``M_i \not\subseteq U(\mu)``. So a model of the augmented
+    instance has a ``U(\mu)`` containing no ``M_i``; the minimal correction
+    set inside it is therefore none of them, and ``F`` has a member outside
+    ``F_{\min}``. Conversely let ``N \in F \setminus F_{\min}``. A model
+    witnessing ``N`` leaves exactly ``N`` unsatisfied, and no ``M_i`` is
+    inside ``N``, since two distinct minimal correction sets are
+    incomparable — so that model satisfies every added clause. ∎
+
+Note which way round the clause goes: an assumption is stated as the user
+would want it to hold, so the assumptions a model *satisfies* are the ones the
+repair it witnesses leaves alone. Ruling ``M_i`` out is therefore asking for
+one of its literals, not against it.
+
+A report says nothing when neither holds, "Larger solutions also exist."
+when only the first does, and "Other solutions also exist." whenever the second
+does. Exploring those other solutions is a question this page does not
+answer.
+
 ## Versions come from a resolve, not from the instance
 
 Theorem C is about the answer, but the questions above only ask about

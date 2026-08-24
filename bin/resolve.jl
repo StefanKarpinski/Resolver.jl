@@ -536,13 +536,14 @@ function named(d::Resolver.Diagnosis, name::Function)
     Resolver.Diagnosis(
         [Diagnostics.Conflict{String,VersionNumber}(
             String[name(p) for p in c.reqs],
-            Diagnostics.Fact[named(f, name) for f in c.chain])
+            Diagnostics.Fact[named(f, name) for f in c.chain],
+            [Diagnostics.Fix{String,VersionNumber}(
+                [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
+                Dict{String,VersionNumber}(
+                    name(p) => v for (p, v) in fix.solution))
+             for fix in c.fixes])
          for c in d.conflicts],
-        [Diagnostics.Fix{String,VersionNumber}(
-            [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
-            Dict{String,VersionNumber}(
-                name(p) => v for (p, v) in fix.solution))
-         for fix in d.fixes])
+        d.others)
 end
 
 named(f::Diagnostics.Requirement, name::Function) =

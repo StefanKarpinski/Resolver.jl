@@ -540,6 +540,21 @@ const conflict_path = Dict(
     :R => PkgData([:r2, :r1], DEPS_NONE, COMP_NONE),
 )
 
+# Two conflicts at once, the second of them squeezed twice over: :B needs :U at
+# a version the query has taken away, and :E needs :Z at one and :T at another,
+# reaching :T through :M. Either of :E's squeezes explains it by itself, so the
+# smallest explanation names one of them — and the walk from :E meets the other
+# on its way there
+const two_squeezes = Dict(
+    :B => PkgData([:b1], Dict(:b1 => [:U]), Dict(:b1 => Dict(:U => [:u2]))),
+    :E => PkgData([:e2, :e1], Dict(:e1 => [:M, :Z]),
+        Dict(:e1 => Dict(:Z => [:z2]))),
+    :M => PkgData([:m1], Dict(:m1 => [:T]), Dict(:m1 => Dict(:T => [:t2]))),
+    :T => PkgData([:t2, :t1], DEPS_NONE, COMP_NONE),
+    :U => PkgData([:u2, :u1], DEPS_NONE, COMP_NONE),
+    :Z => PkgData([:z2, :z1], DEPS_NONE, COMP_NONE),
+)
+
 @testset "diagnosis: independent conflicts come out separately" begin
     prob = Problem([:A, :B, :E, :F])
     d = check_diagnosis(two_conflicts, prob)
@@ -859,6 +874,39 @@ end
     @test occursin("The only fix: relax your compat on C", report)
     # the witness names both of them too
     @test occursin("→ allows: A a2, B b2, C c2", report)
+end
+
+@testset "diagnosis: a story ends where its own facts are" begin
+    # :E is squeezed by :Z one hop away and by :T two hops away, and the
+    # smallest explanation of it names :T. The walk has to end there too: a
+    # story that stopped at :Z would state a dependency on a package it then
+    # says nothing about, and :T's bound would arrive with nothing in the chain
+    # to connect it to — this conflict wearing another one's fact
+    prob = Problem([:B, :E];
+        compat = Dict(:E => [:e1], :T => [:t1], :U => [:u1], :Z => [:z1]))
+    d = check_diagnosis(two_squeezes, prob)
+    @test length(d.conflicts) == 2
+    c = only(x for x in d.conflicts if x.reqs == [:E])
+    @test c.chain == Fact[Requirement(:E),
+        Availability{Symbol,Symbol}(:E, [:e2, :e1], [[:compat], Symbol[]]),
+        Dependency{Symbol,Symbol}(:E, [:e1], :M, [:m1], [true], true, true),
+        Dependency{Symbol,Symbol}(:M, [:m1], :T, [:t2, :t1],
+            [true, false], true, true),
+        Availability{Symbol,Symbol}(:T, [:t2, :t1], [[:compat], Symbol[]])]
+    # ... which is to say that every package the chain says the query emptied
+    # is one the chain's own relations reach
+    reached = Set{Symbol}(c.reqs)
+    for f in c.chain
+        f isa Dependency && push!(reached, f.pkg, f.dep)
+    end
+    @test all(f -> !(f isa Availability) || f.pkg in reached, c.chain)
+    # :Z is no part of this story, so the report does not mention it
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("E e1 requires M\n", report)
+    @test occursin("M m1 requires T at t2\n", report)
+    @test !occursin("Z", report)
+    @test [fix.actions for fix in c.fixes] ==
+        [[Action(:compat, :E)], [Action(:drop, :E)]]
 end
 
 @testset "diagnosis: cheapest repairs that are not a product" begin

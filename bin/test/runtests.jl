@@ -711,9 +711,11 @@ end
         # by name, since a uuid is not what the reader knows the package as
         @test occursin("cannot be satisfied", msg)
         @test occursin("you require LinearAlgebra", msg)
-        @test occursin("no version of LinearAlgebra is available", msg)
+        # "left", not "available": the registry has versions of it, and the
+        # query's own compat is what took every one of them away
+        @test occursin("no version of LinearAlgebra is left", msg)
         # (the report is filled to a line width, so the clause may be broken)
-        @test occursin("excluded by", msg)
+        @test occursin("by your compat", msg)
         @test occursin("Fix it by any one of:", msg)
         @test occursin("relax your compat on LinearAlgebra", msg)
         @test !occursin(string(LINEAR_ALGEBRA), msg)

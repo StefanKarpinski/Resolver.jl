@@ -123,7 +123,6 @@ end
 # the checks below for which answers are state-independent and which aren't.
 transcript(sat::SAT, L::Vector{Int}) = (
     mus   = sat_mus(sat, L),
-    cover = sat_disjoint_muses(sat, L),
     mss   = sat_mss(sat, L),
     mcs   = sat_mcs(sat, L),
     mcses = sat_mcses(sat, L),
@@ -148,16 +147,6 @@ function check_mus_mcs(sat::SAT, info, sols, cands::Vector{Cand})
 
     t = transcript(sat, L)
     check_is_mus(t.mus)
-
-    # the disjoint cover: each a MUS, pairwise disjoint, remainder satisfiable
-    @test all_sat == isempty(t.cover)
-    covered = Int[]
-    for m in t.cover
-        check_is_mus(m)
-        append!(covered, m)
-    end
-    @test allunique(covered)
-    @test oracle_sat(sols, pick(setdiff(L, covered)))
 
     # an MSS is satisfiable and admits no further candidate
     @test t.mss !== nothing
@@ -271,7 +260,7 @@ const no_conflict_data = Dict(
 )
 
 @testset "unsat cores: the API is the submodule's export list" begin
-    api = [:sat_mus, :sat_disjoint_muses, :sat_mcses]
+    api = [:sat_mus, :sat_mcses]
     @test Set(names(Resolver.UnsatCores)) == Set([:UnsatCores; api])
     # the machinery underneath — including the single-repair pair the enumeration
     # is built out of — is defined but stays inside
@@ -283,10 +272,11 @@ const no_conflict_data = Dict(
     # and `Resolver` re-exports none of it
     @test isempty(intersect(names(Resolver), api))
     # nothing survives of what was dropped: the package-keyed conveniences and
-    # their package/literal translation, the union of a cover, and the `_lits`
+    # their package/literal translation, the disjoint cover, and the `_lits`
     # suffix that only existed to keep the conveniences from colliding
     for gone in (:sat_mus_union, :sat_pkg_lits, :sat_lit_pkgs, :sat_mus_lits,
-                 :sat_disjoint_muses_lits, :sat_mus_union_lits, :sat_mss_lits,
+                 :sat_disjoint_muses, :sat_disjoint_muses_lits,
+                 :sat_mus_union_lits, :sat_mss_lits,
                  :sat_mcs_lits, :sat_mcses_lits)
         @test !isdefined(Resolver.UnsatCores, gone)
         @test !isdefined(Resolver, gone)
@@ -323,7 +313,6 @@ end
             Set([Set([:A]), Set([:B])])
         # requiring neither A nor B is fine, so there is nothing to report
         @test isempty(ask(sat_mus, [:C, :D]))
-        @test isempty(sat_disjoint_muses(sat, pkg_lits(sat, [:C, :D])))
         @test ask(sat_mss, [:C, :D]) == [:C, :D]
         @test isempty(ask(sat_mcs, [:C, :D]))
         @test sat_mcses(sat, pkg_lits(sat, [:C, :D])) == [Int[]]
@@ -339,13 +328,10 @@ end
         pkgs = [:A, :B, :C, :E, :F, :G]
         L = pkg_lits(sat, pkgs)
         names_of(sub) = pkg_names(sat, pkgs, sub)
-        # a single conflict covers one of them -- which one is up to the solver's
-        # failed-assumption core -- while the disjoint cover finds both
+        # a single conflict covers one of them -- which one is up to the
+        # solver's failed-assumption core
         @test Set(names_of(sat_mus(sat, L))) ∈
             (Set([:A, :B]), Set([:E, :F]))
-        cover = sat_disjoint_muses(sat, L)
-        @test Set(Set(names_of(m)) for m in cover) ==
-            Set([Set([:A, :B]), Set([:E, :F])])
         # repairing needs one package from each conflict: 2 × 2 = 4 ways
         mcses = sat_mcses(sat, L)
         @test length(mcses) == 4
@@ -375,7 +361,6 @@ end
             sat_add_var(sat, -x); sat_add(sat)
             @test !sat_solve(sat)
             @test isempty(sat_mus(sat, L))
-            @test isempty(sat_disjoint_muses(sat, L))
             @test isempty(sat_mcses(sat, L))
             # white-box: no repair exists, and the pair says so rather than
             # inventing an empty one
@@ -384,7 +369,6 @@ end
         end
         # popping the contradiction restores the instance
         @test sat_solve(sat)
-        @test sat_mus(sat, L) == first(sat_disjoint_muses(sat, L))
     finally
         finalize(sat)
     end
@@ -395,7 +379,6 @@ end
     sat = SAT(info)
     try
         @test isempty(sat_mus(sat, Int[]))
-        @test isempty(sat_disjoint_muses(sat, Int[]))
         @test sat_mcses(sat, Int[]) == [Int[]]
         @test sat_mss(sat, Int[]) == Int[] # white-box
         @test sat_mcs(sat, Int[]) == Int[] # white-box

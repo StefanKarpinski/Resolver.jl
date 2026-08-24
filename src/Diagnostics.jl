@@ -24,11 +24,11 @@ re-exports none of the others.
 module Diagnostics
 
 export Diagnosis, Conflict, Fix, Action, Fact, Requirement, Availability,
-    unavailable, action_phrase, diagnose
+    Dependency, Incompatibility, unavailable, action_phrase, diagnose
 
-using ..Resolver: SAT, Problem, Universe, relax, resolve, installed_lit,
-    with_temp_clauses, with_classes_relaxed, sat_new_variable, sat_add_var,
-    sat_add, sat_solve, exclusion_kinds, class_exclusions
+using ..Resolver: SAT, PkgInfo, Problem, Universe, relax, resolve, nclasses,
+    installed_lit, with_temp_clauses, with_classes_relaxed, sat_new_variable,
+    sat_add_var, sat_add, sat_solve, exclusion_kinds, class_exclusions
 using ..UnsatCores: sat_mus, sat_mcses
 
 # What an unsatisfiable resolve says, and how it is found.
@@ -97,10 +97,18 @@ using ..UnsatCores: sat_mus, sat_mcses
     Resolver.Diagnostics.Fact
 
 One statement in a conflict's chain: something true of the packages that helps
-explain why the requirements cannot hold together. The two kinds are
+explain why the requirements cannot hold together. The kinds are
 [`Requirement`](@ref Resolver.Diagnostics.Requirement) — "you require this
-package" — and [`Availability`](@ref Resolver.Diagnostics.Availability) — "this
-is what your constraints leave of the package's versions".
+package"; [`Availability`](@ref Resolver.Diagnostics.Availability) — "this is
+what your constraints leave of the package's versions";
+[`Dependency`](@ref Resolver.Diagnostics.Dependency) — "these versions of this
+package need that one, at these versions"; and
+[`Incompatibility`](@ref Resolver.Diagnostics.Incompatibility) — "these
+versions of the two do not go together".
+
+The first two are about what the query asked for, and the last two about what
+the registry says, which is the step from one to the next that a reader could
+not have worked out for themselves.
 
 Facts are plain data, so a caller can render its own report from a
 [`Diagnosis`](@ref) without asking the resolver anything further.
@@ -148,6 +156,69 @@ struct Availability{P,V} <: Fact
 end
 
 """
+    Resolver.Diagnostics.Dependency{P,V}(pkg, versions, dep, offering, allowed, newest, oldest)
+
+The fact that some versions of `pkg` need `dep`, and which versions of it they
+will take:
+
+  * `versions` — the versions of `pkg` this fact speaks for: a run of what the
+    package offers, best first. Every one of them depends on `dep` and takes
+    the same versions of it, and they are versions this query admits, so the
+    fact is about the choice the resolve actually had.
+  * `offering` — every version of `dep` the resolve could have chosen, in the
+    order `dep` lists them.
+  * `allowed` — per version of the offering, whether `versions` admit it.
+    Nothing of the query is in this: it is what `pkg` says about `dep`. It is
+    `nothing` where no bound of `pkg`'s is what the conflict turns on — a step
+    on the way to the package that has nothing left, or a `dep` the query has
+    left nothing of, which every bound would starve alike — and then the fact
+    says only that `dep` is needed, which is all it is there to say.
+
+The direction is a claim, not a convention. A registry records compatibility
+symmetrically, so which side declared a bound is not generally recoverable, and
+this fact is stated only where the registry does record `pkg` as depending on
+`dep`. Where it does not, all that can be said is that the two do not go
+together, which is an
+[`Incompatibility`](@ref Resolver.Diagnostics.Incompatibility).
+"""
+struct Dependency{P,V} <: Fact
+    pkg      :: P
+    versions :: Vector{V}
+    dep      :: P
+    offering :: Vector{V}
+    allowed  :: Union{Nothing,Vector{Bool}}
+    # whether `versions` reaches the newest / oldest version of `pkg` this
+    # query admits, so the range can be stated as an open bound
+    newest   :: Bool
+    oldest   :: Bool
+end
+
+"""
+    Resolver.Diagnostics.Incompatibility{P,V}(pkg, versions, other, offering, allowed, newest, oldest)
+
+The fact that some versions of `pkg` go with only some versions of `other`,
+with nothing said about which of the two declared it. The fields are
+[`Dependency`](@ref Resolver.Diagnostics.Dependency)'s: `versions` is a run of
+`pkg`'s versions this query admits that all agree about `other`, and `allowed`
+says, per version of `other`'s `offering`, whether they admit it.
+
+A registry records compatibility symmetrically — that these two versions
+cannot be installed together, not that one of them said so — so this is what
+is left to say when the versions it speaks for do not depend on the package it
+speaks about: there is no side to put the bound on, and it puts it on neither.
+Reading it the other way round is just as true.
+"""
+struct Incompatibility{P,V} <: Fact
+    pkg      :: P
+    versions :: Vector{V}
+    other    :: P
+    offering :: Vector{V}
+    allowed  :: Vector{Bool}
+    newest   :: Bool
+    oldest   :: Bool
+end
+
+"""
     Resolver.Diagnostics.unavailable(fact::Availability) :: Bool
 
 Whether the fact leaves its package with no version at all — every version it
@@ -180,6 +251,20 @@ Base.hash(a::Action, h::UInt) = hash(a.pkg, hash(a.kind, hash(:Action, h)))
 
 Base.:(==)(a::Requirement, b::Requirement) = a.pkg == b.pkg
 Base.hash(a::Requirement, h::UInt) = hash(a.pkg, hash(:Requirement, h))
+
+Base.:(==)(a::Dependency, b::Dependency) =
+    a.pkg == b.pkg && a.versions == b.versions && a.dep == b.dep &&
+    a.offering == b.offering && a.allowed == b.allowed
+Base.hash(a::Dependency, h::UInt) =
+    hash(a.allowed, hash(a.offering, hash(a.dep,
+        hash(a.versions, hash(a.pkg, hash(:Dependency, h))))))
+
+Base.:(==)(a::Incompatibility, b::Incompatibility) =
+    a.pkg == b.pkg && a.versions == b.versions && a.other == b.other &&
+    a.offering == b.offering && a.allowed == b.allowed
+Base.hash(a::Incompatibility, h::UInt) =
+    hash(a.allowed, hash(a.offering, hash(a.other,
+        hash(a.versions, hash(a.pkg, hash(:Incompatibility, h))))))
 
 Base.:(==)(a::Availability, b::Availability) =
     a.pkg == b.pkg && a.members == b.members && a.excluded == b.excluded
@@ -291,8 +376,17 @@ action_phrase(a::Action) =
 
 # a run of a package's versions, compressed: packages list their versions best
 # first, so a run reads low to high
-range_phrase(members, i::Int, j::Int) =
-    i == j ? string(members[i]) : "$(members[j])–$(members[i])"
+# When a run reaches the end of what is on offer, an open bound says so: "≥
+# 1.2.0" tells the reader nothing newer is at issue, where "1.2.0–1.9.3" leaves
+# them wondering what is wrong with 1.9.4. `high`/`low` say whether the run
+# reaches the newest/oldest version there is to reach.
+function range_phrase(members, i::Int, j::Int; high::Bool = false, low::Bool = false)
+    i == j && !(high && low) && return string(members[i])
+    high && low && return "any version"
+    high && return "≥ $(members[j])"
+    low && return "≤ $(members[i])"
+    return "$(members[j])–$(members[i])"
+end
 
 # join a list of phrases into an English list
 function list_phrase(parts::Vector{String})
@@ -317,13 +411,73 @@ function availability_phrase(f::Availability)
         if !isempty(excluded[i])
             by = kinds_phrase(excluded[i])
             push!(clauses, isempty(clauses) ?
-                "$(range_phrase(members, i, j)) excluded by $by" :
-                "$(range_phrase(members, i, j)) by $by")
+                "$(range_phrase(members, i, j; high = open_high(i, j, members),
+                    low = open_low(i, j, members))) excluded by $by" :
+                "$(range_phrase(members, i, j; high = open_high(i, j, members),
+                    low = open_low(i, j, members))) by $by")
         end
         i = j + 1
     end
     head = unavailable(f) ? "no version of $(f.pkg) is available" : string(f.pkg)
     return isempty(clauses) ? head : "$head: $(join(clauses, ", "))"
+end
+
+# The versions a mask picks out of a package's offering, as an English list of
+# ranges. Packages list their versions best first, so a run reads low to high;
+# a run is a run of the offering, so a range never spans a version the mask
+# leaves out.
+function offering_phrase(offering::Vector, allowed::Vector{Bool})
+    parts = String[]
+    i = 1
+    while i ≤ length(allowed)
+        if allowed[i]
+            j = i
+            while j < length(allowed) && allowed[j+1]
+                j += 1
+            end
+            push!(parts, range_phrase(offering, i, j;
+                high = i == 1, low = j == length(allowed)))
+            i = j
+        end
+        i += 1
+    end
+    return join(parts, ", ")
+end
+
+# What a relation is about. The versions are named whatever they are: they are
+# the versions this query left standing, so leaving them out would let the
+# sentence be read as one about the package rather than about the choice the
+# resolve had — and a version range is shorter than saying so.
+# A run reaching one end of the offering is stated as an open bound; a run
+# reaching *both* is not "any version" — it is every version there is, and the
+# sentence around it already says so — so it is named in full.
+open_high(i::Int, j::Int, members) = i == 1 && j != length(members)
+open_low(i::Int, j::Int, members) = j == length(members) && i != 1
+
+# An open bound is stated only at one end: a run reaching *both* ends of what
+# the query admits is still not "any version" — the availability fact just said
+# which versions were taken away — so it is named in full.
+relation_subject(f) =
+    "$(f.pkg) $(range_phrase(f.versions, 1, length(f.versions);
+        high = f.newest & !f.oldest, low = f.oldest & !f.newest))"
+
+# a dependency as one line, with the bound where there is one to state
+function dependency_phrase(f::Dependency)
+    subject = relation_subject(f)
+    (f.allowed === nothing || all(f.allowed)) &&
+        return "$subject requires $(f.dep)"
+    any(f.allowed) || return "$subject requires $(f.dep) at no version of it"
+    return "$subject requires $(f.dep) at " *
+        offering_phrase(f.offering, f.allowed)
+end
+
+# An incompatibility as one line. Nothing here says which package's compat
+# entry it came from, because nothing in the universe does
+function incompatibility_phrase(f::Incompatibility)
+    subject = relation_subject(f)
+    any(f.allowed) || return "$subject works with no version of $(f.other)"
+    return "$subject works with $(f.other) only at " *
+        offering_phrase(f.offering, f.allowed)
 end
 
 # print `text` filled to `width` columns, `lead` before the first line and
@@ -348,6 +502,19 @@ function print_wrapped(io::IO, text::AbstractString, lead::String, rest::String;
     end
     println(io)
 end
+
+# a fact as the line the report prints for it; the requirement is the one kind
+# with no versions in it, so it is the caller's to print
+fact_phrase(f::Availability)    = availability_phrase(f)
+fact_phrase(f::Dependency)      = dependency_phrase(f)
+fact_phrase(f::Incompatibility) = incompatibility_phrase(f)
+
+# the packages a fact speaks about, in the order it names them: what a report
+# shows versions of is what its facts are about
+fact_packages(f::Requirement)     = (f.pkg,)
+fact_packages(f::Availability)    = (f.pkg,)
+fact_packages(f::Dependency)      = (f.pkg, f.dep)
+fact_packages(f::Incompatibility) = (f.pkg, f.other)
 
 count_phrase(n::Int, one::String, many::String) =
     n == 0 ? "no $many" : n == 1 ? "1 $one" : "$n $many"
@@ -394,13 +561,11 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis{P,V}) where {P,V}
         for f in c.chain
             f isa Requirement ?
                 println(io, "  • you require $(f.pkg)") :
-                print_wrapped(io,
-                    availability_phrase(f::Availability), "  • ", "    ")
+                print_wrapped(io, fact_phrase(f), "  • ", "    ")
         end
         # the versions worth showing are the ones this conflict is about
         named = P[]
-        for f in c.chain
-            p = f isa Requirement ? f.pkg : (f::Availability).pkg
+        for f in c.chain, p in fact_packages(f)
             p in named || push!(named, p)
         end
         sort!(named)
@@ -625,6 +790,340 @@ function with_emptied_packages(body::Function, sat::SAT{P}, vm::VarMap{P}) where
     end
 end
 
+## why one package matters to another
+#
+# A chain says what the query asked for and what its constraints left of the
+# packages, and between the two there is a step it cannot take on its own: that
+# some versions of one package need another, at some versions of it. The user
+# wrote the requirement and wrote the bound; the dependency is the one link in
+# the story they could not have written, and until it is said the report is a
+# pair of facts with nothing between them.
+#
+# It is read off the universe, which records per class which packages that
+# class depends on and which classes of them it admits. What has to be found is
+# *which* steps to say, and that is a walk: start at the conflict's
+# requirements with the versions this query admits of them, follow the
+# dependencies every one of those versions has — the ones no choice of version
+# can avoid — and narrow each package reached by what the packages already
+# reached admit of it. A package the walk leaves with no version is where the
+# story ends, and the steps that got there are the story.
+#
+# The walk answers with a set of versions per package rather than pairing them
+# up, so it says less than the solver does: a package it leaves with nothing
+# really has nothing, and a package it leaves something with may still be
+# unreachable. That is the safe direction. Nothing it emits is a claim about
+# satisfiability — the chain's requirements and availabilities carry that, and
+# the solver checked them — and every fact it does emit is a statement about
+# the registry and this query's constraints that can be read straight back off
+# the universe.
+
+# the classes of `p` this query admits — the ones it left a version in
+admitted_classes(sat::SAT{P}, p::P) where {P} =
+    Bool[!iszero(r) for r in sat.reps[p]]
+
+# where `q` sits in `p`'s dependency columns, or nothing if `p` never needs it
+dep_column(info_p::PkgInfo{P}, q::P) where {P} =
+    (k = searchsortedfirst(info_p.depends, q);
+     k ≤ length(info_p.depends) && info_p.depends[k] == q ? k : nothing)
+
+# does every class in `live` of `p` depend on `q`? Only then is `q` forced by
+# `p`: a class that does without it is a choice the story would have to rule
+# out before it could claim `q` has to be installed
+function forces(info_p::PkgInfo{P}, q::P, live::Vector{Bool}) where {P}
+    k = dep_column(info_p, q)
+    k === nothing && return false
+    return all(!live[c] || info_p.conflicts[c, k] for c in eachindex(live))
+end
+
+# the classes of `q` that some class in `live` of `p` admits. A package the
+# two never interact over is one `p` says nothing about, so all of it is
+# admitted
+function admissible(sat::SAT{P}, p::P, q::P, live::Vector{Bool}) where {P}
+    info_p = sat.info[p]
+    n_q = nclasses(sat.info[q])
+    # the first partner's block of columns starts at offset 0, so whether
+    # there is a block at all is a question about the keys
+    haskey(info_p.interacts, q) || return fill(true, n_q)
+    b = info_p.interacts[q]
+    return Bool[any(live[c] && !info_p.conflicts[c, b+j] for c in eachindex(live))
+                for j = 1:n_q]
+end
+
+# The walk. Every pass reads one snapshot and writes the next, so what a
+# package's set was when it starved is a set the report can quote; taking each
+# package's answer as it comes would leave the story depending on the order the
+# packages were visited in.
+#
+# A pass first extends the forced set — a package every live class of a forced
+# package depends on has to be installed too — and then narrows every forced
+# package by every other forced package's bounds on it, dependency or not,
+# since two packages that are both installed have to agree however the bound
+# got there. Both directions are monotone, so the walk settles; it stops at the
+# first pass that leaves a package with nothing, which is a complete story and
+# the shortest one this walk has.
+#
+# Returns the snapshot the last pass read, the package each was first forced
+# by, and, per starved package, the classes it had before and the packages
+# whose bounds took them.
+function forced_descent(sat::SAT{P}, reqs::Vector{P}) where {P}
+    live = Dict{P,Vector{Bool}}(p => admitted_classes(sat, p) for p in reqs)
+    parent = Dict{P,P}()
+    forced = copy(reqs)
+    starved = Dict{P,Tuple{Vector{Bool},Vector{P}}}()
+    for _ = 1:length(sat.info)
+        snap = live
+        # to closure, so that a package forced by one forced this pass is
+        # reached this pass too — the narrowing below is what a pass is for,
+        # and it has nothing to say about a package it has not met
+        i = 1
+        while i ≤ length(forced)
+            p = forced[i]
+            i += 1
+            any(snap[p]) || continue
+            for q in sat.info[p].depends
+                haskey(snap, q) && continue
+                forces(sat.info[p], q, snap[p]) || continue
+                push!(forced, q)
+                snap[q] = admitted_classes(sat, q)
+                parent[q] = p
+            end
+        end
+        live = Dict{P,Vector{Bool}}()
+        changed = false
+        for q in forced
+            admits = admitted_classes(sat, q)
+            new = copy(admits)
+            blame = P[]
+            for p in forced
+                (p == q || !any(snap[p])) && continue
+                haskey(sat.info[p].interacts, q) || continue
+                a = admissible(sat, p, q, snap[p])
+                # everything that takes a version this query still admits,
+                # whether or not one is left by the time it is asked. Which of
+                # them the story needs is a question for later, and stopping
+                # at the first would name whichever came up first
+                any(admits[c] && !a[c] for c in eachindex(a)) && push!(blame, p)
+                new .&= a
+            end
+            live[q] = new
+            !any(new) && (starved[q] = (snap[q], blame))
+            new == snap[q] || (changed = true)
+        end
+        isempty(starved) || return snap, parent, starved
+        changed || break
+    end
+    return live, parent, starved
+end
+
+# Do the bounds of `blamed` between them leave `q` nothing? What a story about
+# `q` claims, and what makes each of the packages it names load-bearing
+function starves(sat::SAT{P}, snap::Dict{P,Vector{Bool}}, q::P,
+                 blamed::Vector{P}) where {P}
+    left = admitted_classes(sat, q)
+    for r in blamed
+        left .&= admissible(sat, r, q, snap[r])
+    end
+    return !any(left)
+end
+
+# The fewest of `blame` that still leave `q` nothing, so that a story names no
+# package it could have done without. Dropping is attempted on the packages the
+# query never asked for first, so that what survives is what the user can act
+# on rather than whichever package the walk happened to meet first
+function fewest_blamed(sat::SAT{P}, snap::Dict{P,Vector{Bool}}, q::P,
+                       blame::Vector{P}, reqs::Vector{P}) where {P}
+    keep = copy(blame)
+    order = [P[r for r in blame if r ∉ reqs]; P[r for r in blame if r ∈ reqs]]
+    for r in order
+        rest = P[x for x in keep if x != r]
+        starves(sat, snap, q, rest) && (keep = rest)
+    end
+    return keep
+end
+
+# the forcing steps from a requirement down to `p`, in that order
+function forcing_path(parent::Dict{P,P}, p::P) where {P}
+    path = Tuple{P,P}[]
+    while haskey(parent, p)
+        pushfirst!(path, (parent[p], p))
+        p = parent[p]
+    end
+    return path
+end
+
+# What `pkg` says about `q`, as facts. One fact per set of `pkg`'s live classes
+# that agree about `q`, split again wherever the versions they stand for are
+# not a run of what `pkg` offers — so a fact's versions read as one range and
+# every version in that range says what the fact says. Versions this query
+# forbids are left out: the fact is about the choice the resolve had.
+#
+# `bound` is whether the bound is worth stating at all. On the last step of a
+# story it is the whole point — it is what the query's own constraints have
+# left nothing of. On the steps that lead there it is decoration, and worse
+# than that: versions that agree about needing a package often disagree about
+# which of it they will take, so a step that carried its bound would be a
+# paragraph where a sentence was wanted, and the versions it names are named
+# again as the subject of the next step anyway.
+#
+# Whether the versions a fact speaks for depend on `q` is part of what they
+# have to agree about, because it is what decides which way round the fact may
+# be said. A registry records compatibility symmetrically, so a bound can be
+# attributed to the package that declared the dependency and to no other; the
+# versions that merely have to get along with `q` get the symmetric sentence,
+# which claims nothing about who said so.
+function relation_facts(
+    sat  :: SAT{P,V},
+    prob :: Problem{P},
+    pkg  :: P,
+    live :: Vector{Bool},
+    q    :: P,
+    bound :: Bool,
+) where {P,V}
+    info_p, info_q = sat.info[pkg], sat.info[q]
+    k = dep_column(info_p, q)
+    # a package this query has left nothing of is starved by every bound
+    # alike, so which bound `pkg` declares is not what the story turns on
+    bounded = bound && any(admitted_classes(sat, q))
+    # what a group of classes says about `q`, and the versions it stands for
+    Says = Tuple{Bool,Union{Nothing,Vector{Bool}}}
+    groups = Vector{Pair{Says,Vector{Bool}}}()
+    for c in eachindex(live)
+        live[c] || continue
+        needs_it = k !== nothing && info_p.conflicts[c, k]
+        a = nothing
+        if bounded
+            cs = admissible(sat, pkg, q, Bool[i == c for i in eachindex(live)])
+            a = fill(false, length(info_q.versions))
+            for (j, ok) in enumerate(cs), i in info_q.members[j]
+                a[i] = ok
+            end
+        end
+        key = (needs_it, a)
+        g = findfirst(x -> first(x) == key, groups)
+        g === nothing && (push!(groups, key => fill(false, length(info_p.versions)));
+                          g = length(groups))
+        for i in info_p.members[c]
+            isempty(exclusion_kinds(prob, pkg, info_p.versions[i])) &&
+                (last(groups[g])[i] = true)
+        end
+    end
+    facts = Fact[]
+    offering = copy(info_q.versions)
+    # a run reaching the newest (or oldest) version this query admits can be
+    # stated as an open bound: there is nothing above (or below) it to wonder
+    # about. What the query excludes is said by the availability fact instead.
+    admitted = Bool[isempty(exclusion_kinds(prob, pkg, v)) for v in info_p.versions]
+    hi = something(findfirst(admitted), 1)
+    lo = something(findlast(admitted), length(admitted))
+    for ((needs_it, allowed), mask) in groups
+        # versions that do not need `q`, and have nothing to say about it
+        # either, contribute nothing to the story
+        needs_it || (allowed !== nothing && !all(allowed)) || continue
+        i = 1
+        while i ≤ length(mask)
+            if mask[i]
+                j = i
+                while j < length(mask) && mask[j+1]
+                    j += 1
+                end
+                vers = info_p.versions[i:j]
+                push!(facts, needs_it ?
+                    Dependency{P,V}(pkg, vers, q, offering, allowed,
+                        i == hi, j == lo) :
+                    Incompatibility{P,V}(pkg, vers, q, offering, allowed,
+                        i == hi, j == lo))
+                i = j
+            end
+            i += 1
+        end
+    end
+    return facts
+end
+
+# Why the packages a conflict names have anything to do with each other, as
+# facts about the registry. The walk from the conflict's requirements ends at a
+# package with nothing left; the story is the packages whose bounds left it
+# nothing, and the forcing steps that put each of them in the query's way.
+#
+# A step is said in the direction of the dependency where there is one, since
+# that is the only direction a bound can honestly be attributed in. Where a
+# package is starved by one other and depends on it, the same relation reads
+# better the other way about — "this is what these versions need" rather than
+# "this is what those versions leave" — and the walk's own narrowing is what
+# makes the two the same fact.
+#
+# The chain already says which packages the query emptied, so a walk that ends
+# at one of them is telling this conflict's story rather than some other one;
+# that is what `emptied` picks between when several packages starve at once.
+function chain_relations(
+    sat     :: SAT{P,V},
+    prob    :: Problem{P},
+    reqs    :: Vector{P},
+    emptied :: Vector{P},
+) where {P,V}
+    snap, parent, starved = forced_descent(sat, reqs)
+    isempty(starved) && return Fact[]
+
+    # Which story to tell, when the walk leaves several packages with nothing.
+    # Bounds are symmetric, so a package and the one that starves it usually
+    # starve each other, and the choice is which way round to say it: a
+    # requirement is where the story starts rather than where it ends, and a
+    # story about a package this query emptied is a story about this conflict
+    # rather than some other one. Then the shortest, and then by name, so that
+    # a tie does not depend on iteration order.
+    best = nothing
+    for (q, (before, blame)) in starved
+        blamed = fewest_blamed(sat, snap, q, blame, reqs)
+        steps = length(blamed) + length(forcing_path(parent, q)) +
+            sum(r -> length(forcing_path(parent, r)), blamed; init = 0)
+        touches = q ∈ emptied || any(∈(emptied), blamed)
+        key = (q ∈ reqs, !touches, steps, string(q))
+        (best === nothing || key < best[1]) && (best = (key, q, before, blamed))
+    end
+    _, q, before, blamed = best
+    # ... and, of the requirements the fewest left out, the ones that starve
+    # `q` all by themselves. Any one of them is enough to make it a conflict,
+    # so minimality names one and drops the rest — and a reader would fix that
+    # one bound and never learn their own other requirement had been broken
+    # too. This is the same union of minimal reasons the requirements of a
+    # conflict are gathered by. A package the query never asked for earns no
+    # such sentence: it is not something the reader is owed an account of, and
+    # a story that named every one of them would be a list, not a story
+    append!(blamed, P[r for r in starved[q][2] if r ∈ reqs && r ∉ blamed &&
+                      starves(sat, snap, q, P[r])])
+    # ... back in the order the walk met them, which starts with the
+    # requirements in the order the query gave them
+    blamed = P[r for r in starved[q][2] if r ∈ blamed]
+
+    # one relation per package blamed, said the better way round when there is
+    # only one of them: with several, what matters is that their demands do not
+    # overlap, and that is only visible with each stated as a demand on `q`
+    pairs = Tuple{P,Vector{Bool},P}[]
+    for r in blamed
+        length(blamed) == 1 && forces(sat.info[q], r, before) ?
+            push!(pairs, (q, before, r)) :
+            push!(pairs, (r, snap[r], q))
+    end
+    # A package the story speaks of has to be in the query's way to begin with,
+    # and the forcing steps are what put it there. The package a relation is
+    # *about* needs no path of its own when the relation is a dependency on it,
+    # since that is what puts it there; where none of them is, `q` gets a
+    # walk of its own, and nothing is said about it beyond how it got here
+    any(b == q && forces(sat.info[a], q, live) for (a, live, b) in pairs) ||
+        pushfirst!(pairs, (q, before, q))
+    facts = Fact[]
+    said = Set{Tuple{P,P}}((a, b) for (a, _, b) in pairs)
+    for (a, live, b) in pairs
+        for (x, y) in forcing_path(parent, a)
+            (x, y) in said && continue
+            push!(said, (x, y))
+            append!(facts, relation_facts(sat, prob, x, snap[x], y, false))
+        end
+        a == b || append!(facts, relation_facts(sat, prob, a, live, b, true))
+    end
+    return facts
+end
+
 # The story of one conflict: the query's own facts that this conflict's fix is
 # what rescues, and why each of them needs rescuing.
 #
@@ -674,7 +1173,18 @@ function conflict_story(
             push!(avails, availability_fact(sat, prob, p))
         end
     end
-    append!(chain, avails)
+    # the registry's own part of the story goes between the packages it speaks
+    # for and the ones it speaks about, so that the chain reads as a chain:
+    # you asked for this, this is what it needs, this is what you left of it
+    rels = chain_relations(sat, prob, reqs, P[f.pkg for f in avails])
+    subjects = Set{P}(f.pkg for f in rels)
+    for f in avails
+        (f::Availability).pkg in subjects && push!(chain, f)
+    end
+    append!(chain, rels)
+    for f in avails
+        (f::Availability).pkg in subjects || push!(chain, f)
+    end
     return reqs, chain
 end
 

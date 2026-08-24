@@ -21,6 +21,8 @@ Resolver.Diagnostics.action_phrase
 Resolver.Diagnostics.Fact
 Resolver.Diagnostics.Requirement
 Resolver.Diagnostics.Availability
+Resolver.Diagnostics.Dependency
+Resolver.Diagnostics.Incompatibility
 Resolver.Diagnostics.unavailable
 Resolver.Diagnostics.diagnose
 ```

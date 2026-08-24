@@ -167,7 +167,8 @@ using Resolver: PkgData
     @test_throws ArgumentError("Required package MissingReq is not available in the package data") resolve(data, [:MissingReq])
 end
 
-using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses
+using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses,
+    filter_pkg_info!
 @testset "pkg info files" begin
     # the file carries the partition, since the matrix is built over it rather
     # than the other way round: a loaded artifact must be equal to the saved
@@ -213,6 +214,24 @@ using Resolver: pkg_info, save_pkg_info_file, load_pkg_info_file, nclasses
         Problem([:A]; compat = Dict(:B => [:v2])),
         Problem([:A, :B]; pin = Dict(:B => :v1)),
     ])
+
+    # a fully filtered artifact also carries the versions redundancy
+    # elimination removed, attached to the class that made them removable.
+    # They are not in `versions` any more, so the file has to say so itself
+    fdata = Dict(
+        :A => PkgData([:v2, :v1], Dict(:v1 => [:B]),
+                      Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()),
+        :B => PkgData([:v1], Dict{Symbol,Vector{Symbol}}(),
+                      Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()),
+    )
+    finfo = filter_pkg_info!(pkg_info(fdata, [:A]), [:A]).info
+    @test finfo[:A].versions == [:v2]
+    @test finfo[:A].shadows == [[:v1]]
+    path = save_pkg_info_file(finfo)
+    back = load_pkg_info_file(path)
+    @test back == finfo
+    @test back[:A].shadows == [[:v1]]
+    rm(path)
 end
 
 @testset "zero-version packages" begin

@@ -248,6 +248,42 @@ reach-filtered problem), so by Theorem 4 again the fully filtered problem
 has the same layered answer. **The implementation's answer is the raw
 layered solution.**
 
+## Shadows: what a deletion leaves behind
+
+Theorem 6 says the answer does not need ``q@j``. It does not say a *report*
+does not need it. A reader asking why the resolver would not take ``q@j`` is
+owed the reason, and the reason lives in a different version — ``q@i`` — so a
+pointer to it has to be kept or the deletion becomes unaccountable.
+
+`mark_necessary!` keeps one: when it deletes ``q@j`` it records ``q@j`` in the
+**shadow list** of the class ``q@i`` that dominated it (`PkgInfo.shadows`, one
+list per class, alongside `members`). Nothing else about the universe changes.
+The shadow lists are in no matrix, no clause names them, and no model contains
+one, so every theorem above reads the same before and after: the sets of
+classes, rows and columns the proofs quantify over are exactly the sets they
+were. Shadowing is a deletion that writes down its reason, not a deletion
+avoided.
+
+What the record is good for is fixed by the same subset that licensed the
+deletion. Every constraint of ``q@i`` is a constraint of ``q@j``, so:
+
+- **whatever rules out ``q@i`` rules out ``q@j``.** A statement of the form
+  "these versions are excluded, for this reason" is true of a class's shadows
+  whenever it is true of the class.
+- **a stated bound does not carry over.** ``q@j`` may bound a dependency more
+  tightly than ``q@i`` does — that is a superset, and it is the ordinary case
+  — so "``q@i`` requires ``r`` at ``1.2``" may be simply false of ``q@j``. The
+  implication runs one way only.
+
+A shadow list belongs to a class and lives exactly as long as it does: a class
+deleted for being unreachable or uninstallable takes its shadows with it. That
+loses a report nothing, because a shadow of such a class would have gone the
+same way on its own account — it depends on whatever made the class
+uninstallable, and its ``\mathrm{key}_\emptyset`` is worse than the class's,
+so no walk that stopped before the class reaches past it — and because both of
+those deletions are already explained by the chain being printed. Domination is
+the one deletion whose reason is somewhere else.
+
 ## Iterating the filter
 
 It is natural to ask whether a single reachability pass followed by a

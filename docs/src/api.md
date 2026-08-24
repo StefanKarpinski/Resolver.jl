@@ -34,6 +34,8 @@ Resolver.PkgInfo
 Resolver.pkg_info
 Resolver.version_classes
 Resolver.class_members
+Resolver.no_shadows
+Resolver.collapse_shadows
 Resolver.collapse_classes!
 Resolver.Universe
 Resolver.prepare_pkg_info

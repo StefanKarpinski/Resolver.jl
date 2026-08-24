@@ -384,8 +384,8 @@ function copy_ranked!(
         if perm === nothing
             info′[p] = PkgInfo(
                 copy(info_p.versions), copy(info_p.classes),
-                copy(info_p.members), copy(info_p.depends),
-                copy(info_p.interacts), X′)
+                copy(info_p.members), copy(info_p.shadows),
+                copy(info_p.depends), copy(info_p.interacts), X′)
             reps′[p] = copy(reps[p])
         else
             # the partition follows the classes: class `r` of the new layout is
@@ -393,8 +393,8 @@ function copy_ranked!(
             inv = invperm(perm)
             info′[p] = PkgInfo(
                 copy(info_p.versions), Int[inv[i] for i in info_p.classes],
-                info_p.members[perm], copy(info_p.depends),
-                copy(info_p.interacts), X′)
+                info_p.members[perm], info_p.shadows[perm],
+                copy(info_p.depends), copy(info_p.interacts), X′)
             reps′[p] = reps[p][perm]
         end
     end
@@ -893,6 +893,8 @@ function mark_necessary!(
     D = UInt64[]        # per-class domination candidate masks
     T = UInt64[]        # mask of classes still tracked by the sweep
     R = Int[]           # redundant indices vector
+    dom = Int[]         # per class, the class that dominates it (0: none)
+    F = Bool[]          # per class, whether its shadow list is ours to grow
     # scratch: suffix masks of the classes
     # ordered by key_∅, so "the classes whose best possible rank is worse than
     # t" is one mask lookup
@@ -1085,8 +1087,13 @@ function mark_necessary!(
                 end
             end
         end
-        # union of all candidate sets = the dominated classes
+        # union of all candidate sets = the dominated classes, and along with
+        # it the class each one is dominated by: the classes are visited in
+        # ascending order, so the first to claim a class is the best one that
+        # can, and the claim is what a report will attribute the deletion to
         fill!(T, UInt64(0)) # reuse as the union accumulator
+        resize!(dom, m)
+        fill!(dom, 0)
         @inbounds for w = 1:W
             c = A[w]
             while !iszero(c)
@@ -1094,7 +1101,13 @@ function mark_necessary!(
                 c &= c - 1
                 o = (i - 1) * W
                 for w′ = 1:W
+                    fresh = D[o + w′] & ~T[w′]
                     T[w′] |= D[o + w′]
+                    while !iszero(fresh)
+                        j = ((w′ - 1) << 6) + trailing_zeros(fresh) + 1
+                        fresh &= fresh - 1
+                        dom[j] = i
+                    end
                 end
             end
         end
@@ -1107,6 +1120,37 @@ function mark_necessary!(
             end
         end
         isempty(R) && continue
+        # follow each claim to a class that survives the round. Transitivity
+        # says it already is one — a dominator of the claimant would have
+        # claimed first, so the claimant is undominated — but what a shadow
+        # list needs is a host that is really still here, and a comparison per
+        # deletion is cheaper than resting on the argument
+        for j in R
+            d = dom[j]
+            while !iszero(dom[d])
+                d = dom[d]
+            end
+            dom[j] = d
+        end
+        # hand each deleted class's versions, and whatever it was already
+        # shadowing, to the class that dominates it. the lists are replaced
+        # rather than grown in place: `copy_ranked!` shares them with the
+        # artifact it copied, which must not learn about this query
+        sh = info_p.shadows
+        vers = info_p.versions
+        mem = info_p.members
+        resize!(F, m)
+        fill!(F, false)
+        nosh = V[] # one empty list for every class on its way out
+        for j in R
+            d = dom[j]
+            F[d] || (sh[d] = copy(sh[d]); F[d] = true)
+            for k in mem[j]
+                push!(sh[d], vers[k])
+            end
+            append!(sh[d], sh[j])
+            sh[j] = nosh
+        end
         # deactivate redundant classes
         X[R, end] .= false
         for (q, b, c) in partners[p]
@@ -1173,6 +1217,7 @@ function drop_unmarked!(
         V = info_p.versions
         C = info_p.classes
         M = info_p.members
+        S = info_p.shadows
         D = info_p.depends
         T = info_p.interacts
         X = info_p.conflicts
@@ -1214,11 +1259,16 @@ function drop_unmarked!(
         V′ = V[keep]
         C′ = Vector{Int}(undef, length(V′))
         M′ = Vector{Vector{Int}}(undef, m′)
+        S′ = similar(S, m′)
         i′ = 0
         for i = 1:m
             I[i] || continue
             i′ += 1
             M′[i′] = mem = Int[index[j] for j in M[i]]
+            # a surviving class keeps what it shadows; a deleted one's shadows
+            # went to its dominator when `mark_necessary!` deleted it, and are
+            # simply gone when another pass did
+            S′[i′] = S[i]
             for j in mem
                 C′[j] = i′
             end
@@ -1296,7 +1346,7 @@ function drop_unmarked!(
         X′[1:m′, end] .= true  # kept classes are active
         X′[m′+1, 1:b′] .= true # kept columns are active
         # assign new struct into info
-        info[p] = PkgInfo(V′, C′, M′, D′, T′, X′)
+        info[p] = PkgInfo(V′, C′, M′, S′, D′, T′, X′)
     end
     return info
 end
@@ -1311,6 +1361,8 @@ function check_info_structure(
             info_p.classes[j] == i ||
                 return :members, p, p
         end
+        length(info_p.shadows) == nclasses(info_p) ||
+            return :shadows, p, p
         size(info_p.conflicts, 1) == padded_rows(nclasses(info_p)) ||
             return :rows, p, p
         for q in info_p.depends

@@ -19,8 +19,8 @@
 
 using Resolver: PkgData, PkgInfo, Problem, SAT, PicoSAT, pkg_info, nclasses,
     rank_pkg_info, prepare_pkg_info, filter_pkg_info!, deactivations,
-    mark_installable!, mark_necessary!, class_ranking, finalize,
-    sat_assume, sat_pop, is_satisfiable, sat_solve
+    mark_installable!, mark_necessary!, drop_unmarked!, class_ranking,
+    finalize, sat_assume, sat_pop, is_satisfiable, sat_solve
 
 const NODEPS = Dict{Symbol,Vector{Symbol}}()
 const NOCOMP = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
@@ -367,4 +367,161 @@ end
     finally
         finalize(sat)
     end
+end
+
+# the versions a universe can still name but no longer offers
+shadowed(univ, p) = Set(v for sh in univ.info[p].shadows for v in sh)
+
+# the redundancy pass on its own, and the classes it struck: everything the
+# installability prune took is subtracted, so what is left is exactly the
+# deletions that owe an explanation
+function redundancy_delta(info, prob)
+    univ = rank_pkg_info(info, prob)
+    mark_installable!(univ.info)
+    before = struck(univ)
+    mark_necessary!(univ.info, deactivations(univ), univ.ranks)
+    return univ, setdiff(struck(univ), before)
+end
+
+@testset "shadows: a deleted version keeps a place to be named from" begin
+    # :P's four versions are four classes — {:Q}, {:Q,:R}, {:S}, {:S,:R} — and
+    # two of them dominate: :v4's row is a subset of :v3's, :v2's of :v1's. The
+    # two survivors are not comparable to each other, so each has to keep its
+    # own deletion rather than the universe keeping one pile of them
+    data = Dict(
+        :P => PkgData([:v4, :v3, :v2, :v1],
+            Dict(:v4 => [:Q], :v3 => [:Q, :R],
+                 :v2 => [:S], :v1 => [:S, :R]), NOCOMP),
+        :Q => PkgData([:w1], NODEPS, NOCOMP),
+        :R => PkgData([:w1], NODEPS, NOCOMP),
+        :S => PkgData([:w1], NODEPS, NOCOMP),
+    )
+    info = pkg_info(data, [:P]; filter = false)
+    @test nclasses(info[:P]) == 4
+    univ, _ = redundancy_delta(info, Problem([:P]))
+    drop_unmarked!(univ)
+
+    # what survives, and what each survivor speaks for
+    @test univ.info[:P].versions == [:v4, :v2]
+    @test univ.info[:P].members == [[1], [2]]
+    @test univ.info[:P].shadows == [[:v3], [:v1]]
+    # every version is accounted for: offered or shadowed, never lost
+    @test Set(univ.info[:P].versions) ∪ shadowed(univ, :P) ==
+          Set(data[:P].versions)
+
+    # the whole filter then walks past :v2's class — nothing requires :S — and
+    # the shadow goes with it, which is what shadowing a *class* means
+    full = prepare_pkg_info(info, Problem([:P]))
+    @test full.info[:P].versions == [:v4]
+    @test full.info[:P].shadows == [[:v3]]
+    # the artifact is left alone: a universe shares its shadow lists with the
+    # artifact it was copied from, so growing one has to replace it, and a
+    # second resolve over the same artifact has to see the same universe
+    @test prepare_pkg_info(info, Problem([:P])).info == full.info
+    # ... and the answer is the one it was before any of this
+    @test resolve(data, [:P]) == Dict(:P => :v4, :Q => :w1)
+
+    # a chain lands on the class that survives it, not on the nearest one:
+    # :v3 dominates :v2, but :v4 dominates both
+    data = Dict(
+        :P => PkgData([:v4, :v3, :v2, :v1],
+            Dict(:v3 => [:Q], :v2 => [:Q, :R], :v1 => [:Q, :R, :S]), NOCOMP),
+        :Q => PkgData([:w1], NODEPS, NOCOMP),
+        :R => PkgData([:w1], NODEPS, NOCOMP),
+        :S => PkgData([:w1], NODEPS, NOCOMP),
+    )
+    univ = prepare_pkg_info(pkg_info(data, [:P]; filter = false),
+                            Problem([:P]))
+    @test univ.info[:P].versions == [:v4]
+    @test univ.info[:P].shadows == [[:v3, :v2, :v1]]
+    @test resolve(data, [:P]) == Dict(:P => :v4)
+end
+
+@testset "shadows: a shadow is not a member" begin
+    # :v1 needs :Q and :v2 does not, so :v2's class dominates :v1's and, with
+    # nothing constraining :P, :v1 is deleted and shadowed by it.
+    data = Dict(
+        :P => PkgData([:v2, :v1], Dict(:v1 => [:Q]), NOCOMP),
+        :Q => PkgData([:w1], NODEPS, NOCOMP),
+    )
+    info = pkg_info(data, [:P]; filter = false)
+    free = prepare_pkg_info(info, Problem([:P]))
+    @test free.info[:P].versions == [:v2]
+    @test free.info[:P].shadows == [[:v1]]
+    @test !haskey(free.info, :Q) # nothing surviving pulls it in
+
+    # Now pin :P to the shadowed version. Were the shadow a *member* of the
+    # class that shadows it, the class would simply stand at :v1 — and the
+    # class's row says nothing about :Q, so the answer would leave :Q out and
+    # be wrong. A shadow is not a member: the pin empties the dominating class,
+    # an emptied class dominates nothing, and :v1's own class — with its own
+    # row, and its own dependency — is there to be selected.
+    prob = Problem([:P]; pin = Dict(:P => :v1))
+    univ = prepare_pkg_info(info, prob)
+    @test univ.info[:P].versions == [:v2, :v1]
+    @test univ.info[:P].members == [[1], [2]]
+    @test all(isempty, univ.info[:P].shadows)
+    @test univ.reps[:P] == [0, 2] # the dominator is the emptied one
+    @test resolve(data, prob) == Dict(:P => :v1, :Q => :w1)
+    test_bake_equivalence(data, prob)
+end
+
+@testset "shadows: swept" begin
+    Random.seed!(rand(RandomDevice(), UInt64))
+    # Two properties of the shadow lists over the tiny grids with random
+    # constraints on top.
+    #
+    # First, they account for the redundancy pass exactly: every version that
+    # pass deleted is named by some surviving class, and no other version is.
+    # The grids give the installability prune nothing to do — every package has
+    # versions and every dependency names one of them — which is what makes the
+    # accounting exact rather than an inclusion, so that is asserted too.
+    #
+    # Second, the claim the lists exist to support: the class a version is
+    # shadowed by has a *subset* of its constraints. That is what makes "this
+    # class is ruled out" carry over to everything it shadows, and it is
+    # checked here against the raw data rather than against the matrix the
+    # pass read, so a bug in the row test cannot hide in both.
+    found = 0
+    for (m, n) in ((2, 2), (2, 3), (3, 2), (3, 3), (2, 4), (4, 2), (2, 5))
+        make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
+        for _ = 1:25
+            fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
+            reqs = collect(make_reqs(rand(1:2^m-1)))
+            info = pkg_info(data, keys(data); filter = false)
+            for _ = 1:4
+                compat, pin = random_constraints(m, n)
+                prob = Problem(reqs; compat, pin)
+                univ, delta = redundancy_delta(info, prob)
+                pruned = Dict(p => Set(ip.versions[i]
+                        for cl = 1:nclasses(ip) if !ip.conflicts[cl, end]
+                        for i in ip.members[cl])
+                    for (p, ip) in univ.info)
+                gone = Dict{Any,Set}()
+                for (p, vs) in delta
+                    union!(get!(() -> Set(), gone, p), vs)
+                    setdiff!(pruned[p], vs)
+                end
+                drop_unmarked!(univ)
+                for (p, ip) in univ.info
+                    sh = shadowed(univ, p)
+                    @test isempty(pruned[p])
+                    @test sh == get(() -> Set(), gone, p)
+                    found += length(sh)
+                    # the subset claim, read off the raw data
+                    for cl = 1:nclasses(ip), v in ip.shadows[cl]
+                        r = ip.versions[first(ip.members[cl])]
+                        @test Set(lookup(data[p].depends, r, ())) ⊆
+                              Set(lookup(data[p].depends, v, ()))
+                        for (q, iq) in univ.info, w in iq.versions
+                            forbids(u) = ref_forbids(data, p, u, q, w) ||
+                                         ref_forbids(data, q, w, p, u)
+                            forbids(r) && @test forbids(v)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    @test found > 0 # the sweep really did find some
 end

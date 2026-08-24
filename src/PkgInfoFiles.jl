@@ -18,6 +18,15 @@ function save_pkg_info_file(
             # be in the file: without it there is no saying which version a row
             # stands for
             write_ints(io, d.classes)
+            # a filtered artifact carries the versions redundancy elimination
+            # removed, attached to the class that made them removable. They are
+            # not in `versions` any more, so they are written as values
+            write_int(io, count(!isempty, d.shadows))
+            for (c, sh) in enumerate(d.shadows)
+                isempty(sh) && continue
+                write_int(io, c)
+                write_vals(io, sh)
+            end
             write_vals(io, pm, d.depends)
             write_vals(io, pm, sort!(collect(keys(d.interacts))))
             write_bits(io, d.conflicts)
@@ -45,11 +54,18 @@ function load_pkg_info_file(
         for p in pv
             versions  = read_vals(io, V)
             classes   = read_ints(io)
+            m         = maximum(classes; init = 0)
+            shadows   = no_shadows(V, m)
+            for _ = 1:read_int(io, Int)
+                c = read_int(io, Int)
+                shadows[c] = read_vals(io, V)
+            end
             depends   = read_vals(io, pv)
             interacts = read_vals(io, pv)
-            conflicts = read_bits(io, padded_rows(maximum(classes; init = 0)))
+            conflicts = read_bits(io, padded_rows(m))
             interacts = Dict{P, Int}(q => 0 for q in interacts)
-            info[p] = PkgInfo(versions, classes, depends, interacts, conflicts)
+            info[p] = PkgInfo{P,V}(versions, classes, class_members(classes, m),
+                shadows, depends, interacts, conflicts)
         end
         # compute interacts dict values: one column block per partner *class*
         for (p, d) in info
@@ -65,7 +81,7 @@ end
 
 ## bespoke de/serialization functions ##
 
-const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v3\0"
+const magic = "\xfa\x7d\xe1\0Resolver.jl PkgInfo File\0v4\0"
 
 function write_magic(io::IO)
     write(io, magic)

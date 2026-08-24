@@ -12,6 +12,9 @@ apart — and the partition saying which versions those are is carried with it.
     the matrix row version `i` belongs to; `members[c]` is class `c`'s version
     indices, ascending. Both are stored because both directions are hot;
     anything that drops or renumbers classes rebuilds them together.
+  * `shadows` — per class, the versions redundancy elimination removed *because
+    of* that class, as values rather than indices, since they are no longer in
+    `versions`. See below.
   * `depends` — the packages some class depends on, sorted; one matrix column
     each, in that order.
   * `interacts` — per partner package, the offset of its block of *class*
@@ -43,11 +46,35 @@ Deactivation never implies deletion: an emptied class keeps its row, its
 column in every partner, and its dependency columns. Keeping the two bits apart
 is what makes that possible, and BitKernels.jl's header spells out why one bit
 could not do both jobs.
+
+## Shadows
+
+`members[c]` and `shadows[c]` are both "versions class `c` speaks for", and
+they are deliberately not the same list. A member is *indistinguishable* from
+the class: it shares the row, so every statement the row makes is true of it. A
+shadowed version is one `mark_necessary!` deleted because `c` has a **subset**
+of its constraints — so what `c` rules out, the shadow is ruled out by too, but
+the shadow may be constrained in ways `c` is not. Folding the two together
+would put a version under a row that does not describe it, and would break the
+moment a constraint excludes `c` while admitting the version it shadows.
+
+So the safe reading of a shadow is one-directional: **whatever excludes the
+class excludes everything it shadows**, and nothing more. A stated bound is not
+one of those things — "class `c` requires `q` at `1.2`" may be false of a
+shadow, which can want `q` more narrowly still.
+
+Shadows exist to be reported, not resolved over: they are in no matrix, no SAT
+clause names them, and no solution contains one. A class that leaves the
+universe for any other reason — uninstallable, unreachable — takes its shadows
+with it. That costs a report nothing: a shadow of such a class would have left
+for the same reason on its own, and unlike domination that reason is already
+somewhere a report can say it.
 """
 struct PkgInfo{P,V}
     versions  :: Vector{V}
     classes   :: Vector{Int}
     members   :: Vector{Vector{Int}}
+    shadows   :: Vector{Vector{V}}
     depends   :: Vector{P}
     interacts :: Dict{P, Int}
     conflicts :: BitMatrix
@@ -60,7 +87,18 @@ PkgInfo(
     interacts :: Dict{P,Int},
     conflicts :: BitMatrix,
 ) where {P,V} = PkgInfo{P,V}(versions, classes, class_members(classes),
-    depends, interacts, conflicts)
+    no_shadows(V, maximum(classes; init = 0)), depends, interacts, conflicts)
+
+"""
+    no_shadows(V, m) :: Vector{Vector{V}}
+
+`m` classes that shadow nothing, at the cost of a single empty vector: every
+entry aliases the same one. That is safe only because a shadow list is
+*replaced* rather than appended to — the one place that grows one copies it
+first — and the saving is worth the discipline, since most classes shadow
+nothing and a registry-scale universe has tens of thousands of them.
+"""
+no_shadows(::Type{V}, m::Int) where {V} = fill(V[], m)
 
 # the number of classes — i.e. of rows of the conflicts matrix
 nclasses(info::PkgInfo) = length(info.members)
@@ -80,10 +118,37 @@ function class_members(classes::Vector{Int}, m::Int = maximum(classes; init = 0)
     return members
 end
 
+"""
+    collapse_shadows(shadows, classes, members, m) :: Vector{Vector{V}}
+
+The shadow lists of a coarser partition: the new class a set of old ones merge
+into shadows everything they shadowed. `classes` and `m` describe the new
+partition, `members` and `shadows` the old one.
+
+`pkg_info` collapses before anything has shadowed anything, so in practice this
+copies empties; it exists so that merging classes is not a special case that
+has to remember shadows separately.
+"""
+function collapse_shadows(
+    shadows :: Vector{Vector{V}},
+    classes :: Vector{Int},
+    members :: Vector{Vector{Int}},
+    m       :: Int,
+) where {V}
+    sh = no_shadows(V, m)
+    for (i, s) in enumerate(shadows)
+        isempty(s) && continue
+        c = classes[first(members[i])]
+        sh[c] = isempty(sh[c]) ? copy(s) : vcat(sh[c], s)
+    end
+    return sh
+end
+
 # `members` is the inverse of `classes`, so it is not compared
 function Base.:(==)(a::PkgInfo, b::PkgInfo)
     a.versions  == b.versions  &&
     a.classes   == b.classes   &&
+    a.shadows   == b.shadows   &&
     a.depends   == b.depends   &&
     a.interacts == b.interacts &&
     a.conflicts == b.conflicts
@@ -233,6 +298,7 @@ function collapse_classes!(info::Dict{P,PkgInfo{P,V}}) where {P,V}
             length(mem[q]) == length(info[q].versions)
             for q in keys(info_p.interacts))
             info[p] = PkgInfo{P,V}(info_p.versions, cls[p], mem_p,
+                collapse_shadows(info_p.shadows, cls[p], info_p.members, m),
                 info_p.depends, info_p.interacts, info_p.conflicts)
             continue
         end
@@ -247,6 +313,7 @@ function collapse_classes!(info::Dict{P,PkgInfo{P,V}}) where {P,V}
         end
         rows = Int[first(mem_c) for mem_c in mem_p]
         info[p] = PkgInfo{P,V}(info_p.versions, cls[p], mem_p,
+            collapse_shadows(info_p.shadows, cls[p], info_p.members, m),
             info_p.depends, interacts,
             gather_conflicts(info_p.conflicts, rows, cols))
     end
@@ -597,7 +664,7 @@ function pkg_info(
         m = nver[pi]
         info[pkgs[pi]] = PkgInfo{P,V}(
             datas[pi].versions, collect(1:m), [[i] for i = 1:m],
-            D, T, mats[pi])
+            no_shadows(V, m), D, T, mats[pi])
     end
 
     # the T1 preprocessing: the installability prune, then the partition. Both

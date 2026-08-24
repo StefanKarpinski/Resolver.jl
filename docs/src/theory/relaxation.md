@@ -158,6 +158,12 @@ the fact Lemma 2's discussion shows a relaxation can reverse.
     *feasible* class, so it would have pinned ``c_1`` or better, not
     ``c_2``. Contradiction. ∎
 
+A struck class is not thereby forgotten: `mark_necessary!` records its members
+in the shadow list of ``c_1``, which is what lets a diagnosis account for them
+— see [Shadows](layered.md#Shadows:-what-a-deletion-leaves-behind) on the
+previous page. The record is a side table; Theorem A quantifies over the same
+classes either way.
+
 !!! warning "Side condition"
     The domination test ignores conflicts whose partner class is absent from
     the universe. That exemption is sound only when evaluated against the

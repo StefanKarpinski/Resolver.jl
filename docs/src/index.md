@@ -16,7 +16,8 @@ Unsatisfiable — 2 conflicts, each of which must be fixed:
 
 Conflict 1: DataFrames cannot be satisfied.
   • you require DataFrames
-  • DataFrames: 0.11.7–0.22.7 excluded by your compat
+  • DataFrames: ≤ 0.22.7 excluded by your compat
+  • DataFrames 1.3.5–1.8.2 requires PrettyTables
   • no version of PrettyTables is available: 0.1.0–3.4.8 excluded by your
     compat
   Fix it by any one of:
@@ -28,6 +29,7 @@ Conflict 1: DataFrames cannot be satisfied.
 
 Conflict 2: Plots cannot be satisfied.
   • you require Plots
+  • Plots 1.0.6–1.41.7 requires RecipesBase
   • no version of RecipesBase is available: 0.4.0–1.3.4 excluded by your
     compat
   Fix it by any one of:

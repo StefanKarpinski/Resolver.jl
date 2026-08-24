@@ -411,10 +411,10 @@ function availability_phrase(f::Availability)
         if !isempty(excluded[i])
             by = kinds_phrase(excluded[i])
             push!(clauses, isempty(clauses) ?
-                "$(range_phrase(members, i, j; high = i == 1,
-                    low = j == length(members))) excluded by $by" :
-                "$(range_phrase(members, i, j; high = i == 1,
-                    low = j == length(members))) by $by")
+                "$(range_phrase(members, i, j; high = open_high(i, j, members),
+                    low = open_low(i, j, members))) excluded by $by" :
+                "$(range_phrase(members, i, j; high = open_high(i, j, members),
+                    low = open_low(i, j, members))) by $by")
         end
         i = j + 1
     end
@@ -448,6 +448,12 @@ end
 # the versions this query left standing, so leaving them out would let the
 # sentence be read as one about the package rather than about the choice the
 # resolve had — and a version range is shorter than saying so.
+# A run reaching one end of the offering is stated as an open bound; a run
+# reaching *both* is not "any version" — it is every version there is, and the
+# sentence around it already says so — so it is named in full.
+open_high(i::Int, j::Int, members) = i == 1 && j != length(members)
+open_low(i::Int, j::Int, members) = j == length(members) && i != 1
+
 # An open bound is stated only at one end: a run reaching *both* ends of what
 # the query admits is still not "any version" — the availability fact just said
 # which versions were taken away — so it is named in full.

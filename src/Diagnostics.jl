@@ -156,7 +156,7 @@ struct Availability{P,V} <: Fact
 end
 
 """
-    Resolver.Diagnostics.Dependency{P,V}(pkg, versions, dep, offering, allowed)
+    Resolver.Diagnostics.Dependency{P,V}(pkg, versions, dep, offering, allowed, newest, oldest)
 
 The fact that some versions of `pkg` need `dep`, and which versions of it they
 will take:
@@ -187,10 +187,14 @@ struct Dependency{P,V} <: Fact
     dep      :: P
     offering :: Vector{V}
     allowed  :: Union{Nothing,Vector{Bool}}
+    # whether `versions` reaches the newest / oldest version of `pkg` this
+    # query admits, so the range can be stated as an open bound
+    newest   :: Bool
+    oldest   :: Bool
 end
 
 """
-    Resolver.Diagnostics.Incompatibility{P,V}(pkg, versions, other, offering, allowed)
+    Resolver.Diagnostics.Incompatibility{P,V}(pkg, versions, other, offering, allowed, newest, oldest)
 
 The fact that some versions of `pkg` go with only some versions of `other`,
 with nothing said about which of the two declared it. The fields are
@@ -210,6 +214,8 @@ struct Incompatibility{P,V} <: Fact
     other    :: P
     offering :: Vector{V}
     allowed  :: Vector{Bool}
+    newest   :: Bool
+    oldest   :: Bool
 end
 
 """
@@ -370,8 +376,17 @@ action_phrase(a::Action) =
 
 # a run of a package's versions, compressed: packages list their versions best
 # first, so a run reads low to high
-range_phrase(members, i::Int, j::Int) =
-    i == j ? string(members[i]) : "$(members[j])–$(members[i])"
+# When a run reaches the end of what is on offer, an open bound says so: "≥
+# 1.2.0" tells the reader nothing newer is at issue, where "1.2.0–1.9.3" leaves
+# them wondering what is wrong with 1.9.4. `high`/`low` say whether the run
+# reaches the newest/oldest version there is to reach.
+function range_phrase(members, i::Int, j::Int; high::Bool = false, low::Bool = false)
+    i == j && !(high && low) && return string(members[i])
+    high && low && return "any version"
+    high && return "≥ $(members[j])"
+    low && return "≤ $(members[i])"
+    return "$(members[j])–$(members[i])"
+end
 
 # join a list of phrases into an English list
 function list_phrase(parts::Vector{String})
@@ -396,8 +411,10 @@ function availability_phrase(f::Availability)
         if !isempty(excluded[i])
             by = kinds_phrase(excluded[i])
             push!(clauses, isempty(clauses) ?
-                "$(range_phrase(members, i, j)) excluded by $by" :
-                "$(range_phrase(members, i, j)) by $by")
+                "$(range_phrase(members, i, j; high = i == 1,
+                    low = j == length(members))) excluded by $by" :
+                "$(range_phrase(members, i, j; high = i == 1,
+                    low = j == length(members))) by $by")
         end
         i = j + 1
     end
@@ -418,7 +435,8 @@ function offering_phrase(offering::Vector, allowed::Vector{Bool})
             while j < length(allowed) && allowed[j+1]
                 j += 1
             end
-            push!(parts, range_phrase(offering, i, j))
+            push!(parts, range_phrase(offering, i, j;
+                high = i == 1, low = j == length(allowed)))
             i = j
         end
         i += 1
@@ -430,8 +448,12 @@ end
 # the versions this query left standing, so leaving them out would let the
 # sentence be read as one about the package rather than about the choice the
 # resolve had — and a version range is shorter than saying so.
+# An open bound is stated only at one end: a run reaching *both* ends of what
+# the query admits is still not "any version" — the availability fact just said
+# which versions were taken away — so it is named in full.
 relation_subject(f) =
-    "$(f.pkg) $(range_phrase(f.versions, 1, length(f.versions)))"
+    "$(f.pkg) $(range_phrase(f.versions, 1, length(f.versions);
+        high = f.newest & !f.oldest, low = f.oldest & !f.newest))"
 
 # a dependency as one line, with the bound where there is one to state
 function dependency_phrase(f::Dependency)
@@ -981,6 +1003,12 @@ function relation_facts(
     end
     facts = Fact[]
     offering = copy(info_q.versions)
+    # a run reaching the newest (or oldest) version this query admits can be
+    # stated as an open bound: there is nothing above (or below) it to wonder
+    # about. What the query excludes is said by the availability fact instead.
+    admitted = Bool[isempty(exclusion_kinds(prob, pkg, v)) for v in info_p.versions]
+    hi = something(findfirst(admitted), 1)
+    lo = something(findlast(admitted), length(admitted))
     for ((needs_it, allowed), mask) in groups
         # versions that do not need `q`, and have nothing to say about it
         # either, contribute nothing to the story
@@ -994,8 +1022,10 @@ function relation_facts(
                 end
                 vers = info_p.versions[i:j]
                 push!(facts, needs_it ?
-                    Dependency{P,V}(pkg, vers, q, offering, allowed) :
-                    Incompatibility{P,V}(pkg, vers, q, offering, allowed))
+                    Dependency{P,V}(pkg, vers, q, offering, allowed,
+                        i == hi, j == lo) :
+                    Incompatibility{P,V}(pkg, vers, q, offering, allowed,
+                        i == hi, j == lo))
                 i = j
             end
             i += 1

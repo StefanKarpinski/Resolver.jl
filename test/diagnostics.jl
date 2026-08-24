@@ -583,7 +583,7 @@ end
     # bound of :A's is what the story turns on, since the query has left :B
     # with nothing whatever :A would have taken
     @test c.chain == Fact[Requirement(:A),
-        Dependency{Symbol,Symbol}(:A, [:v1], :B, [:w3, :w2, :w1], nothing),
+        Dependency{Symbol,Symbol}(:A, [:v1], :B, [:w3, :w2, :w1], nothing, true, true),
         Availability{Symbol,Symbol}(:B, [:w3, :w2, :w1],
             [[:compat, :pin], [:compat], [:pin]])]
     @test unavailable(c.chain[3])
@@ -607,7 +607,7 @@ end
     # here there is a bound to state: :P has a version left, just not one
     # :R will take
     @test d.conflicts[1].chain[2] ==
-        Dependency{Symbol,Symbol}(:R, [:r1], :P, [:p2, :p1], [true, false])
+        Dependency{Symbol,Symbol}(:R, [:r1], :P, [:p2, :p1], [true, false], true, true)
     f = d.conflicts[1].chain[3]::Availability
     @test f.pkg == :P
     @test f.members == [:p2, :p1]
@@ -635,9 +635,9 @@ end
     c = only(d.conflicts)
     @test c.chain == Fact[Requirement(:A),
         Dependency{Symbol,Symbol}(:A, [:a3], :C, [:c3, :c2, :c1],
-            [true, false, false]),
+            [true, false, false], true, false),
         Dependency{Symbol,Symbol}(:A, [:a2, :a1], :C, [:c3, :c2, :c1],
-            [false, true, false]),
+            [false, true, false], false, true),
         Availability{Symbol,Symbol}(:C, [:c3, :c2, :c1],
             [[:compat], [:compat], Symbol[]])]
     @test sprint(show, MIME("text/plain"), d) == """
@@ -646,8 +646,8 @@ end
         Conflict 1: A cannot be satisfied.
           • you require A
           • A a3 requires C at c3
-          • A a1–a2 requires C at c2
-          • C: c2–c3 excluded by your compat
+          • A ≤ a2 requires C at c2
+          • C: ≥ c2 excluded by your compat
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a3, C c3
@@ -663,8 +663,8 @@ end
     # not what the query left nothing of, and the versions it would name are
     # the subject of the next step anyway
     @test c.chain == Fact[Requirement(:A),
-        Dependency{Symbol,Symbol}(:A, [:a1], :B, [:b1], nothing),
-        Dependency{Symbol,Symbol}(:B, [:b1], :C, [:c2, :c1], [true, false]),
+        Dependency{Symbol,Symbol}(:A, [:a1], :B, [:b1], nothing, true, true),
+        Dependency{Symbol,Symbol}(:B, [:b1], :C, [:c2, :c1], [true, false], true, true),
         Availability{Symbol,Symbol}(:C, [:c2, :c1], [[:compat], Symbol[]])]
     report = sprint(show, MIME("text/plain"), d)
     @test occursin("A a1 requires B\n", report)
@@ -684,9 +684,9 @@ end
     d = check_diagnosis(weak_bound, prob)
     c = only(d.conflicts)
     @test c.chain == Fact[Requirement(:P), Requirement(:S),
-        Dependency{Symbol,Symbol}(:S, [:s1], :W, [:w2, :w1], nothing),
+        Dependency{Symbol,Symbol}(:S, [:s1], :W, [:w2, :w1], nothing, true, true),
         Incompatibility{Symbol,Symbol}(:P, [:p1], :W, [:w2, :w1],
-            [false, true]),
+            [false, true], true, true),
         Availability{Symbol,Symbol}(:W, [:w2, :w1], [Symbol[], [:compat]])]
     # the only dependency stated is the one the registry has
     @test [(f.pkg, f.dep) for f in c.chain if f isa Dependency] == [(:S, :W)]
@@ -824,8 +824,8 @@ end
     @test c.chain == Fact[Requirement(:A), Requirement(:B),
         Availability{Symbol,Symbol}(:A, [:a2, :a1], [Symbol[], [:compat]]),
         Availability{Symbol,Symbol}(:B, [:b2, :b1], [Symbol[], [:compat]]),
-        Dependency{Symbol,Symbol}(:A, [:a2], :C, [:c2, :c1], [true, false]),
-        Dependency{Symbol,Symbol}(:B, [:b2], :C, [:c2, :c1], [true, false]),
+        Dependency{Symbol,Symbol}(:A, [:a2], :C, [:c2, :c1], [true, false], true, true),
+        Dependency{Symbol,Symbol}(:B, [:b2], :C, [:c2, :c1], [true, false], true, true),
         Availability{Symbol,Symbol}(:C, [:c2, :c1], [[:compat], Symbol[]])]
     @test [fix.actions for fix in c.fixes] == [[Action(:compat, :C)]]
     @test only(c.fixes).solution == Dict(:A => :a2, :B => :b2, :C => :c2)

@@ -366,8 +366,8 @@ end
 # What the menus leave out, once the reader has made a choice in each of them.
 # Nothing to say when they leave out nothing.
 others_phrase(others::Symbol) =
-    others === :larger ? "Other, larger solutions exist." :
-                         "Other solutions exist."
+    others === :larger ? "Larger solutions also exist." :
+                         "Other solutions also exist."
 
 # what the fix gets the user, of the packages this conflict has named; a fix
 # that installs none of them has nothing to show here
@@ -381,7 +381,7 @@ end
 function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis{P,V}) where {P,V}
     println(io, "Unsatisfiable — ",
         count_phrase(length(d.conflicts), "conflict", "conflicts"),
-        length(d.conflicts) > 1 ? ", every one of which has to be fixed:" : ":")
+        length(d.conflicts) > 1 ? ", each of which must be fixed:" : ":")
     for (k, c) in enumerate(d.conflicts)
         println(io)
         subject = list_phrase(String[string(p) for p in c.reqs])
@@ -512,17 +512,17 @@ end
 # Dropping every candidate is a repair, so the last bound worth trying is the
 # one that forbids nothing — which is the plain enumeration, and also what a
 # query with no candidate to give up at all wants.
-function smallest_repairs(sat::SAT, cands::Vector{Int}, limit::Int)
-    relaxed = Int[-l for l in cands]
+function smallest_repairs(sat::SAT, candidates::Vector{Int}, limit::Int)
+    relaxed = Int[-l for l in candidates]
     counts = Int[]
-    for k = 1:length(cands)-1
+    for k = 1:length(candidates)-1
         repairs = with_temp_clauses(sat) do
             add_at_most!(sat, relaxed, k, counts)
-            sat_solve(sat) ? sat_mcses(sat, cands; limit) : nothing
+            sat_solve(sat) ? sat_mcses(sat, candidates; limit) : nothing
         end
         repairs === nothing || return repairs
     end
-    return sat_mcses(sat, cands; limit)
+    return sat_mcses(sat, candidates; limit)
 end
 
 # Whether the query has a repair that costs more than the smallest ones do.
@@ -648,22 +648,22 @@ end
 # back is a subsequence of what was asked, so the requirements are in the
 # problem's requirement order and the packages in package order.
 function conflict_story(
-    sat     :: SAT{P,V},
-    prob    :: Problem{P},
-    vm      :: VarMap{P},
-    emptied :: Dict{Int,P}, # per package literal, the package
-    cands   :: Vector{Int},
+    sat        :: SAT{P,V},
+    prob       :: Problem{P},
+    vm         :: VarMap{P},
+    emptied    :: Dict{Int,P}, # per package literal, the package
+    candidates :: Vector{Int}, # the literals a repair may withdraw
 ) where {P,V}
-    named = Set{Int}(sat_mus(sat, cands))
-    pkgs = Int[l for l in cands if haskey(emptied, l)]
-    for l in cands
+    named = Set{Int}(sat_mus(sat, candidates))
+    pkgs = Int[l for l in candidates if haskey(emptied, l)]
+    for l in candidates
         (haskey(emptied, l) || l in named) && continue
         union!(named, sat_mus(sat, Int[l; pkgs]))
     end
     reqs = P[]
     chain = Fact[]
     avails = Fact[]
-    for l in cands
+    for l in candidates
         l in named || continue
         p = get(emptied, l, nothing)
         if p === nothing
@@ -788,9 +788,12 @@ end
 # comes before dropping a requirement, which is the same preference the
 # candidate order states by putting the requirements first; the choices
 # themselves go in the order their earliest alternative was offered in.
-function order_choices!(choices::Vector{Vector{Int}}, cands::Vector{Int},
-                        nreqs::Int)
-    at = Dict{Int,Int}(l => i for (i, l) in enumerate(cands))
+function order_choices!(
+    choices    :: Vector{Vector{Int}},
+    candidates :: Vector{Int},
+    nreqs      :: Int,
+)
+    at = Dict{Int,Int}(l => i for (i, l) in enumerate(candidates))
     for c in choices
         sort!(c; by = l -> (at[l] ≤ nreqs, at[l]))
     end
@@ -862,10 +865,10 @@ function diagnose(
             # requirements first, so that a repair keeps them and prefers
             # relaxing a constraint to dropping a dependency, and so that a
             # story drops the requirements it does not need
-            cands = [req_lits; pkg_lits]
-            cheapest = smallest_repairs(sat, cands, MAX_REPAIRS)
+            candidates = [req_lits; pkg_lits]
+            cheapest = smallest_repairs(sat, candidates, MAX_REPAIRS)
             choices, whole = factor_repairs(cheapest)
-            order_choices!(choices, cands, length(req_lits))
+            order_choices!(choices, candidates, length(req_lits))
             # what the menus leave out: nothing when they reach every cheapest
             # repair and no repair costs more than the cheapest. The second is
             # a question to put to the instance, and putting it takes every
@@ -883,7 +886,7 @@ function diagnose(
             for (i, choice) in enumerate(choices)
                 rest = Set{Int}(settled[j] for j in eachindex(settled) if j ≠ i)
                 push!(stories, conflict_story(sat, prob, vm, emptied,
-                    Int[l for l in cands if l ∉ rest]))
+                    Int[l for l in candidates if l ∉ rest]))
                 push!(menus, Vector{Action{P}}[
                     correction_actions(sat, prob, vm, emptied, l)
                     for l in choice])

@@ -233,8 +233,8 @@ would want it to hold, so the assumptions a model *satisfies* are the ones the
 repair it witnesses leaves alone. Ruling ``M_i`` out is therefore asking for
 one of its literals, not against it.
 
-A report says nothing when neither holds, "Other, larger solutions exist."
-when only the first does, and "Other solutions exist." whenever the second
+A report says nothing when neither holds, "Larger solutions also exist."
+when only the first does, and "Other solutions also exist." whenever the second
 does. Exploring those other solutions is a question this page does not
 answer.
 

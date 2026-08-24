@@ -533,7 +533,7 @@ end
     @test d.others === :larger
     report = sprint(show, MIME("text/plain"), d)
     @test occursin("The only fix: relax your compat on C", report)
-    @test occursin("Other, larger solutions exist.", report)
+    @test occursin("Larger solutions also exist.", report)
 end
 
 @testset "diagnosis: a costlier repair is asked about, not counted" begin
@@ -563,7 +563,7 @@ end
     @test all(length(r) > smallest
               for r in setdiff(repairs, fix_combinations(d)))
     @test d.others === :larger
-    @test occursin("Other, larger solutions exist.",
+    @test occursin("Larger solutions also exist.",
         sprint(show, MIME("text/plain"), d))
 
     # the same shape of menu over a query where every repair is a smallest one:
@@ -631,7 +631,7 @@ end
     @test length(offered) == 2
     @test d.others === :some
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("Other solutions exist.", report)
+    @test occursin("Other solutions also exist.", report)
     @test !occursin("larger", report)
 end
 
@@ -720,7 +720,7 @@ end
     # combination of them is a repair and there are no others
     d = resolve(two_conflicts, Problem([:A, :B, :E, :F]))
     @test sprint(show, MIME("text/plain"), d) == """
-        Unsatisfiable — 2 conflicts, every one of which has to be fixed:
+        Unsatisfiable — 2 conflicts, each of which must be fixed:
 
         Conflict 1: A and B cannot both be satisfied.
           • you require A

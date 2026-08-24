@@ -7,6 +7,41 @@ mapping each needed package to a version, or a [`Diagnosis`](@ref) — which
 requirements cannot hold together, why, and a menu of verified fixes for
 each of them — when they cannot be satisfied.
 
+A diagnosis reads like this. Two requirements fail for unrelated reasons, so
+each gets its own menu, and any one alternative from each menu resolves the
+query:
+
+```
+Unsatisfiable — 2 conflicts, each of which must be fixed:
+
+Conflict 1: DataFrames cannot be satisfied.
+  • you require DataFrames
+  • DataFrames: 0.11.7–0.22.7 excluded by your compat
+  • no version of PrettyTables is available: 0.1.0–3.4.8 excluded by your
+    compat
+  Fix it by any one of:
+    1. relax your compat on DataFrames
+       → allows: DataFrames 0.21.8
+    2. relax your compat on PrettyTables
+       → allows: DataFrames 1.8.2, PrettyTables 3.4.8
+    3. drop requirement DataFrames
+
+Conflict 2: Plots cannot be satisfied.
+  • you require Plots
+  • no version of RecipesBase is available: 0.4.0–1.3.4 excluded by your
+    compat
+  Fix it by any one of:
+    1. relax your compat on RecipesBase
+       → allows: Plots 1.41.0, RecipesBase 1.3.4
+    2. drop requirement Plots
+```
+
+Every fix is *verified*: the version list after each one is what a resolve of
+the fixed query actually returns, not a guess. When the menus do not reach
+every minimal fix the report says so — "Larger solutions also exist." when the
+ones left out cost more, "Other solutions also exist." when it cannot promise
+even that — and says nothing at all when the menus are the whole of it.
+
 What "optimal" means, precisely, and why the resolver's aggressive problem
 filtering provably does not change the answer, is worked out in the Theory
 section:

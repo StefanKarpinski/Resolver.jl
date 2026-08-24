@@ -15,7 +15,12 @@ apart — and the partition saying which versions those are is carried with it.
   * `depends` — the packages some class depends on, sorted; one matrix column
     each, in that order.
   * `interacts` — per partner package, the offset of its block of *class*
-    columns in this matrix.
+    columns in this matrix. **Offset `0` is a real offset**, not a sentinel:
+    the first partner's block starts there whenever the package has no
+    dependency columns of its own — which is every package whose only
+    relations are weak. So `haskey` is how to ask whether two packages
+    interact; `get(interacts, q, 0)` silently reads a real interaction as
+    none.
   * `conflicts` — `(m+1) × (n+1)` bits for `m` classes and `n` conflict
     columns: the dependency columns followed by one block of partner classes
     per partner, with the last row and column holding the *in-universe* flags

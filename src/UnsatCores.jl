@@ -1,24 +1,22 @@
 """
     Resolver.UnsatCores
 
-Minimal explanations of unsatisfiability, over assumption literals: three
+Minimal explanations of unsatisfiability, over assumption literals: two
 questions about a `SAT` instance and an ordered collection of literals the
 caller could assume. `sat_mus` returns a minimal subset of them that is
 unsatisfiable already — drop any one of its literals and the rest is
-satisfiable. `sat_disjoint_muses` splits the collection into independent
-such conflicts, none sharing a literal with another. `sat_mcses` enumerates
-the minimal repairs: every subset whose removal makes everything else
-satisfiable. Answers come back as subsequences of the collection they were asked
+satisfiable. `sat_mcses` enumerates the minimal repairs: every subset whose
+removal makes everything else satisfiable. Answers come back as subsequences of the collection they were asked
 about, and the order it is given in is the caller's only knob: conflicts avoid
 the literals at the front, repairs take the ones at the back.
 
 For the diagnostics machinery, whose relaxations are assumption literals rather
-than packages. These three names are this module's API; `Resolver` itself
+than packages. These two names are this module's API; `Resolver` itself
 exports none of them.
 """
 module UnsatCores
 
-export sat_mus, sat_disjoint_muses, sat_mcses
+export sat_mus, sat_mcses
 
 using ..Resolver: SAT, PicoSAT, sat_assume_var, sat_solve
 
@@ -180,35 +178,6 @@ function mus_shrink_linear(sat::SAT, core::Vector{Int})
         end
     end
     return Int[core[i] for i in eachindex(core) if keep[i]]
-end
-
-"""
-    sat_disjoint_muses(sat, lits) -> Vector{Vector{Int}}
-
-A cover of `lits` by pairwise disjoint minimal unsatisfiable subsets: repeatedly
-extract a MUS and remove it from the candidates until what remains is
-satisfiable. Each returned vector satisfies the `sat_mus` contract, no literal
-appears in two of them, and `lits` minus their union is satisfiable.
-
-Empty when `sat` is satisfiable assuming all of `lits` (and also when `sat` is
-unsatisfiable on its own — see `sat_mus`).
-
-Note that this is *not* an enumeration of all MUSes: MUSes overlap in general,
-and which disjoint ones are found depends on the candidate order and on the
-solver's state, exactly as for `sat_mus`. Cost: one `sat_mus` call per returned
-MUS, plus one to discover that the rest is satisfiable.
-"""
-function sat_disjoint_muses(sat::SAT, lits::AbstractVector{<:Integer})
-    rest = collect(Int, lits)
-    @assert allunique(rest)
-    muses = Vector{Int}[]
-    while true
-        mus = sat_mus(sat, rest)
-        isempty(mus) && break
-        push!(muses, mus)
-        setdiff!(rest, mus) # order-preserving
-    end
-    return muses
 end
 
 ## one repair: the pair the enumeration is built out of

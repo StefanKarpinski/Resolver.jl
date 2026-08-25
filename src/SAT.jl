@@ -465,16 +465,17 @@ const is_unsatisfiable = !is_satisfiable
 function each_solution_index(f::Function, sat::SAT)
     for (p, v_p) in sat.vars
         PicoSAT.deref(sat.pico, v_p) < 0 && continue
-        i = 1
-        while true
-            if PicoSAT.deref(sat.pico, v_p + i) > 0
-                # guaranteed to happen by SAT construction:
-                # v_p => v_p + i for some i = 1:n_p
-                f(p, i)
-                break
-            end
-            i += 1
+        c = 0
+        for i = 1:nclasses(sat.info[p])
+            PicoSAT.deref(sat.pico, v_p + i) > 0 || continue
+            c = i
+            break
         end
+        @assert c != 0 """
+            $p is installed with no class chosen, which `v_p => ⋁ᵢ p@i` forbids:
+            the last solve must have returned satisfiable, with no clauses added
+            since."""
+        f(p, c)
     end
 end
 

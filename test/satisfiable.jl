@@ -194,3 +194,37 @@ end
         end
     end
 end
+
+# The scan in `each_solution_index` restates `sat_variables`' layout, and the
+# prefix-ladder variables sit immediately after a package's class block -- so
+# if the two drift apart it reports a class the package has not got, silently:
+# only `solution` ever indexes `reps` with what it yields.
+@testset "each_solution_index: the scan stays inside its package's block" begin
+    none_d = Dict{Symbol,Vector{Symbol}}()
+    none_c = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
+    cases = [
+        # three classes, so a ladder is laid right after them
+        Dict(:A => Resolver.PkgData([:a1], Dict(:a1 => [:B]), none_c),
+             :B => Resolver.PkgData([:b3, :b2, :b1],
+                 Dict(:b3 => [:C], :b2 => Symbol[], :b1 => Symbol[]), none_c),
+             :C => Resolver.PkgData([:c1], none_d, none_c)) => [:A],
+        # one class, so no ladder at all
+        Dict(:A => Resolver.PkgData([:a1], none_d, none_c)) => [:A],
+    ]
+    for (data, reqs) in cases
+        prob = Resolver.Problem(reqs)
+        sat = SAT(prepare_pkg_info(pkg_info(data, prob), prob))
+        @test Resolver.sat_solve(sat)
+        seen = Dict{Symbol,Int}()
+        Resolver.each_solution_index(sat) do p, i
+            @test 1 ≤ i ≤ Resolver.nclasses(sat.info[p])
+            @test !haskey(seen, p)
+            seen[p] = i
+        end
+        sol = Resolver.solution(sat)
+        @test Set(keys(sol)) == Set(keys(seen))
+        for (p, v) in sol
+            @test v == sat.info[p].versions[sat.reps[p][seen[p]]]
+        end
+    end
+end

@@ -142,7 +142,6 @@ see why the package could not supply what the conflict needed.
     `:pin` for a pin at another version, and its own name for each other kind
     whose predicate holds. A member with no kind against it is one this query
     admits.
-
 The whole of the offering is here, so what the fact leaves the resolver is what
 it does not exclude: the package is
 [unavailable](@ref Resolver.Diagnostics.unavailable) exactly when every member
@@ -395,12 +394,50 @@ function list_phrase(parts::Vector{String})
     return join(parts[1:end-1], ", ") * " and " * parts[end]
 end
 
-# An availability fact as one line. The fact runs over the package's whole
-# version list, so every maximal run of versions excluded by the same kinds is a
-# range and gets one clause, and the runs it admits are simply not mentioned;
-# the clauses after the first drop "excluded", as an English list of them would.
+# An availability fact as one line, stated positively: what the query leaves,
+# not what it took. The negative form made the reader compute a complement
+# against a version list they do not have -- "≤ 0.6.77 excluded" gives the next
+# line's "0.7.5" only to someone who knows what exists in between -- and the
+# positive form is the same set the next line is about.
+#
+# The kinds are still named, since "your compat" is the part the user can act
+# on, and a run of versions the query admits is what survives them.
 function availability_phrase(f::Availability)
     members, excluded = f.members, f.excluded
+    unavailable(f) && return isempty(members) ?
+        "no version of $(f.pkg) is available" :
+        "no version of $(f.pkg) is left: " *
+            join(exclusion_clauses(members, excluded), ", ")
+    # every maximal run the query admits, as a range
+    parts = String[]
+    i = 1
+    while i ≤ length(members)
+        if isempty(excluded[i])
+            j = i
+            while j < length(members) && isempty(excluded[j+1])
+                j += 1
+            end
+            push!(parts, range_phrase(members, i, j;
+                high = i == 1, low = j == length(members)))
+            i = j
+        end
+        i += 1
+    end
+    kinds = unique!(reduce(vcat, excluded; init = Symbol[]))
+    left = list_phrase(parts)
+    # What is left is credited to the query's constraints only when they are
+    # the whole reason it is what it is. Where redundancy elimination took
+    # versions too, the range is still what the resolve had to choose between,
+    # but saying the compat left it there would be a claim about the compat
+    # that is not true of it alone
+    isempty(kinds) && return "$(f.pkg) can be $left"
+    return "$(kinds_phrase(kinds)) leaves $(f.pkg) at $left"
+end
+
+# the excluded runs, as the negative clauses the unavailable case still needs:
+# there is no surviving range to name, so what took each version away is all
+# there is to say
+function exclusion_clauses(members, excluded)
     clauses = String[]
     i = 1
     while i ≤ length(members)
@@ -408,18 +445,12 @@ function availability_phrase(f::Availability)
         while j < length(members) && excluded[j+1] == excluded[i]
             j += 1
         end
-        if !isempty(excluded[i])
-            by = kinds_phrase(excluded[i])
-            push!(clauses, isempty(clauses) ?
-                "$(range_phrase(members, i, j; high = open_high(i, j, members),
-                    low = open_low(i, j, members))) excluded by $by" :
-                "$(range_phrase(members, i, j; high = open_high(i, j, members),
-                    low = open_low(i, j, members))) by $by")
-        end
+        isempty(excluded[i]) || push!(clauses,
+            "$(range_phrase(members, i, j; high = open_high(i, j, members),
+                low = open_low(i, j, members))) by $(kinds_phrase(excluded[i]))")
         i = j + 1
     end
-    head = unavailable(f) ? "no version of $(f.pkg) is available" : string(f.pkg)
-    return isempty(clauses) ? head : "$head: $(join(clauses, ", "))"
+    return clauses
 end
 
 # The versions a mask picks out of a package's offering, as an English list of
@@ -756,10 +787,29 @@ end
 # taking every class at once is what lets the fact say which versions the query
 # leaves standing as well as which it takes away, and a package is one thing to
 # say a sentence about however many of its classes the story needed.
-availability_fact(sat::SAT{P,V}, prob::Problem{P}, p::P) where {P,V} =
-    Availability{P,V}(p, copy(sat.info[p].versions),
-        Vector{Symbol}[exclusion_kinds(prob, p, v)
-                       for v in sat.info[p].versions])
+function availability_fact(sat::SAT{P,V}, prob::Problem{P}, p::P) where {P,V}
+    info_p = sat.info[p]
+    # Shadows belong in this fact and nowhere else. They are versions
+    # redundancy elimination took of its own accord, so a fact built from what
+    # survives would say the query leaves less than it does -- and the whole
+    # point of stating what is left is that the user can act on it. Whatever
+    # excludes the class excludes everything it shadows, so a chain that rules
+    # the class out rules them out too, and each one's own kinds are a question
+    # for the problem rather than for the class hosting it.
+    #
+    # The order is the version type's, not the provider's. A package lists its
+    # versions best first, which is a claim about preference and is the
+    # provider's to make; a range is read low to high, which is a claim about
+    # order and is the type's. They coincide for version numbers and need not
+    # in general, and it is the second one a report wants.
+    members = copy(info_p.versions)
+    for sh in info_p.shadows
+        append!(members, sh)
+    end
+    sort!(members; rev = true)
+    return Availability{P,V}(p, members,
+        Vector{Symbol}[exclusion_kinds(prob, p, v) for v in members])
+end
 
 # One assumable literal per package this query emptied something of, and the
 # packages they stand for, in package-name order.
@@ -1117,7 +1167,13 @@ function chain_relations(
         for (x, y) in forcing_path(parent, a)
             (x, y) in said && continue
             push!(said, (x, y))
-            append!(facts, relation_facts(sat, prob, x, snap[x], y, false))
+            # with the bound: the next step's subject is the run this one
+            # leaves, so a step that keeps its bound to itself makes that run
+            # appear from nowhere. Where there is no bound to state -- either
+            # because `pkg` declares none, or because the query has left `y`
+            # nothing and every bound would starve it alike -- `relation_facts`
+            # says only that `y` is needed, which is what it said before
+            append!(facts, relation_facts(sat, prob, x, snap[x], y, true))
         end
         a == b || append!(facts, relation_facts(sat, prob, a, live, b, true))
     end

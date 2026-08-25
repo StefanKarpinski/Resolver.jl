@@ -355,13 +355,25 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
             f isa Availability || continue
             if haskey(sat.info, f.pkg)
                 info_p = sat.info[f.pkg]
-                @test f.members == info_p.versions
+                # the fact speaks for every version the query had to choose
+                # between: what survives, plus what redundancy elimination
+                # shadowed, in the version type's own order rather than the
+                # provider's preference order
+                V = eltype(info_p.versions)
+                @test f.members == sort!(vcat(copy(info_p.versions),
+                    reduce(vcat, info_p.shadows; init = V[])); rev = true)
+                @test allunique(f.members)
                 @test f.excluded ==
                     [exclusion_kinds(prob, f.pkg, v) for v in f.members]
+                # a class's own versions carry the class's exclusions, wherever
+                # the fact's ordering puts them -- shadows sit between them, so
+                # this is a lookup by version and not by position any more
+                at = Dict(v => i for (i, v) in enumerate(f.members))
                 for k = 1:nclasses(info_p)
-                    ex = class_exclusions(prob, f.pkg, info_p, k)
-                    @test [f.members[i] for i in info_p.members[k]] == first.(ex)
-                    @test [f.excluded[i] for i in info_p.members[k]] == last.(ex)
+                    for (v, kinds) in class_exclusions(prob, f.pkg, info_p, k)
+                        @test haskey(at, v)
+                        @test f.excluded[at[v]] == kinds
+                    end
                 end
                 # a package with a version left over is not unavailable
                 @test unavailable(f) == all(iszero, sat.reps[f.pkg])
@@ -619,7 +631,7 @@ end
         Conflict 1: R cannot be satisfied.
           • you require R
           • R r1 requires P at p2
-          • P: p2 excluded by your compat
+          • your compat leaves P at p1
           Fix it by any one of:
             1. relax your compat on P
                → allows: P p2, R r1
@@ -647,7 +659,7 @@ end
           • you require A
           • A a3 requires C at c3
           • A ≤ a2 requires C at c2
-          • C: ≥ c2 excluded by your compat
+          • your compat leaves C at c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a3, C c3
@@ -663,7 +675,7 @@ end
     # not what the query left nothing of, and the versions it would name are
     # the subject of the next step anyway
     @test c.chain == Fact[Requirement(:A),
-        Dependency{Symbol,Symbol}(:A, [:a1], :B, [:b1], nothing, true, true),
+        Dependency{Symbol,Symbol}(:A, [:a1], :B, [:b1], [true], true, true),
         Dependency{Symbol,Symbol}(:B, [:b1], :C, [:c2, :c1], [true, false], true, true),
         Availability{Symbol,Symbol}(:C, [:c2, :c1], [[:compat], Symbol[]])]
     report = sprint(show, MIME("text/plain"), d)
@@ -684,7 +696,7 @@ end
     d = check_diagnosis(weak_bound, prob)
     c = only(d.conflicts)
     @test c.chain == Fact[Requirement(:P), Requirement(:S),
-        Dependency{Symbol,Symbol}(:S, [:s1], :W, [:w2, :w1], nothing, true, true),
+        Dependency{Symbol,Symbol}(:S, [:s1], :W, [:w2, :w1], [true, true], true, true),
         Incompatibility{Symbol,Symbol}(:P, [:p1], :W, [:w2, :w1],
             [false, true], true, true),
         Availability{Symbol,Symbol}(:W, [:w2, :w1], [Symbol[], [:compat]])]
@@ -994,8 +1006,8 @@ end
         Conflict 1: A cannot be satisfied.
           • you require A
           • A v1 requires B
-          • no version of B is available: w3 excluded by your compat and your pin, w2
-            by your compat, w1 by your pin
+          • no version of B is left: w3 by your compat and your pin, w2 by your
+            compat, w1 by your pin
           Fix it by any one of:
             1. relax your compat on B
                → allows: A v1, B w2
@@ -1112,7 +1124,9 @@ end
     @test f.allowed === nothing
     @test all(v -> v ∈ VersionSpec("1"), f.versions)
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("no version of PrettyTables is available", report)
+    # "left", not "available": the registry has versions of it, and the
+    # query's own compat is what took every one of them away
+    @test occursin("no version of PrettyTables is left", report)
     @test occursin("relax your compat on PrettyTables", report)
     @test occursin(
         "DataFrames $(f.versions[end])–$(f.versions[1]) requires PrettyTables\n",

@@ -1118,16 +1118,25 @@ function chain_relations(
     # Bounds are symmetric, so a package and the one that starves it usually
     # starve each other, and the choice is which way round to say it: a
     # requirement is where the story starts rather than where it ends, and a
-    # story about a package this query emptied is a story about this conflict
-    # rather than some other one. Then the shortest, and then by name, so that
-    # a tie does not depend on iteration order.
+    # walk that *ends* at one of the packages the chain says the query emptied
+    # is telling this conflict's story rather than some other one. Then the
+    # shortest, and then by name, so that a tie does not depend on iteration
+    # order.
+    #
+    # Where it ends is the whole of that question: the chain states one
+    # availability fact per emptied package it names, and the last of them is
+    # what the walk arrives at. A walk that merely *starts* at one — which any
+    # walk does whenever the query has emptied something of a requirement —
+    # says nothing about which package it is about to leave with nothing, so
+    # taking that for a story about this conflict lets it end on a package no
+    # availability fact of this chain speaks of, and leaves the fact that does
+    # not fit stated with nothing in the chain to connect it to.
     best = nothing
     for (q, (before, blame)) in starved
         blamed = fewest_blamed(sat, snap, q, blame, reqs)
         steps = length(blamed) + length(forcing_path(parent, q)) +
             sum(r -> length(forcing_path(parent, r)), blamed; init = 0)
-        touches = q ∈ emptied || any(∈(emptied), blamed)
-        key = (q ∈ reqs, !touches, steps, string(q))
+        key = (q ∈ reqs, q ∉ emptied, steps, string(q))
         (best === nothing || key < best[1]) && (best = (key, q, before, blamed))
     end
     _, q, before, blamed = best

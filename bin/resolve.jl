@@ -595,6 +595,13 @@ struct ManifestEntry
     weakdeps :: Dict{String,UUID}
 end
 
+# Value-based equality/hash so identical entries from multiple registries dedup in Set
+Base.:(==)(a::ManifestEntry, b::ManifestEntry) =
+    a.name == b.name && a.version == b.version && a.tree_hash == b.tree_hash &&
+    a.deps == b.deps && a.weakdeps == b.weakdeps
+Base.hash(a::ManifestEntry, h::UInt) =
+    hash((a.name, a.version, a.tree_hash, a.deps, a.weakdeps), h)
+
 # On Julia >= 1.14 the registry parser yields a package's dependencies as a
 # `Set{UUID}` rather than a `Dict{String,UUID}`; the manifest still needs them
 # keyed by name, so reconstruct the mapping from a uuid -> name table covering

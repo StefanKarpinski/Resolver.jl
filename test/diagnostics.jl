@@ -42,7 +42,7 @@ using Resolver.UnsatCores: sat_mcses
 
 @isdefined(ProofCheck) || include(joinpath(@__DIR__, "proof_check.jl"))
 using .ProofCheck
-using .ProofCheck: printed_lines
+using .ProofCheck: claimed_lines
 
 using Pkg.Versions: VersionSpec
 
@@ -799,14 +799,27 @@ end
                           :C => [:c1])); diagnose = false) === nothing
     end
     report = sprint(show, MIME("text/plain"), d)
+    # the heading names the primary reason's requirement — the conflict reads
+    # under an implicit "given the rest of the requirements" — and B, whose
+    # requirement only the second reason uses, is accounted for by the blocked
+    # entry that reports on it, not by the sentence
+    @test occursin("A cannot be satisfied", report)
+    @test !occursin("A and B cannot both be satisfied", report)
+    # the page tells the primary reason in full: what the query left of :A,
+    # what that forces, and the bound on :C it collides with
     @test occursin("your compat leaves A a2", report)
-    @test occursin("your compat leaves B b2", report)
-    @test occursin("A and B cannot both be satisfied", report)
-    # both of them fail, and naming one would leave the other unexplained: each
-    # gets the line saying what it forces, and `:C` is where they meet
     @test occursin("A a2 requires C c2", report)
-    @test occursin("B b2 requires C c2", report)
     @test occursin("your compat leaves C c1", report)
+    # :B is not left out: no action on :A alone repairs this, and the blocked
+    # entry says so by naming what :B would have to give up as well. That is
+    # the whole of the entry — its proof stays in the lines, for the checkers,
+    # and the page never states it
+    @test occursin("relaxing your compat on A and dropping requirement A " *
+                   "would not help unless you also relaxed your compat on B.",
+                   replace(report, r"\n\s+" => " "))
+    @test !occursin("your compat leaves B b2", report)
+    @test !occursin("B b2 requires C c2", report)
+    @test any(l -> :B in packages(l.clause), c.lines)
     # dropping both requirements repairs it too, and gives up more
     @test d.others === :larger
     @test occursin("The only minimal fix: relax your compat on C", report)
@@ -1013,6 +1026,77 @@ end
     @test !occursin("you require", out)
     @test length(collect(eachmatch(r"^  • "m, out))) == 2
 end
+
+# A conflict's further reasons print after the menu, as blocked fixes: each
+# holds with its entry's actions withdrawn, so what it argues is that those
+# actions settle nothing. One sentence per entry — the actions in the trying
+# and their verdict — with the proof behind it, in the lines, unprinted.
+@testset "diagnosis: blocked fixes print after the menu" begin
+    P, V = String, Int
+    VS = Dict(p => [1, 2] for p in ("A", "B", "E"))
+    dep(p, q, v) = Clauses.clause([p => literal(2, [1], true; absent = true),
+                                   q => literal(2, [v])])
+    lines = Line{P}[
+        Line{P}(dep("A", "B", 1), P[], false, 1, nothing),
+        Line{P}(dep("A", "E", 1), P[], false, 2, "E"),
+        Line{P}(dep("B", "E", 2), P[], false, 2, "E")]
+    blocks = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
+        (2, [Action(:compat, "A")], Action{P}[])]
+    out = sprint() do io
+        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"], lines, VS,
+            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], blocks))
+    end
+    @test occursin("Blocked fixes:", out)
+    @test occursin("relaxing your compat on A does not help.", out)
+    # the entry is its verdict: the proof that licenses it stays in `lines`
+    @test !occursin("A 1 requires E 1", out)
+    @test !occursin("B 1 requires E 2", out)
+    # the primary proof stays in the body, above the blocked section
+    @test first(findfirst("A 1 requires B 1", out)) <
+          first(findfirst("Blocked fixes:", out))
+    # a verified completion turns the refusal into "unless you also"
+    with_unless = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
+        (2, [Action(:compat, "A")], [Action(:drop, "B")])]
+    outu = sprint() do io
+        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"], lines, VS,
+            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], with_unless))
+    end
+    @test occursin("relaxing your compat on A would not help unless you " *
+                   "also dropped requirement B.",
+                   replace(outu, r"\n\s+" => " "))
+
+    # two entries that would say the same sentence say it once
+    twice = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
+        (2, [Action(:compat, "A")], Action{P}[]),
+        (3, [Action(:compat, "A")], Action{P}[])]
+    outd = sprint() do io
+        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"], lines, VS,
+            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], twice))
+    end
+    @test count("relaxing your compat on A does not help.", outd) == 1
+
+    # a requirement only a blocked entry's reason uses stays out of the
+    # heading: the conflict is about its primary reason, under an implicit
+    # "given the rest of the requirements"
+    given = Line{P}[
+        Line{P}(Clauses.clause(["A" => literal(2, 1:2)]), P[], true, 1, nothing),
+        Line{P}(Clauses.clause(["B" => literal(2, 1:2)]), P[], true, 2, nothing)]
+    outh = sprint() do io
+        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"],
+            Line{P}[given; lines], VS,
+            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], blocks), 1)
+    end
+    @test occursin("Conflict 1: A cannot be satisfied.", outh)
+    @test !occursin("A and B cannot", outh)
+
+    # a conflict with no further reasons says nothing about blocked fixes
+    solo = sprint() do io
+        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"],
+            lines[1:1], VS, Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[]))
+    end
+    @test !occursin("Blocked fixes", solo)
+end
+
 
 @testset "diagnosis: the report" begin
     # each conflict carries its own menu, and the menus do not multiply: two

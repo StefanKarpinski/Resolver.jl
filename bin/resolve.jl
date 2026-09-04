@@ -537,7 +537,9 @@ function named(d::Resolver.Diagnosis, name::Function)
         [Diagnostics.Conflict{String,VersionNumber}(
             String[name(p) for p in c.reqs],
             [Diagnostics.Line{String}(named(l.clause, name),
-                String[name(p) for p in l.through], l.given) for l in c.lines],
+                String[name(p) for p in l.through], l.given, l.proof,
+                l.pivot === nothing ? nothing : name(l.pivot))
+             for l in c.lines],
             Dict{String,Vector{VersionNumber}}(
                 name(p) => vs for (p, vs) in c.versions),
             Dict{String,Vector{Vector{Symbol}}}(
@@ -546,7 +548,12 @@ function named(d::Resolver.Diagnosis, name::Function)
                 [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
                 Dict{String,VersionNumber}(
                     name(p) => v for (p, v) in fix.solution))
-             for fix in c.fixes])
+             for fix in c.fixes],
+            Tuple{Int,Vector{Diagnostics.Action{String}},
+                  Vector{Diagnostics.Action{String}}}[
+                (n, [Diagnostics.Action(a.kind, name(a.pkg)) for a in as],
+                    [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
+                for (n, as, us) in c.blocks])
          for c in d.conflicts],
         d.others)
 end

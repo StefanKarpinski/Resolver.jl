@@ -2,17 +2,21 @@
 #
 # Two things make it one, and each is checked here.
 #
-#   * every printed line is true of the universe the query left;
-#   * what the page claims cannot all hold at once, so it entails the verdict.
+#   * every line is true of the universe the query left;
+#   * what the report claims cannot all hold at once, so it entails the verdict.
 #
 # Together those say the report is a set of true statements that contradict,
 # which is the whole of what proving unsatisfiability is.
 #
-# What the page claims is its heading and its lines. The heading names the
+# What the report claims is its heading and its lines. The heading names the
 # requirements the conflict answers for -- that is where the query's demand for
 # each is said, and the body prints no line repeating it -- so the requirements
-# are premises here, beside the lines. Without them the printed set is not
+# are premises here, beside the lines. Without them the claimed set is not
 # contradictory at all: installing nothing satisfies every line of it.
+#
+# The lines a blocked entry's reason is made of are asked the same questions as
+# any other, though the page shows only that entry's verdict: what licenses a
+# claim is checked whether or not the reader is shown it.
 #
 # The lines are flat: none is derived from another on the page, so there is no
 # step between them to check. What each one *is* derived from is the registry,
@@ -38,7 +42,7 @@ using Resolver.Diagnostics: Diagnostics, Conflict, Line, clause_versions,
     clauses_satisfiable
 
 export chain_is_a_proof, chain_hole, proof_problems, lines_are_true,
-    printed_lines, heading_premises, names_what_it_uses, proofs_stand_alone
+    claimed_lines, heading_premises, names_what_it_uses, proofs_stand_alone
 
 # The lines, taken as all the reader has, cannot hold together.
 chain_is_a_proof(sat::SAT{P,V}, chain::Vector{Clause{P}}) where {P,V} =
@@ -207,8 +211,8 @@ function lines_are_true(sat::SAT{P,V}, prob::Problem{P}, clauses) where {P,V}
 end
 
 # is this line the requirement the heading states, rather than one the body
-# prints? Read off the line here rather than asked of the renderer: what the
-# page shows is what this file is the oracle for
+# carries? Read off the line here rather than asked of the renderer: what the
+# report claims is what this file is the oracle for
 function heading_fact(c::Conflict{P,V}, l::Line{P}) where {P,V}
     l.given || return false
     ps = packages(l.clause)
@@ -217,8 +221,8 @@ function heading_fact(c::Conflict{P,V}, l::Line{P}) where {P,V}
     return !absent(m) && all(m[i] for i = 1:nversions(m))
 end
 
-# every line a report prints
-printed_lines(c::Conflict{P,V}) where {P,V} =
+# every line a report's proofs are made of
+claimed_lines(c::Conflict{P,V}) where {P,V} =
     Clause{P}[l.clause for l in c.lines if !heading_fact(c, l)]
 
 # what the heading says, as clauses: each requirement the conflict answers for,
@@ -278,7 +282,7 @@ end
 
 function proof_problems(sat::SAT{P,V}, prob::Problem{P},
                         c::Conflict{P,V}) where {P,V}
-    cs = printed_lines(c)
+    cs = claimed_lines(c)
     claimed = Clause{P}[heading_premises(sat, c); cs]
     bad = names_what_it_uses(c)
     append!(bad, proofs_stand_alone(sat, c))

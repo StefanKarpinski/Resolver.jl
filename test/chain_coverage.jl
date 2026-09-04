@@ -10,7 +10,7 @@
 # versions ruled out accumulate as a union and the derivation reaches ⊥ only
 # when nothing is left. A gap means it never gets there.
 #
-# So what is checked here is that no printed line is false: a gap makes the
+# So what is checked here is that no line of a proof is false: a gap makes the
 # elimination claim more than its inputs give, and a claim more than they give
 # is a statement the universe does not support. That covers the old question
 # and every other way a line could be wrong.
@@ -25,7 +25,7 @@ function coverage_gaps(data, prob::Problem)
     d = resolve(data, prob)
     d isa Diagnosis || return d, String[]
     sat = SAT(prepare_pkg_info(pkg_info(data, prob), prob))
-    return d, reduce(vcat, [lines_are_true(sat, prob, printed_lines(c))
+    return d, reduce(vcat, [lines_are_true(sat, prob, claimed_lines(c))
                             for c in d.conflicts]; init = String[])
 end
 

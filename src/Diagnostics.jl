@@ -93,12 +93,21 @@ struct Fix{P,V}
 end
 
 """
-    Conflict(reqs, lines, versions, excluded, fixes)
+    Conflict(reqs, lines, versions, excluded, fixes, blocks = [])
 
 One independent thing that is wrong: the requirements it answers for, the lines
 that prove it, the version list each named package is spoken of in, which of
-the query's constraint kinds exclude which of those versions, and the menu of
-alternatives that settle it.
+the query's constraint kinds exclude which of those versions, the menu of
+alternatives that settle it, and the fixes its further reasons rule out.
+
+Each entry of `blocks` is a proof number, the actions that proof does without
+— the reason it argues survives withdrawing every one of them, so none of
+them, alone or together, settles this conflict — and, where one was found and
+verified, the completion that would rescue them: actions which, taken *as
+well*, do repair it. Each entry prints after the menu as one sentence: the
+actions and their verdict, which the completion turns from "does not help"
+into "would not help unless you also …". The proof licenses that sentence and
+stays in `lines` for the checkers; the page does not show it.
 """
 struct Conflict{P,V}
     reqs     :: Vector{P}
@@ -106,7 +115,12 @@ struct Conflict{P,V}
     versions :: Dict{P,Vector{V}}
     excluded :: Dict{P,Vector{Vector{Symbol}}}
     fixes    :: Vector{Fix{P,V}}
+    blocks   :: Vector{Tuple{Int,Vector{Action{P}},Vector{Action{P}}}}
 end
+
+Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
+    Conflict{P,V}(reqs, lines, versions, excluded, fixes,
+                  Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[])
 
 """
     Diagnosis
@@ -1010,6 +1024,9 @@ struct Plan{P}
     menus     :: Vector{Vector{Int}}
     reqs      :: Vector{Vector{P}}
     lines     :: Vector{Vector{Line{P}}}
+    # per conflict: proof number, the facts that proof does without, and the
+    # verified completion fact for them (empty where none was found)
+    blocks    :: Vector{Vector{Tuple{Int,Vector{Int},Vector{Int}}}}
     others    :: Symbol
     truncated :: Bool
 end
@@ -1044,6 +1061,7 @@ function analyse(
     selectors = sort!(collect(keys(satx.why)))
     reqs = Vector{P}[]
     lines = Vector{Line{P}}[]
+    blocks = Vector{Tuple{Int,Vector{Int},Vector{Int}}}[]
     truncated = false
     # one walk, over the whole fact set: a reason can hold this conflict's menu
     # *and* facts another menu offers, and a pool with those held out cannot
@@ -1074,7 +1092,42 @@ function analyse(
             truncated = true
         end
         given = sort!(unique!(reduce(vcat, reasons; init = Int[])))
-        ls = Line{P}[Line{P}(fcl[j], P[], true) for j in given if haskey(fcl, j)]
+        # a query fact belongs to the first reason that uses it: the primary
+        # reason's facts open the page, and a fact only a later reason needs
+        # belongs to that reason's proof, not above lines that never touch it
+        first_of = Dict{Int,Int}(j => findfirst(r -> j in r, reasons)
+                                 for j in given)
+        ls = Line{P}[Line{P}(fcl[j], P[], true, first_of[j], nothing)
+                     for j in given if haskey(fcl, j)]
+        # every further reason omits some fact of the primary one — minimal
+        # sets are incomparable — and what it omits is exactly the fix it
+        # blocks: the reason survives withdrawing all of it. Where a single
+        # further fact would rescue the blocked fix — it sits in every found
+        # reason the blocked actions miss, and one solve confirms that
+        # withdrawing it as well repairs — the entry can say "unless you
+        # also"; the solve is what keeps a truncated walk from promising a
+        # repair that is not one
+        others_first = Int[first(menus[j]) for j in eachindex(menus) if j != i]
+        blks = Tuple{Int,Vector{Int},Vector{Int}}[]
+        for n = 2:length(reasons)
+            omitted = Int[j for j in reasons[1] if j ∉ reasons[n]]
+            isempty(omitted) && continue
+            surviving = [r for r in found if menu ⊆ r &&
+                         all(j -> j ∉ r, omitted)]
+            common = isempty(surviving) ? Int[] :
+                sort!(collect(intersect(Set.(surviving)...)))
+            unless = Int[]
+            for j in common
+                (j in menu || j in omitted) && continue
+                W = Set{Int}([omitted; j; others_first])
+                assume = Int[facts[x].lit for x in eachindex(facts) if x ∉ W]
+                if assuming(sat, assume)
+                    unless = Int[j]
+                    break
+                end
+            end
+            push!(blks, (n, omitted, unless))
+        end
         for (n, r) in enumerate(reasons)
             core = reason_core(satx, r, facts, selectors)
             meet = length(r) ≤ MASK_WIDTH ?
@@ -1089,9 +1142,10 @@ function analyse(
             append!(ls, drop_covered(derived))
         end
         push!(lines, ls)
+        push!(blocks, blks)
         push!(reqs, sort!(unique!(P[facts[j].pkg for j in given if facts[j].req])))
     end
-    return Plan{P}(menus, reqs, lines, others, truncated)
+    return Plan{P}(menus, reqs, lines, blocks, others, truncated)
 end
 
 # The kinds to lift so that a package this query emptied is choosable again.
@@ -1251,6 +1305,12 @@ function diagnose(
             continue
         end
         n = i - length(gone)
+        blocks = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
+            (m, Action{P}[a for j in omitted
+                          for a in fix_actions(prob, sat, univ, facts[j])],
+                Action{P}[a for j in unless
+                          for a in fix_actions(prob, sat, univ, facts[j])])
+            for (m, omitted, unless) in plan.blocks[n]]
         lines = plan.lines[n]
         pkgs = P[]
         for l in lines, p in packages(l.clause)
@@ -1262,7 +1322,8 @@ function diagnose(
             ks = Vector{Symbol}[exclusion_kinds(prob, p, v) for v in versions[p]]
             any(!isempty, ks) && (excluded[p] = ks)
         end
-        push!(conflicts, Conflict{P,V}(plan.reqs[n], lines, versions, excluded, fixes))
+        push!(conflicts, Conflict{P,V}(plan.reqs[n], lines, versions, excluded,
+                                       fixes, blocks))
     end
     return Diagnosis{P,V}(conflicts, plan.others, plan.truncated)
 end
@@ -1327,13 +1388,49 @@ end
 
 join_and(xs) = join(xs, ", ", " and ")
 
+# the same action, said as the thing tried rather than the thing to do: a
+# blocked entry reports on a road not taken
+function action_gerund(a::Action)
+    a.kind === :drop && return "dropping requirement $(a.pkg)"
+    a.kind === :compat && return "relaxing your compat on $(a.pkg)"
+    a.kind === :pin && return "unpinning $(a.pkg)"
+    return "allowing $(a.kind) versions of $(a.pkg)"
+end
+
+# ... and as the thing that would have had to happen as well: the completion
+# an "unless you also" names
+function action_past(a::Action)
+    a.kind === :drop && return "dropped requirement $(a.pkg)"
+    a.kind === :compat && return "relaxed your compat on $(a.pkg)"
+    a.kind === :pin && return "unpinned $(a.pkg)"
+    return "allowed $(a.kind) versions of $(a.pkg)"
+end
+
 fix_phrase(f::Fix) = join_and(String[action_phrase(a) for a in f.actions])
+
+# The requirements a conflict's heading names: the primary reason's, not
+# every reason's. Putting a requirement only a blocked entry's reason uses in
+# the heading would make two conflicts read as one said twice. Every conflict
+# reads under an implicit "given the rest of the requirements", so the heading
+# is what this conflict is about, not an inventory of what its reasons touch.
+function heading_reqs(c::Conflict{P,V}) where {P,V}
+    isempty(c.blocks) && return c.reqs
+    blocked = Set{Int}(first(b) for b in c.blocks)
+    heads = P[]
+    for l in c.lines
+        l.given && l.proof ∉ blocked || continue
+        ps = packages(l.clause)
+        length(ps) == 1 && ps[1] in c.reqs && is_requirement(l, ps[1]) &&
+            ps[1] ∉ heads && push!(heads, ps[1])
+    end
+    return isempty(heads) ? c.reqs : sort!(heads)
+end
 
 # What a conflict is about, in one sentence. A requirement whose package the
 # universe holds nothing of has no argument to make, so what it says is the
 # whole of what happened to it.
 function conflict_heading(c::Conflict)
-    rs = c.reqs
+    rs = heading_reqs(c)
     isempty(c.lines) && length(rs) == 1 &&
         return "no version of $(only(rs)) is available."
     isempty(rs) && return "the requirements cannot all be satisfied."
@@ -1522,9 +1619,49 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
         println(io, "Conflict ", index, ": ", conflict_heading(c))
     vers(p) = c.versions[p]
     names(p) = string(p)
-    print_given(io, c, Line{P}[l for l in c.lines if l.given], vers, names)
-    print_derived(io, Line{P}[l for l in c.lines if !l.given], vers, names)
+    blocked = Set{Int}(first(b) for b in c.blocks)
+    print_given(io, c,
+        Line{P}[l for l in c.lines if l.given && l.proof ∉ blocked],
+        vers, names)
+    print_derived(io,
+        Line{P}[l for l in c.lines if !l.given && l.proof ∉ blocked],
+        vers, names)
     print_menu(io, c, others)
+    print_blocked(io, c)
+end
+
+# The fixes a conflict's further reasons rule out, one sentence each. A reason
+# here holds with its entry's actions withdrawn — that is how it was chosen —
+# so what it argues is exactly that those actions, alone or together, settle
+# nothing, and where a completion was found, what would have to go with them.
+# Printed after the menu: the reader meets the offer first and the roads not
+# taken second. The proof is what licenses the sentence, not part of it — why
+# a fix is not offered is a second-order question, and the entry has already
+# answered it.
+#
+# Two entries whose actions and completion agree say the same sentence, so the
+# page says it once. Deduped here rather than in `blocks`: each entry is a
+# distinct reason's verified claim, and the checkers read every one of them.
+function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
+    isempty(c.blocks) && return
+    leads = String[]
+    for (_, actions, unless) in c.blocks
+        tried = join_and(String[action_gerund(a) for a in actions])
+        # a completion that was found and verified turns the flat refusal into
+        # the whole truth: what it would take for this road to go somewhere
+        lead = if isempty(unless)
+            help = length(actions) > 1 ? "do not help" : "does not help"
+            "$tried $help."
+        else
+            also = join_and(String[action_past(a) for a in unless])
+            "$tried would not help unless you also $also."
+        end
+        lead in leads || push!(leads, lead)
+    end
+    println(io, "  Blocked fixes:")
+    for lead in leads
+        print_wrapped(io, lead, "    • ", "      ")
+    end
 end
 
 function Base.show(io::IO, d::Diagnosis)
@@ -1586,8 +1723,8 @@ Everything Section 8's checker can decide without asking the solver:
     claims is its heading's requirements together with its lines, and that is
     what closes;
   * **(V3) source coverage** — every package the menu asks the reader to act
-    on is named by a line; the requirements the page answers for are named by
-    its heading;
+    on is named by a line; the requirements the report answers for are named
+    by its heading, or by the lines of the reason that argues from them;
   * **(V5) witness coherence** — each fix's witness lands inside every line the
     fix's own withdrawal leaves standing. Silent breakage here is invisible to
     every other check, which is exactly why this one exists.
@@ -1653,10 +1790,17 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
         end
     end
 
-    # (V3) the page names what it asks to be changed; what it answers for is
-    # named by the heading
+    # (V3) the report names what it asks to be changed, and every requirement
+    # it answers for: the primary ones by the heading, the rest by the lines
+    # of the blocked entry's reason, which license that entry whether or not
+    # the page shows them
     named = Set{P}(p for l in c.lines for p in packages(l.clause))
     if !isempty(c.lines)
+        heads = heading_reqs(c)
+        for r in c.reqs
+            r in heads || r in named ||
+                push!(bad, "answers for $r and neither heading nor line names it")
+        end
         for f in c.fixes, a in f.actions
             a.pkg in named || push!(bad, "offers $(a.pkg) and no line mentions it")
         end

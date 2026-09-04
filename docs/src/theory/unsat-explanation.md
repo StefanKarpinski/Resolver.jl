@@ -738,6 +738,28 @@ Rules, not preferences — each guards a truth-condition or an attribution:
 * **Reading order.** A line may argue only from packages the query named or
   a line above introduced; the meet prints last, its sides adjacent, so the
   contradiction is the page's visible bottom line.
+* **The heading names the primary reason's requirements.** Every conflict
+  reads under an implicit *given the rest of the requirements*, so its
+  heading says what it is about — the requirements its primary reason
+  collides — not an inventory of everything its reasons touch. A requirement
+  only a blocked entry's reason uses is named nowhere on the page: that
+  entry prints its verdict, not its argument. The checkers still premise
+  every requirement the conflict answers for, and still read the lines of
+  every reason: what shrinks is the page, not the claim set.
+* **Further reasons print as blocked fixes, after the menu.** The primary
+  reason is the conflict's story; each further owned reason omits some fact
+  of it (minimal sets are incomparable), and what it omits is exactly the
+  action it rules out — the reason holds with that action withdrawn. So it
+  prints under the menu it justifies, as one sentence: the actions it does
+  without and their verdict ("relaxing your compat on A does not help."),
+  or, where a completion was found, what would have to go with them
+  ("relaxing your compat on A would not help unless you also dropped
+  requirement B."). Both the blocking proof and the completion are computed
+  and verified — the completion by one solve, which is what keeps a
+  truncated walk from promising a repair that is not one — and neither is
+  printed: why a fix is not offered is second-order, and the verdict has
+  already said it. Entries whose actions and completion agree say the same
+  sentence, and the page says it once.
 * **Menu wording.** Exactly the three-state table of Section 4.
 
 ## 10. Substrate obligations

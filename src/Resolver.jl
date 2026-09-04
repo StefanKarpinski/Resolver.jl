@@ -9,6 +9,7 @@ include("PkgInfo.jl")
 include("PkgInfoFiles.jl")
 include("FilterPkgs.jl")
 include("PicoSAT.jl")
+include("Clauses.jl")
 include("SAT.jl")
 include("UnsatCores.jl")
 using .UnsatCores # the API; not re-exported from Resolver

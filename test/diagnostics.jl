@@ -1027,6 +1027,56 @@ end
     @test length(collect(eachmatch(r"^  • "m, out))) == 2
 end
 
+# Licensed coarsening: a parallel family joins by resolution on one of its
+# packages exactly when the claim still contradicts afterwards. A staircase of
+# thresholds the proof never needs collapses to one line; a boundary the
+# contradiction stands on refuses to.
+@testset "diagnosis: joins are licensed by the claim, not by a local rule" begin
+    # A's three versions pick disjoint windows of C — so the prepared universe
+    # keeps them all — and B needs C at v4. The clauses under test are built
+    # over the instance's version lists; `clauses_satisfiable` is pure logic
+    # over those domains, so the registry behind them only has to keep the
+    # vocabulary alive.
+    data = Dict(
+        :A => PkgData([:v3, :v2, :v1],
+            Dict(v => [:C] for v in (:v1, :v2, :v3)),
+            Dict(:v1 => Dict(:C => [:v1]),
+                 :v2 => Dict(:C => [:v2]),
+                 :v3 => Dict(:C => [:v3]))),
+        :B => PkgData([:v1], Dict(:v1 => [:C]), Dict(:v1 => Dict(:C => [:v4]))),
+        :C => PkgData([:v4, :v3, :v2, :v1], Dict{Symbol,Vector{Symbol}}(),
+                      Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()))
+    sat, univ, info = failed_instance(data, Problem([:A, :B]))
+    vers(p) = clause_versions(sat, p)
+    order(p) = Clauses.version_order(vers(p))
+    ix(p, v) = findfirst(==(v), vers(p))
+    imp(p, R, q, S) = Clauses.clause([
+        p => literal(length(vers(p)), Int[ix(p, v) for v in R], true; absent = true),
+        q => literal(length(vers(q)), Int[ix(q, v) for v in S])])
+    stair = [imp(:A, [:v1], :C, [:v1]),
+             imp(:A, [:v2], :C, [:v1, :v2]),
+             imp(:A, [:v3], :C, [:v1, :v2, :v3])]
+    held = [Clauses.clause([:A => literal(3, 1:3)]),
+            Clauses.clause([:B => literal(1, 1:1)]),
+            imp(:B, [:v1], :C, [:v4])]
+    # the staircase's thresholds never matter: every A caps C below v4, so the
+    # whole family joins to one clause and the claim still contradicts
+    out = Diagnostics.coarsen_core(sat, Vector{Clause{Symbol}}(stair),
+                                   Vector{Clause{Symbol}}(held))
+    @test length(out) == 1
+    @test !clauses_satisfiable(sat, [held; out])
+    # ... but a boundary the contradiction stands on refuses to join: here B
+    # tolerates C v3, so "A v3 caps C at v3" is the one line that closes, and
+    # joining it away would leave the claim satisfiable
+    held2 = [Clauses.clause([:A => literal(3, [ix(:A, :v3)])]),
+             Clauses.clause([:B => literal(1, 1:1)]),
+             imp(:B, [:v1], :C, [:v3, :v4]),
+             Clauses.clause([:C => literal(4, [ix(:C, :v3)], true; absent = true)])]
+    out2 = Diagnostics.coarsen_core(sat, Vector{Clause{Symbol}}(stair),
+                                    Vector{Clause{Symbol}}(held2))
+    @test !clauses_satisfiable(sat, [held2; out2])
+end
+
 # A conflict's further reasons print after the menu, as blocked fixes: each
 # holds with its entry's actions withdrawn, so what it argues is that those
 # actions settle nothing. One sentence per entry — the actions in the trying

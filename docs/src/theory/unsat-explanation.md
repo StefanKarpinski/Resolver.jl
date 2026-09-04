@@ -622,6 +622,45 @@ source toward the pivot; and where a route is long, that is the registry's
 length, not the presentation's — say it as a route rather than spending a
 line per hop.
 
+### Licensed coarsening
+
+Real cores carry **parallel families**: many statements about one set of
+packages, differing only in version thresholds — a staircase of couplings the
+argument may never need. Left as they are, the projection pays for their
+combinations; the report, if it survives, pays in lines.
+
+The remedy is the resolution rule read as a merge. For a parallel family
+`{C₁, …, Cₙ}` over one package set, resolving on a package `q` of it —
+intersect at `q`, union everywhere else — yields one clause entailed by the
+family (Lemma 1), so printing it in their place keeps every line registry-true
+and inherits the union of their supports and routes. On the antecedent package
+this is exactly the join of implications: `A@R₁ → B@S₁` with `A@R₂ → B@S₂`
+gives `A@(R₁∪R₂) → B@(S₁∪S₂)`, the antecedent literals being stored
+complemented.
+
+The join is weaker than the family, so it needs a licence, and the licence is
+the whole criterion: **the claim's clause set must still contradict with the
+join in the family's place** — one satisfiability check, against that
+reason's facts and the rest of its core, per claim and never against a union
+of claims. No local rule can stand in for it: whether two thresholds may be
+treated as one depends on what happens links away, and a boundary the
+contradiction stands on must refuse to join while its neighbours collapse.
+Bisecting a family that refuses to join whole gives up exactly the boundaries
+the proof is standing on.
+
+Two disciplines make the pass sound as a whole. Families are coarsened
+sequentially, each licence asked against the set *as it stands* — earlier
+joins included — so the invariant after every accepted join is that the whole
+current set still contradicts; licensed against the original set instead, two
+joins could each pass and jointly satisfy. And coarsening is not confluent, so
+the order of attempts is a stated preference, not an accident.
+
+Where it runs: when no pivot's elimination finishes within budget, the core is
+coarsened and the projection tried once more — which is what makes a lockstep
+family of nine parallel edges projectable at all — and if the projection still
+fails, the coarsened core is the fallback, every join of it true and the set
+still contradicting.
+
 ## 7. Fixes on the page
 
 The two halves now connect, with no machinery at the joint.

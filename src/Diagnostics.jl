@@ -986,6 +986,73 @@ function best_meet(
     return best
 end
 
+# The joins of a parallel family: one candidate per package of the family,
+# resolving on that package — intersect there, union everywhere else. On the
+# antecedent package that is exactly the merge of implications, `A@R₁ → B@S₁`
+# with `A@R₂ → B@S₂` giving `A@(R₁∪R₂) → B@(S₁∪S₂)`: antecedent literals are
+# stored complemented, so unioning the ranges is intersecting the literals,
+# which is resolution — and so the join is entailed by the family, sound by
+# the one rule everything else already leans on. A literal-wise union would
+# instead turn disjoint antecedents into a tautology and join nothing.
+function clause_joins(cs::Vector{Clause{P}}) where {P}
+    out = Clause{P}[]
+    for q in packages(cs[1])
+        u = resolve_raw(cs, q)
+        u === nothing || isbottom(u) || push!(out, u)
+    end
+    return out
+end
+
+# Coarsen a core against the claim it belongs to, by licensed joins. Parallel
+# statements about one set of packages differ in thresholds the proof may
+# never need: replace a family by its join wherever the claim's clauses still
+# cannot hold together, and keep the split wherever they can — the licence is
+# the whole criterion, since a join is true by the weakening above and no
+# local rule is both sound and sufficient (a boundary can be load-bearing
+# three links away). Families that refuse to join whole are bisected in
+# clause order, so a staircase gives up exactly the boundaries the
+# contradiction is not standing on. This is what makes a lockstep family —
+# nine parallel edges over one pair — projectable: the joins erase the
+# thresholds that do not matter before the elimination pays for their
+# combinations.
+function coarsen_core(sat::SAT{P,V}, core::Vector{Clause{P}},
+                      held::Vector{Clause{P}}) where {P,V}
+    # families are processed one at a time and each licence is asked against
+    # the set as it stands — earlier joins included — so the invariant after
+    # every accepted join is that the whole current set still contradicts,
+    # and in particular the final one does. Licensed one against the original
+    # set instead, two joins could each pass and jointly satisfy.
+    groups = Dict{Vector{P},Vector{Clause{P}}}()
+    order = Vector{P}[]
+    for c in core
+        ps = packages(c)
+        haskey(groups, ps) || push!(order, ps)
+        push!(get!(Vector{Clause{P}}, groups, ps), c)
+    end
+    sort!(order)
+    current = Dict{Vector{P},Vector{Clause{P}}}(k => copy(v) for (k, v) in groups)
+    context(except) = Clause{P}[c for k in order if k != except
+                                for c in current[k]]
+    for ps in order
+        function join_family(cs::Vector{Clause{P}}, rest::Vector{Clause{P}})
+            length(cs) ≤ 1 && return cs
+            for u in clause_joins(cs)
+                clauses_satisfiable(sat,
+                    Clause{P}[held; context(ps); rest; u]) && continue
+                return Clause{P}[u]
+            end
+            h = length(cs) ÷ 2
+            a, b = cs[1:h], cs[h+1:end]
+            ja = join_family(a, Clause{P}[rest; b])
+            jb = join_family(b, Clause{P}[rest; ja])
+            return Clause{P}[ja; jb]
+        end
+        fam = sort!(current[ps]; by = c -> [m.bits for (_, m) in c.lits])
+        current[ps] = join_family(fam, Clause{P}[])
+    end
+    return Clause{P}[c for k in order for c in current[k]]
+end
+
 # The registry's share of one reason: a minimal set of its statements that the
 # reason cannot live with. Empty is a value here — a requirement whose package
 # the query leaves nothing of contradicts it with no help from the registry.
@@ -1132,6 +1199,17 @@ function analyse(
             core = reason_core(satx, r, facts, selectors)
             meet = length(r) ≤ MASK_WIDTH ?
                 best_meet(sat, r, facts, fcl, core, menu) : nothing
+            if meet === nothing && !isempty(core)
+                # the projection drowned — usually in a lockstep family whose
+                # thresholds the proof never needed. Coarsen by licensed joins
+                # and try once more; failing that, the coarsened core is still
+                # the better fallback, since every join it prints is true and
+                # the set still contradicts
+                held = Clause{P}[fcl[j] for j in r if haskey(fcl, j)]
+                core = coarsen_core(sat, core, held)
+                meet = length(r) ≤ MASK_WIDTH ?
+                    best_meet(sat, r, facts, fcl, core, menu) : nothing
+            end
             derived = meet === nothing ?
                 Line{P}[Line{P}(it.clause, P[], false, n, nothing)
                         for it in factor_items(

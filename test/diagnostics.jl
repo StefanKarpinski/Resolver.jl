@@ -547,7 +547,6 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: R cannot be satisfied.
-          • you require R
           • your compat leaves P p1
           • R requires P p2
           Fix it by any one of:
@@ -572,7 +571,6 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
-          • you require A
           • your compat leaves C c1
           • A requires C ≥c2
           Fix it by any one of:
@@ -595,7 +593,6 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
-          • you require A
           • your compat leaves C c1
           • A requires C c2
           Fix it by any one of:
@@ -616,11 +613,12 @@ end
     @test occursin("requires B b2", report)
     @test !occursin("a1–a2", report)
     # ... where the chain does say what the query left of the package, the run
-    # is what that sentence is answering, and it is named in full
+    # is what that sentence is answering, and it is named in full — after the
+    # package, which the line names whether or not the heading does
     d2 = check_diagnosis(narrowed_run,
         Problem([:A]; compat = Dict(:A => [:a2, :a1], :B => [:b1])))
     report2 = sprint(show, MIME("text/plain"), d2)
-    @test occursin("your compat leaves ≤a2", report2)
+    @test occursin("your compat leaves A ≤a2", report2)
     @test occursin("A ≤a2 requires B b2", report2)
 end
 
@@ -801,8 +799,8 @@ end
                           :C => [:c1])); diagnose = false) === nothing
     end
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("you require A, and your compat leaves a2", report)
-    @test occursin("you require B, and your compat leaves b2", report)
+    @test occursin("your compat leaves A a2", report)
+    @test occursin("your compat leaves B b2", report)
     @test occursin("A and B cannot both be satisfied", report)
     # both of them fail, and naming one would leave the other unexplained: each
     # gets the line saying what it forces, and `:C` is where they meet
@@ -987,30 +985,33 @@ end
     # finding the one name every one of them has in common
     other(p, q) = Clauses.clause([p => literal(2, [1], true; absent = true),
                                   q => literal(2, [2])])
-    @test occursin("no version of E is all of these",
+    @test occursin("incompatible constraints on E:",
                    render(Line{P}[line(dep("A", "E"); pivot = "E"),
                                   line(other("B", "E"); pivot = "E")]))
     # ... and where they do not, there is nothing to say
-    @test !occursin("all of these",
+    @test !occursin("incompatible constraints",
                     render(Line{P}[line(dep("A", "E")), line(dep("B", "D"))]))
     # ... including where they do name one package but agree about it: two
     # lines that both leave E at 1 leave it something, and saying otherwise
     # would claim more than the page shows
-    @test !occursin("all of these",
+    @test !occursin("incompatible constraints",
                     render(Line{P}[line(dep("A", "E"); pivot = "E"),
                                    line(dep("B", "E"); pivot = "E")]))
     # ... nor where there is only one of them to meet
-    @test !occursin("all of these", render(Line{P}[line(dep("A", "E"))]))
+    @test !occursin("incompatible constraints",
+                    render(Line{P}[line(dep("A", "E"))]))
 
-    # the query's own facts are said first, whatever order the lines come in,
-    # and a requirement is said as one -- not twice, once as a clause
+    # the query's own limits are said first, whatever order the lines come in,
+    # and the requirement is not said at all: the heading names it, so a line
+    # for it would be the page saying one thing twice
     given = Line{P}(Clauses.clause([
         "B" => literal(2, [1]; absent = true)]), P[], true)
     req = Line{P}(Clauses.clause([
         "A" => literal(2, [1, 2])]), P[], true)
     out = render(Line{P}[line(dep("A", "E")), given, req]; reqs = P["A"])
-    @test occursin(r"you require A\n.*B 2 cannot.*\n.*A 1 requires E 1"m, out)
-    @test length(collect(eachmatch(r"^  • "m, out))) == 3
+    @test occursin(r"B 2 cannot.*\n.*A 1 requires E 1"m, out)
+    @test !occursin("you require", out)
+    @test length(collect(eachmatch(r"^  • "m, out))) == 2
 end
 
 @testset "diagnosis: the report" begin
@@ -1024,9 +1025,7 @@ end
         Unsatisfiable — 2 conflicts, each of which must be fixed:
 
         Conflict 1: A and B cannot both be satisfied.
-          • you require A
-          • you require B
-          • no version of C is all of these:
+          • incompatible constraints on C:
               — A requires C v1
               — B requires C v2
           Fix it by any one of:
@@ -1036,9 +1035,7 @@ end
                → allows: A v1, C v1
 
         Conflict 2: E and F cannot both be satisfied.
-          • you require E
-          • you require F
-          • no version of G is all of these:
+          • incompatible constraints on G:
               — E requires G v1
               — F requires G v2
           Fix it by any one of:
@@ -1064,7 +1061,6 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
-          • you require A
           • your compat and your pin leaves no version of B
           • A requires B
           Fix it by any one of:
@@ -1251,7 +1247,7 @@ end
     @test occursin("A requires P ≤p2", report)
     @test occursin("B requires P ≥p2", report)
     @test occursin("C requires P p1, p3", report)
-    @test occursin("no version of P is all of these", report)
+    @test occursin("incompatible constraints on P:", report)
     # ... and every requirement has a demand on it: none of the three is told
     # only by what it rules out
     said = Line{Symbol}[l for l in c.lines if !l.given]

@@ -1271,14 +1271,19 @@ end
 #
 # What a diagnosis says, and the rules that keep every sentence of it true.
 #
-# The page is flat. The query's own facts come first, said as the user's ("you
-# require A"; "your compat leaves A 1.2"), each package once; then the
-# registry's statements, each said as the implication from the facts it rests on
-# to the bound it puts on the package the argument meets at, with the packages
-# an elimination reached it through in parentheses. Nothing on the page is
-# derived from anything else on the page, which is why a line can carry a route
-# and why the meet — the sides whose intersection is empty — prints last and
-# together.
+# The page is flat. The heading names the requirements the conflict answers
+# for, and the body never says them again: what comes first is what the query
+# narrowed, said as the user's ("your compat leaves A 1.2"), each package once;
+# then the registry's statements, each said as the implication from the facts it
+# rests on to the bound it puts on the package the argument meets at, with the
+# packages an elimination reached it through in parentheses. Nothing on the page
+# is derived from anything else on the page, which is why a line can carry a
+# route and why the meet — the sides whose intersection is empty — prints last
+# and together.
+#
+# What the page claims is its heading's requirements together with its lines,
+# and a check of the report reads the two as one set: the lines alone are
+# satisfied by installing nothing, and it is the heading that rules that out.
 #
 # Only a query line may say "your". Everything else is the registry's, and a
 # registry statement never attributes a bound to a `Project.toml` it cannot see.
@@ -1340,8 +1345,7 @@ end
 # Which of the query's kinds took versions of `p` away, and what they left.
 # Read straight off the query, so no line here needs a solver's licence; and
 # named as the user's, which nothing else on the page may be.
-function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P},
-                           named::Bool) where {P,V}
+function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     kinds = Symbol[]
     for ks in c.excluded[p], k in ks
         k in kinds || push!(kinds, k)
@@ -1353,13 +1357,37 @@ function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P},
     any(sel) || return "$lead leaves no version of $p"
     r = range_phrase(c.versions[p], sel)
     isempty(r) && return "$lead leaves $p"
-    return named ? "$lead leaves $p $r" : "$lead leaves $r"
+    return "$lead leaves $p $r"
 end
 
 # is this given line the requirement itself, rather than a limit on it?
 is_requirement(l::Line{P}, p::P) where {P} =
     (m = l.clause[p]; m !== nothing && !absent(m) &&
      all(m[i] for i = 1:nversions(m)))
+
+# is this line one the heading already states? The heading names the
+# requirements the conflict answers for, so the body prints no line for them.
+function is_heading_fact(c::Conflict{P,V}, l::Line{P}) where {P,V}
+    l.given || return false
+    ps = packages(l.clause)
+    length(ps) == 1 || return false
+    return ps[1] in c.reqs && is_requirement(l, ps[1])
+end
+
+# What the heading asserts, as lines: each requirement it names, installed at
+# one of the versions the conflict speaks of it in. A requirement the conflict
+# carries no versions for states nothing here — the heading is the whole of its
+# story. Whatever asks what the page claims puts these beside the printed lines.
+function heading_facts(c::Conflict{P,V}) where {P,V}
+    out = Line{P}[]
+    for p in c.reqs
+        haskey(c.versions, p) || continue
+        n = length(c.versions[p])
+        cl = clause([p => literal(n, 1:n)])
+        cl === nothing || push!(out, Line{P}(cl, P[], true))
+    end
+    return out
+end
 
 function line_phrase(l::Line{P}, vers, names) where {P}
     s = clause_phrase(l.clause, vers, names)
@@ -1401,25 +1429,19 @@ function print_given(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
         length(ps) == 1 && ps[1] ∉ order && push!(order, ps[1])
     end
     for p in order
-        req = nothing
         con = nothing
         extra = Line{P}[]
         for l in single[p]
             if is_requirement(l, p) && p in c.reqs
-                req = l
+                continue                 # the heading says it
             elseif absent(l.clause[p]) && haskey(c.excluded, p)
                 con = l
             else
                 push!(extra, l)
             end
         end
-        if req !== nothing
-            s = "you require $p"
-            con === nothing || (s *= ", and " * constraint_phrase(c, p, con, false))
-            print_wrapped(io, s, "  • ", "    ")
-        elseif con !== nothing
-            print_wrapped(io, constraint_phrase(c, p, con, true), "  • ", "    ")
-        end
+        con === nothing ||
+            print_wrapped(io, constraint_phrase(c, p, con), "  • ", "    ")
         for l in extra
             print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
         end
@@ -1442,7 +1464,7 @@ function print_derived(io::IO, derived::Vector{Line{P}}, vers, names) where {P}
         end
         group = derived[i:j]
         if length(group) ≥ 2 && meet_is_empty(group, l.pivot)
-            println(io, "  • no version of ", names(l.pivot), " is all of these:")
+            println(io, "  • incompatible constraints on ", names(l.pivot), ":")
             for g in group
                 print_wrapped(io, line_phrase(g, vers, names), "      — ", "        ")
             end
@@ -1560,9 +1582,12 @@ touched(f::Fix{P,V}) where {P,V} = Set{P}(a.pkg for a in f.actions)
 Everything Section 8's checker can decide without asking the solver:
 
   * **(V2) visible closure** — each meet's sides really do intersect emptily,
-    so the contradiction is on the page rather than behind it;
-  * **(V3) source coverage** — every requirement the page answers for, and
-    every package its menu asks the reader to act on, is named by a line;
+    so the contradiction is on the page rather than behind it. What the page
+    claims is its heading's requirements together with its lines, and that is
+    what closes;
+  * **(V3) source coverage** — every package the menu asks the reader to act
+    on is named by a line; the requirements the page answers for are named by
+    its heading;
   * **(V5) witness coherence** — each fix's witness lands inside every line the
     fix's own withdrawal leaves standing. Silent breakage here is invisible to
     every other check, which is exactly why this one exists.
@@ -1599,10 +1624,12 @@ end
 
 function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V}
     bad = String[]
-    given = Line{P}[l for l in c.lines if l.given]
+    given = Line{P}[l for l in c.lines if l.given && !is_heading_fact(c, l)]
+    append!(given, heading_facts(c))
     derived = Line{P}[l for l in c.lines if !l.given]
 
-    # (V2) every meet closes, on its own lines and the query's, never on
+    # (V2) every meet closes, on its own lines and what the page says besides
+    # — the query's limits, and the requirements the heading states — never on
     # another proof's
     for n in unique!(Int[l.proof for l in derived])
         mine = Line{P}[l for l in derived if l.proof == n]
@@ -1626,12 +1653,10 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
         end
     end
 
-    # (V3) the page names what it answers for and what it asks to be changed
+    # (V3) the page names what it asks to be changed; what it answers for is
+    # named by the heading
     named = Set{P}(p for l in c.lines for p in packages(l.clause))
     if !isempty(c.lines)
-        for r in c.reqs
-            r in named || push!(bad, "names $r and no line mentions it")
-        end
         for f in c.fixes, a in f.actions
             a.pkg in named || push!(bad, "offers $(a.pkg) and no line mentions it")
         end

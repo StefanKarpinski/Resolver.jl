@@ -3,10 +3,16 @@
 # Two things make it one, and each is checked here.
 #
 #   * every printed line is true of the universe the query left;
-#   * the lines cannot all hold at once, so they entail the verdict.
+#   * what the page claims cannot all hold at once, so it entails the verdict.
 #
 # Together those say the report is a set of true statements that contradict,
 # which is the whole of what proving unsatisfiability is.
+#
+# What the page claims is its heading and its lines. The heading names the
+# requirements the conflict answers for -- that is where the query's demand for
+# each is said, and the body prints no line repeating it -- so the requirements
+# are premises here, beside the lines. Without them the printed set is not
+# contradictory at all: installing nothing satisfies every line of it.
 #
 # The lines are flat: none is derived from another on the page, so there is no
 # step between them to check. What each one *is* derived from is the registry,
@@ -26,13 +32,13 @@ using Resolver: SAT, PicoSAT, nclasses, Problem, exclusion_kinds,
     installed_lit, forbidden_lit, sat_assume_var, sat_solve
 using Resolver.Clauses: Clause, packages, isbottom, subsumes, clause_phrase,
     resolve_on, resolve_raw, resolve_all
-using Resolver.Clauses: absent, present, Lit
+using Resolver.Clauses: absent, present, literal, nversions, Lit
 using Resolver.Clauses: Clauses
 using Resolver.Diagnostics: Diagnostics, Conflict, Line, clause_versions,
     clauses_satisfiable
 
 export chain_is_a_proof, chain_hole, proof_problems, lines_are_true,
-    printed_lines, names_what_it_uses, proofs_stand_alone
+    printed_lines, heading_premises, names_what_it_uses, proofs_stand_alone
 
 # The lines, taken as all the reader has, cannot hold together.
 chain_is_a_proof(sat::SAT{P,V}, chain::Vector{Clause{P}}) where {P,V} =
@@ -200,8 +206,33 @@ function lines_are_true(sat::SAT{P,V}, prob::Problem{P}, clauses) where {P,V}
     return bad
 end
 
+# is this line the requirement the heading states, rather than one the body
+# prints? Read off the line here rather than asked of the renderer: what the
+# page shows is what this file is the oracle for
+function heading_fact(c::Conflict{P,V}, l::Line{P}) where {P,V}
+    l.given || return false
+    ps = packages(l.clause)
+    length(ps) == 1 && ps[1] in c.reqs || return false
+    m = l.clause[ps[1]]
+    return !absent(m) && all(m[i] for i = 1:nversions(m))
+end
+
 # every line a report prints
-printed_lines(c::Conflict{P,V}) where {P,V} = Clause{P}[l.clause for l in c.lines]
+printed_lines(c::Conflict{P,V}) where {P,V} =
+    Clause{P}[l.clause for l in c.lines if !heading_fact(c, l)]
+
+# what the heading says, as clauses: each requirement the conflict answers for,
+# installed at one of the versions it has. The reader has these from the
+# heading, so a question about what the page claims asks them too
+function heading_premises(sat::SAT{P,V}, c::Conflict{P,V}) where {P,V}
+    out = Clause{P}[]
+    for p in c.reqs
+        n = length(clause_versions(sat, p))
+        cl = Clauses.clause([p => literal(n, 1:n)])
+        cl === nothing || push!(out, cl)
+    end
+    return out
+end
 
 # Does the report use what it names?
 #
@@ -228,10 +259,13 @@ end
 # already impossible the union stays impossible whatever the others say, so a
 # check over the union would pass a proof that borrows its conclusion from the
 # proof beside it. Each is asked separately -- its own lines, and the query's
-# facts, which the reader has on the page either way.
+# facts, which the reader has on the page either way: the limits from the lines
+# above it, the requirements from the heading.
 function proofs_stand_alone(sat::SAT{P,V}, c::Conflict{P,V}) where {P,V}
     bad = String[]
-    given = Clause{P}[l.clause for l in c.lines if l.given]
+    given = Clause{P}[l.clause for l in c.lines
+                      if l.given && !heading_fact(c, l)]
+    append!(given, heading_premises(sat, c))
     for n in unique!(Int[l.proof for l in c.lines if !l.given])
         mine = Clause{P}[l.clause for l in c.lines if !l.given && l.proof == n]
         isempty(mine) && continue
@@ -245,12 +279,13 @@ end
 function proof_problems(sat::SAT{P,V}, prob::Problem{P},
                         c::Conflict{P,V}) where {P,V}
     cs = printed_lines(c)
+    claimed = Clause{P}[heading_premises(sat, c); cs]
     bad = names_what_it_uses(c)
     append!(bad, proofs_stand_alone(sat, c))
     append!(bad, lines_are_true(sat, prob, cs))
-    isempty(cs) || chain_is_a_proof(sat, cs) ||
-        push!(bad, "the printed lines can all hold at once: " *
-                   string(chain_hole(sat, cs)))
+    isempty(cs) || chain_is_a_proof(sat, claimed) ||
+        push!(bad, "what the page claims can all hold at once: " *
+                   string(chain_hole(sat, claimed)))
     return bad
 end
 

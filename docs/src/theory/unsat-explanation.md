@@ -708,9 +708,10 @@ rule exists to make it impossible rather than detectable.
 
 Rules, not preferences — each guards a truth-condition or an attribution:
 
-* **A side is stated from its support.** The facts of the reason print once,
-  as the query's own lines ("you require A"; "your compat leaves A 1.2");
-  each side prints as the implication from its support's packages to its
+* **A side is stated from its support.** The requirements the conflict
+  answers for are said by its heading and nowhere else; the reason's other
+  facts print once, as the query's own lines ("your compat leaves A 1.2").
+  Each side prints as the implication from its support's packages to its
   bound, with its route in parentheses. A conditional side names all of its
   support ("A 1.2 and B ≥ 2 together …"). This is what makes every fix
   traceable: the fact a fix withdraws is the stated antecedent of a visible

@@ -712,9 +712,11 @@ end
         @test occursin("Unsatisfiable", msg)
         @test occursin("1 conflict", msg)
         # the requirement, the package your bound emptied, and the imperative —
-        # by name, since a uuid is not what the reader knows the package as
-        @test occursin("cannot be satisfied", msg)
-        @test occursin("you require LinearAlgebra", msg)
+        # by name, since a uuid is not what the reader knows the package as.
+        # The requirement is the heading's to say, and it says it once: no line
+        # under it restates what the reader has just read
+        @test occursin("LinearAlgebra cannot be satisfied", msg)
+        @test !occursin("you require", msg)
         # the query's own compat is what took every version away, so it is
         # named: "no version of LinearAlgebra is available" is the other thing
         # that can empty a package, and it is not this one

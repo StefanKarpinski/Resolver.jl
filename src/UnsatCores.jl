@@ -119,8 +119,46 @@ end
 # because the instance together with the failed assumptions is unsatisfiable,
 # and usually a big win because that core is much smaller than `cands` — then
 # shrink the seed to a minimal subset
-sat_mus_core(sat::SAT, cands::AbstractVector{Int}) =
-    mus_shrink_linear(sat, failed_assumptions(sat, cands))
+"""
+    sat_mus(sat, fixed, lits) :: Vector{Int}
+
+A minimal subset of `lits` that is unsatisfiable *with* `fixed` assumed
+throughout. `fixed` is not minimized and is not in the answer: it is what the
+question is being asked about, not part of what the answer blames.
+
+Empty when `fixed` and `lits` together are satisfiable.
+
+Asking it this way is what keeps two cores from disagreeing. A single core over
+both would be free to blame a different `fixed` than the caller settled on,
+and then the two halves of an explanation are about different things.
+"""
+function sat_mus(
+    sat   :: SAT,
+    fixed :: AbstractVector{<:Integer},
+    lits  :: AbstractVector{<:Integer},
+)
+    f = collect(Int, fixed)
+    cands = collect(Int, lits)
+    @assert allunique(cands)
+    all = [f; cands]
+    sat_solve_assuming(sat, all) && return Int[]
+    held = Set{Int}(f)
+    seed = Int[l for l in failed_assumptions(sat, all) if l ∉ held]
+    rank = Dict{Int,Int}(l => i for (i, l) in enumerate(cands))
+    sort!(seed; by = l -> get(rank, l, typemax(Int)))
+    return mus_shrink_linear(sat, seed, f)
+end
+
+function sat_mus_core(sat::SAT, cands::AbstractVector{Int})
+    seed = failed_assumptions(sat, cands)
+    # ... in the order the caller asked, not the order the solver happened to
+    # fail in. Every order gives a minimal subset and they need not be the
+    # same one; deletion is tried first on what comes first, so the order is
+    # how a caller says which assumptions it would rather not be blamed
+    rank = Dict{Int,Int}(l => i for (i, l) in enumerate(cands))
+    sort!(seed; by = l -> get(rank, l, typemax(Int)))
+    return mus_shrink_linear(sat, seed)
+end
 
 # a single deletion pass, in candidate order. one pass suffices: satisfiability
 # is monotone under dropping assumptions, so once deleting `s` has been found
@@ -155,13 +193,15 @@ sat_mus_core(sat::SAT, cands::AbstractVector{Int}) =
 # QuickXplain's O(k·log(n/k)) needs k ≪ n to pay off, which is exactly the case
 # refinement already handles in one solve, and it loses outright when k ≈ n —
 # so there is no measured shape here where a second strategy earns its keep.
-function mus_shrink_linear(sat::SAT, core::Vector{Int})
+function mus_shrink_linear(sat::SAT, core::Vector{Int},
+                           fixed::Vector{Int} = Int[])
     keep = trues(length(core))
     trial = Int[]
     for i in eachindex(core)
         keep[i] || continue # already dropped by a refinement below
         keep[i] = false
         empty!(trial)
+        append!(trial, fixed)
         for j in eachindex(core)
             keep[j] && push!(trial, core[j])
         end

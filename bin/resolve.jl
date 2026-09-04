@@ -536,7 +536,12 @@ function named(d::Resolver.Diagnosis, name::Function)
     Resolver.Diagnosis(
         [Diagnostics.Conflict{String,VersionNumber}(
             String[name(p) for p in c.reqs],
-            Diagnostics.Fact[named(f, name) for f in c.chain],
+            [Diagnostics.Line{String}(named(l.clause, name),
+                String[name(p) for p in l.through], l.given) for l in c.lines],
+            Dict{String,Vector{VersionNumber}}(
+                name(p) => vs for (p, vs) in c.versions),
+            Dict{String,Vector{Vector{Symbol}}}(
+                name(p) => ks for (p, ks) in c.excluded),
             [Diagnostics.Fix{String,VersionNumber}(
                 [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
                 Dict{String,VersionNumber}(
@@ -546,16 +551,12 @@ function named(d::Resolver.Diagnosis, name::Function)
         d.others)
 end
 
-named(f::Diagnostics.Requirement, name::Function) =
-    Diagnostics.Requirement(name(f.pkg))
-named(f::Diagnostics.Availability, name::Function) =
-    Diagnostics.Availability(name(f.pkg), f.members, f.excluded)
-named(f::Diagnostics.Dependency, name::Function) =
-    Diagnostics.Dependency(name(f.pkg), f.versions, name(f.dep),
-        f.offering, f.allowed, f.newest, f.oldest)
-named(f::Diagnostics.Incompatibility, name::Function) =
-    Diagnostics.Incompatibility(name(f.pkg), f.versions, name(f.other),
-        f.offering, f.allowed, f.newest, f.oldest)
+# A clause is a set of literals keyed by package, so renaming one is renaming
+# the keys; the masks are about versions and do not care what a package is
+# called. Sorting again is what keeps the result in normal form.
+named(c::Resolver.Clauses.Clause, name::Function) =
+    Resolver.Clauses.Clause{String}(
+        sort!([name(p) => m for (p, m) in c.lits]; by = first))
 
 function package_name(uuid::UUID)
     uuid == JULIA_UUID && return "julia"

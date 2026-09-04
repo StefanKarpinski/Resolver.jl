@@ -18,13 +18,46 @@ Resolver.Diagnostics.Conflict
 Resolver.Diagnostics.Fix
 Resolver.Diagnostics.Action
 Resolver.Diagnostics.action_phrase
-Resolver.Diagnostics.Fact
-Resolver.Diagnostics.Requirement
-Resolver.Diagnostics.Availability
-Resolver.Diagnostics.Dependency
-Resolver.Diagnostics.Incompatibility
-Resolver.Diagnostics.unavailable
+Resolver.Diagnostics.Line
 Resolver.Diagnostics.diagnose
+```
+
+### The statements a report is made of
+
+```@docs
+Resolver.Clauses
+Resolver.Clauses.Clause
+Resolver.Clauses.literal
+Resolver.Clauses.resolve_on
+Resolver.Clauses.resolve_raw
+Resolver.Clauses.resolve_all
+Resolver.Clauses.subsumes
+Resolver.Clauses.Lit
+Resolver.Clauses.clause
+Resolver.Clauses.isbottom
+Resolver.Clauses.version_order
+Resolver.Clauses.range_phrase
+Resolver.Clauses.clause_phrase
+Resolver.Clauses.letters
+```
+
+### How a report is arrived at
+
+```@docs
+Resolver.Diagnostics.VarMap
+Resolver.Diagnostics.with_emptied_packages
+Resolver.Diagnostics.project
+Resolver.Diagnostics.clause_of
+Resolver.Diagnostics.clause_versions
+Resolver.Diagnostics.clauses_satisfiable
+Resolver.Relation
+```
+
+### What a report may be checked against
+
+```@docs
+Resolver.Diagnostics.print_conflict
+Resolver.Diagnostics.report_problems
 ```
 
 ## Internals

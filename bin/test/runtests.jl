@@ -469,7 +469,9 @@ end
         err = IOBuffer()
         @test isnothing(resolve_versions("Compat = \"=4.0.0\"", ["--julia=1.10"];
                                          deps = compat_pkg, err))
-        msg = String(take!(err))
+        # the report wraps long lines, so match against it unwrapped: a
+        # phrase is a claim about the words, not about where the fill breaks
+        msg = replace(String(take!(err)), r"\n\s+" => " ")
         @test occursin("Unsatisfiable", msg)
         @test occursin("compat on Compat", msg)
         @test occursin("yanked (4.0.0)", msg)
@@ -704,18 +706,19 @@ end
         err = IOBuffer()
         @test isnothing(resolve_versions("LinearAlgebra = \"99\"";
             deps = ["LinearAlgebra" => LINEAR_ALGEBRA], err))
-        msg = String(take!(err))
+        # the report wraps long lines, so match against it unwrapped: a
+        # phrase is a claim about the words, not about where the fill breaks
+        msg = replace(String(take!(err)), r"\n\s+" => " ")
         @test occursin("Unsatisfiable", msg)
         @test occursin("1 conflict", msg)
         # the requirement, the package your bound emptied, and the imperative —
         # by name, since a uuid is not what the reader knows the package as
         @test occursin("cannot be satisfied", msg)
         @test occursin("you require LinearAlgebra", msg)
-        # "left", not "available": the registry has versions of it, and the
-        # query's own compat is what took every one of them away
-        @test occursin("no version of LinearAlgebra is left", msg)
-        # (the report is filled to a line width, so the clause may be broken)
-        @test occursin("by your compat", msg)
+        # the query's own compat is what took every version away, so it is
+        # named: "no version of LinearAlgebra is available" is the other thing
+        # that can empty a package, and it is not this one
+        @test occursin("your compat leaves no version of LinearAlgebra", msg)
         @test occursin("Fix it by any one of:", msg)
         @test occursin("relax your compat on LinearAlgebra", msg)
         @test !occursin(string(LINEAR_ALGEBRA), msg)

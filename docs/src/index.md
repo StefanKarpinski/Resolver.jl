@@ -16,10 +16,9 @@ Unsatisfiable — 2 conflicts, each of which must be fixed:
 
 Conflict 1: DataFrames cannot be satisfied.
   • you require DataFrames
-  • DataFrames: ≤ 0.22.7 excluded by your compat
-  • DataFrames 1.3.5–1.8.2 requires PrettyTables
-  • no version of PrettyTables is available: 0.1.0–3.4.8 excluded by your
-    compat
+  • your compat leaves DataFrames ≥1.0.0
+  • DataFrames 1.0.0–1.8.2 requires PrettyTables
+  • your compat leaves no version of PrettyTables
   Fix it by any one of:
     1. relax your compat on DataFrames
        → allows: DataFrames 0.21.8
@@ -29,9 +28,8 @@ Conflict 1: DataFrames cannot be satisfied.
 
 Conflict 2: Plots cannot be satisfied.
   • you require Plots
-  • Plots 1.0.6–1.41.7 requires RecipesBase
-  • no version of RecipesBase is available: 0.4.0–1.3.4 excluded by your
-    compat
+  • Plots requires RecipesBase
+  • your compat leaves no version of RecipesBase
   Fix it by any one of:
     1. relax your compat on RecipesBase
        → allows: Plots 1.41.0, RecipesBase 1.3.4
@@ -60,8 +58,9 @@ section:
 - [Relaxation-stable filtering](theory/relaxation.md) — the stronger property
   that a universe filtered for one query answers every relaxation of it, which
   is what lets a failed resolve be explained rather than merely reported.
-- [Diagnosing an unsatisfiable resolve](theory/diagnostics.md) — what
-  licenses the questions a `Diagnosis` is assembled from, and why the
+- [Explaining an unsatisfiable resolve](theory/unsat-explanation.md) — the
+  complete theory a `Diagnosis` implements: reasons, repairs, and the menus
+  they factor into; the pivot-and-sides form of an explanation; and why the
   versions it shows come from a resolve rather than from the instance.
 
 For the package's motivation and project status, see the

@@ -60,6 +60,18 @@ end
     @test say(fwd) == "A 10 requires B 5"
     @test Clauses.clause_phrase(fwd, vers, Clauses.letters; subject = 1) ==
           "B 6 or absent constrains A ≥20"
+    # A consequent admitting absence alone is the package's going, not its
+    # arrival: the bare name reads as the statement bringing it in, so what the
+    # flipped reading says is that it leaves no version. The verb follows the
+    # printed consequent, which is what makes flipping a line safe.
+    gone = clause([1 => L(3, Int[]; absent = true), 2 => L(2, [1])])
+    @test say(gone) == "A requires B 5"
+    @test Clauses.clause_phrase(gone, vers, Clauses.letters; subject = 1) ==
+          "B 6 or absent leaves no version of A"
+    @test Clauses.clause_phrase(
+        clause([1 => L(3, Int[]; absent = true), 2 => L(2, [1]),
+                3 => L(2, [1])]), vers, Clauses.letters; subject = 1) ==
+        "B 6 or absent and C 2 or absent together leave no version of A"
 end
 
 @testset "clauses: subsumption" begin

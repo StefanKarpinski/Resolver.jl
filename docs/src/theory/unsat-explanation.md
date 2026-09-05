@@ -79,7 +79,7 @@ with empty support is unsatisfiable; a clause with `C(p) = V⊥(p)` is a
 tautology. Clause `C` **subsumes** `D` when `C(p) ⊆ D(p)` for every `p`: then
 every model of `C` models `D`.
 
-Five readings of one shape cover everything a report says:
+Six readings of one shape cover everything a report says:
 
 | clause | reads as |
 |---|---|
@@ -88,11 +88,13 @@ Five readings of one shape cover everything a report says:
 | `⟨A : (V(A)∖R) ∪ {⊥}⟩` | A cannot be any of `R` |
 | `⟨A : (V(A)∖R) ∪ {⊥}, B : S⟩` | `A@R` **requires** `B@S` |
 | `⟨A : (V(A)∖R) ∪ {⊥}, B : S ∪ {⊥}⟩` | `A@R` **constrains** `B@S` |
+| `⟨A : (V(A)∖R) ∪ {⊥}, B : {⊥}⟩` | `A@R` **leaves no version of** `B` |
 
-The difference between the two verbs is only whether `⊥` is in the
-consequent: *requires* brings the package in, *constrains* permits its
-absence. Whether a statement forces is data in the clause, never a flag
-beside it.
+The difference between the verbs is only what the consequent admits:
+*requires* brings the package in, *constrains* permits its absence, and a
+consequent of `{⊥}` alone rules the package out. Whether a statement forces
+is data in the clause, never a flag beside it — which is why either package
+may be taken as the consequent, and the verb follows (Section 9).
 
 **One rule.** Clauses compose by resolution on a package. It is stated for
 any finite set of clauses at once, because literals are sets and more than
@@ -536,6 +538,9 @@ hundred of tens of thousands of bounded compat entries are disconnected, and
 genuine same-shape triples are countable on one hand. This is a remark, not
 a premise; nothing above depends on it.)
 
+This is also what bounds how often a meet has to be *displayed* as one:
+two sides always read out as a chain and three need not (Proposition 22).
+
 ### Sources: what a side rests on
 
 Say `X ⊨ σ` ("`X` entails `σ`") when every installation satisfying every
@@ -760,23 +765,40 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   license needed — and only query lines may say "your"; everything else is
   the registry's, and a registry statement never attributes a bound to a
   `Project.toml` it cannot see.
-* **Requires vs constrains.** A side whose bound excludes `⊥` *requires*
-  (its truth includes the package's presence); one admitting `⊥`
-  *constrains* (it binds only if the package is installed). The verb is read
-  off the clause, never carried beside it.
+* **The verb is read off the printed consequent** — see the verb table
+  below. Never carried beside the clause: a line said the other way round
+  re-derives its own verb, which is what makes contraposition and
+  composition safe to print.
 * **Direction is chosen at print time.** A clause has no direction; state a
   two-package statement from the side that declares the dependency edge
   where exactly one does, and symmetrically ("X and Y are incompatible")
   where neither. Among otherwise equal readings prefer the one whose stated
   consequent has versions to name: a consequent with an empty range prints
   shortest and says least, and choosing it throws away the very bound the
-  reader was about to hold against another.
+  reader was about to hold against another. A line that *continues* a chain
+  overrides all of this: it is said to the package the chain has not
+  reached, whichever that is.
 * **A range is printed when something narrowed it.** An antecedent that is a
   package's entire offering prints as the bare package name; naming the full
   range reads as a narrowing that never happened.
-* **Reading order.** A line may argue only from packages the query named or
-  a line above introduced; the meet prints last, its sides adjacent, so the
-  contradiction is the page's visible bottom line.
+* **Reading order: a proof is one chain.** A proof prints as a
+  polysyllogism — a root fact, then implications each arguing from what the
+  line above it left, ending at the fact that contradicts the accumulated
+  bound. The root is the heading's own subject, said as the user's compat
+  where the reason narrowed it and taken as the heading's premise where it
+  did not; a subject the statements only *conclude* about is where the chain
+  ends instead, so a source is preferred to it. A line may argue only from
+  packages the query named or a line above introduced, and the query's fact
+  about a package prints where the package arrives: after the line that
+  reaches it, before the line that argues from it. Prefer to close at a
+  printed compat line where one contradicts the chain; otherwise the last
+  line closes against the heading's implicit *given the rest of the
+  requirements*, and the package it leaves nothing of is named in no further
+  line. A line continuing through a package reads its antecedent against the
+  bound the chain left there — widening its literal by everything already
+  ruled out weakens the clause, so the line stays true and says what the
+  reader is holding. Only a meet of three or more sides breaks the chain
+  (Proposition 22), and that alone prints whole, its sides adjacent.
 * **The heading names the primary reason's requirements.** Every conflict
   reads under an implicit *given the rest of the requirements*, so its
   heading says what it is about — the requirements its primary reason
@@ -800,6 +822,67 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   already said it. Entries whose actions and completion agree say the same
   sentence, and the page says it once.
 * **Menu wording.** Exactly the three-state table of Section 4.
+
+### The verbs
+
+Four forms, and which one is printed is data in the clause rather than a
+flag beside it. Write `S` for the literal on the package a line is said to —
+its printed consequent — and read `⊥ ∈ S` as "this statement is satisfied by
+the package not being installed".
+
+| form | when | what it says |
+| --- | --- | --- |
+| `your ‹kinds› leaves X r` | the line is one of the query's own facts | of `X`, the query's own constraints of those kinds left `r` — and only such a line may say *your* |
+| `… requires X r` | `⊥ ∉ S` | `X` is installed, at one of `r` |
+| `… constrains X r` | `⊥ ∈ S`, some version in `S` | if `X` is installed it is at one of `r`; the statement is silent if it is not |
+| `… leaves no version of X` | `S = {⊥}` | `X` is not installed at all |
+
+*Leaves* is the user's; *requires* forces; *constrains* binds only what is
+there; *leaves no version of* is forced-empty. The bare package name is a
+consequent whose range is the package's whole offering, never a consequent
+with nothing in it — the fourth row exists so that a flipped line cannot
+print as the package arriving when what it says is the package's going.
+
+A trailing `(through P, Q and R)` is the whole of the difference between a
+statement the registry makes directly and one an elimination composed: the
+packages the route passed through, carrying no claim of their own (Routes,
+Section 6). Its absence says the statement stands as it is.
+
+Because the verb follows the printed consequent, flipping a line re-derives
+it. That is what makes the next result safe to print.
+
+### Linearization
+
+**Proposition 22 (two sides linearize; three need not).** A meet of two
+sides prints as one chain. A meet of three pairwise-overlapping sides does
+not.
+
+*Proof.* A clause has no direction (Section 2), so which of its packages is
+the printed consequent is chosen when it is printed, and the contrapositive
+is the same clause said the other way. Let the sides at pivot `P` be `S₁`
+and `S₂`. Say `S₁` forward, from the packages its support names to the bound
+it puts on `P`; the reader now holds `P ∈ S₁`. Say `S₂` to the package *it*
+rests on, with `P` as its antecedent: what the chain has left at `P` — `S₁`,
+narrowed by the query's own line about `P` where there is one — meets `S₂`
+in nothing, since the family closes, so everything still open at `P` denies
+`S₂` and the line fires on exactly what the lines before it left. That is
+the resolution rule of Section 2, read out one step at a time, and the chain
+ends at `S₂`'s own root fact. With three sides the same walk cannot be
+arranged: one side opens the chain and one closes it, and the
+third has both of its ends already spoken for — its support is introduced by
+nothing the chain has said. The page is then two chains meeting at `P`,
+which is what the meet display says in one place rather than leaving the
+reader to find. And three sides can genuinely be needed: `{1,2}`, `{2,3}`,
+`{1,3}` overlap pairwise and have empty intersection, so no two of them
+contradict and no pair stands for the family. ∎
+
+The pivot's own facts are not sides in this counting: a query line about `P`
+is not an implication needing a root, and prints where the chain reaches `P`
+— which is why "the compat leaves `P` `r`, and the one side says `P` `s`"
+is a chain of two lines and not a meet at all. So the meet display survives
+exactly at three sides and more, and Proposition 18 says how rare that is:
+in a convex world an irredundant meet has at most three sides, and three of
+them require a package one of whose bounds has a hole in it.
 
 ## 10. Substrate obligations
 

@@ -8,7 +8,7 @@ A **literal** on a package is a set of its versions, possibly together with ⊥
 satisfied when some package takes a value its literal admits. Every constraint
 either actor supplies — the registry's dependency edges and compatibility
 bounds, the query's requirements and its own version limits — is one clause of
-this shape, and the five readings of the shape are what
+this shape, and the six readings of the shape are what
 [`clause_phrase`](@ref Resolver.Clauses.clause_phrase) prints.
 
 Clauses compose by resolution on a package
@@ -385,11 +385,14 @@ The clause as one English sentence. `vers` maps a package to its version list
 and `names` to its name; `subject` names the package to say the statement *to*,
 which is otherwise chosen (see `default_subject`).
 
-Five readings of one shape cover everything a report says: a package that must
+Six readings of one shape cover everything a report says: a package that must
 be installed, a package a range of which cannot be, and — with two or more
-literals — one package's versions requiring or constraining another's. Which
-verb is not a flag: *requires* is a consequent that excludes ⊥ and so brings the
-package in, *constrains* one that admits it and so binds only if it is there.
+literals — one package's versions requiring another's, constraining another's,
+or leaving another none at all. Which verb is not a flag: *requires* is a
+consequent that excludes ⊥ and so brings the package in, *constrains* one that
+admits it and so binds only if it is there, and *leaves no version of* one that
+admits ⊥ alone. So a statement said the other way round re-derives its own
+verb, which is what makes contraposition safe to print.
 """
 function clause_phrase(c::Clause{P}, vers, names = letters;
                        subject = nothing) where {P}
@@ -410,12 +413,18 @@ function clause_phrase(c::Clause{P}, vers, names = letters;
         end
     end
     s = subject === nothing ? default_subject(c, vers) : subject
+    c[s] === nothing && (s = default_subject(c, vers))
     ants = String[antecedent_phrase(q, c[q], vers, names) for q in ps if q != s]
     m = c[s]
     plural = length(ants) > 1
+    lead = plural ? join(ants, ", ", " and ") * " together" : ants[1]
+    # a consequent with no version in it is no range to name: what the
+    # statement leaves the package is nothing, and the bare name would read as
+    # the package arriving rather than as its going
+    any(selected(m)) ||
+        return "$lead $(plural ? "leave" : "leaves") no version of $(names(s))"
     verb = absent(m) ? (plural ? "constrain" : "constrains") :
                        (plural ? "require" : "requires")
-    lead = plural ? join(ants, ", ", " and ") * " together" : ants[1]
     return "$lead $verb $(consequent_phrase(s, m, vers, names))"
 end
 

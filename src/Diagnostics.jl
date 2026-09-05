@@ -60,8 +60,8 @@ Base.show(io::IO, a::Action) = print(io, "Action(", repr(a.kind), ", ",
 
 One printed statement. `clause` is the whole of what it says; `through` names
 the packages an elimination reached it by — a courtesy pointer, carrying no
-claim of its own, since a flat page cannot show how two packages reach each
-other. `given` marks the query's own facts, which every proof on the page
+claim of its own, since the page shows what a line says and not the
+elimination that reached it. `given` marks the query's own facts, which every proof on the page
 shares; `proof` numbers the reason a derived line argues for, and `pivot` the
 package its meet is taken at.
 """
@@ -1410,19 +1410,29 @@ end
 #
 # What a diagnosis says, and the rules that keep every sentence of it true.
 #
-# The page is flat. The heading names the requirements the conflict answers
-# for, and the body never says them again: what comes first is what the query
-# narrowed, said as the user's ("your compat leaves A 1.2"), each package once;
-# then the registry's statements, each said as the implication from the facts it
-# rests on to the bound it puts on the package the argument meets at, with the
-# packages an elimination reached it through in parentheses. Nothing on the page
-# is derived from anything else on the page, which is why a line can carry a
-# route and why the meet — the sides whose intersection is empty — prints last
-# and together.
+# A proof prints as one chain. The heading names the requirements the conflict
+# answers for, and the body never says them again: the chain starts at the root
+# fact the query narrowed, said as the user's ("your compat leaves A 1.2"), runs
+# through the registry's statements in antecedent-before-use order — each said
+# to the package the one before it left bounded, with the packages an
+# elimination reached it through in parentheses — and ends at the fact that
+# contradicts what the chain has accumulated. Where that closing fact is one of
+# the query's own it is printed; where it is a requirement the heading states,
+# the heading has already said it.
+#
+# A clause has no direction, so which way a line is said is chosen when it is
+# said, and a line that continues through a package is said to the package it
+# rests on instead. Such a line reads its antecedent against the bound the chain
+# left at that package — a weakening of what the line says, hence true, and
+# exactly what the reader is holding. Only a meet of three or more sides refuses
+# to linearize, since two of its sides would have to arrive from nowhere; that
+# alone still prints whole, as the sides whose intersection is empty.
 #
 # What the page claims is its heading's requirements together with its lines,
 # and a check of the report reads the two as one set: the lines alone are
 # satisfied by installing nothing, and it is the heading that rules that out.
+# What the chain chooses is the order of the lines and which way each is said,
+# never which lines there are.
 #
 # Only a query line may say "your". Everything else is the registry's, and a
 # registry statement never attributes a bound to a `Project.toml` it cannot see.
@@ -1564,8 +1574,24 @@ function heading_facts(c::Conflict{P,V}) where {P,V}
     return out
 end
 
-function line_phrase(l::Line{P}, vers, names) where {P}
-    s = clause_phrase(l.clause, vers, names)
+# One statement, said to `subject`, and read against `acc` — what the chain has
+# already left the packages it argues from. Widening a literal by everything the
+# chain has ruled out at that package weakens the clause, so the line stays
+# true; what it prints is then the bound the reader is holding rather than the
+# whole of what the statement would say standing on its own.
+function line_phrase(l::Line{P}, vers, names; subject = nothing,
+                     acc::Dict{P,Lit} = Dict{P,Lit}()) where {P}
+    cl = l.clause
+    if subject !== nothing && !isempty(acc)
+        pairs = Pair{P,Lit}[]
+        for (p, m) in cl.lits
+            w = p != subject && haskey(acc, p) ? Lit(m.bits .| .~acc[p].bits) : m
+            push!(pairs, p => (all(w.bits) ? m : w))
+        end
+        d = clause(pairs)
+        d === nothing || (cl = d)
+    end
+    s = clause_phrase(cl, vers, names; subject = subject)
     isempty(l.through) && return s
     return s * " (through " * join_and(String[names(q) for q in l.through]) * ")"
 end
@@ -1583,50 +1609,41 @@ function meet_is_empty(group::Vector{Line{P}}, pivot) where {P}
     return acc !== nothing && !any(acc)
 end
 
-function print_given(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
-                     vers, names) where {P,V}
+# The query's own facts of a chain, by package: the constraint the page says as
+# the user's, and whatever else the reason states about that package. A
+# requirement the heading names states nothing here — the heading is where it is
+# said — and a fact about no single package has no place to be introduced, so it
+# is kept aside and printed last.
+function given_facts(c::Conflict{P,V}, given::Vector{Line{P}}) where {P,V}
     order = P[]
-    single = Dict{P,Vector{Line{P}}}()
-    other = Line{P}[]
+    con = Dict{P,Line{P}}()
+    extra = Dict{P,Vector{Line{P}}}()
+    loose = Line{P}[]
     for l in given
         ps = packages(l.clause)
-        if length(ps) == 1
-            push!(get!(Vector{Line{P}}, single, ps[1]), l)
+        if length(ps) != 1
+            push!(loose, l)
+            continue
+        end
+        p = ps[1]
+        is_heading_fact(c, l) && continue
+        p in order || push!(order, p)
+        if !haskey(con, p) && absent(l.clause[p]) && haskey(c.excluded, p)
+            con[p] = l
         else
-            push!(other, l)
+            push!(get!(Vector{Line{P}}, extra, p), l)
         end
     end
-    for p in c.reqs
-        haskey(single, p) && p ∉ order && push!(order, p)
-    end
-    for l in given
-        ps = packages(l.clause)
-        length(ps) == 1 && ps[1] ∉ order && push!(order, ps[1])
-    end
-    for p in order
-        con = nothing
-        extra = Line{P}[]
-        for l in single[p]
-            if is_requirement(l, p) && p in c.reqs
-                continue                 # the heading says it
-            elseif absent(l.clause[p]) && haskey(c.excluded, p)
-                con = l
-            else
-                push!(extra, l)
-            end
-        end
-        con === nothing ||
-            print_wrapped(io, constraint_phrase(c, p, con), "  • ", "    ")
-        for l in extra
-            print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
-        end
-    end
-    for l in other
-        print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
-    end
+    return order, con, extra, loose
 end
 
-function print_derived(io::IO, derived::Vector{Line{P}}, vers, names) where {P}
+# The statements of the body, in the units the page says them in: each on its
+# own, since a chain says one thing at a time — except a meet of three or more
+# sides, which no chain can say and which prints whole. A meet of two linearizes
+# always: say one side forward to the package they meet at, and the other to the
+# package it rests on, which is resolving on the meet by another name.
+function derived_units(derived::Vector{Line{P}}) where {P}
+    units = Vector{Line{P}}[]
     i = 1
     while i ≤ length(derived)
         l = derived[i]
@@ -1637,18 +1654,182 @@ function print_derived(io::IO, derived::Vector{Line{P}}, vers, names) where {P}
                 j += 1
             end
         end
-        group = derived[i:j]
-        if length(group) ≥ 2 && meet_is_empty(group, l.pivot)
-            println(io, "  • incompatible constraints on ", names(l.pivot), ":")
-            for g in group
-                print_wrapped(io, line_phrase(g, vers, names), "      — ", "        ")
-            end
+        if j - i + 1 ≥ 3
+            push!(units, derived[i:j])
         else
-            for g in group
-                print_wrapped(io, line_phrase(g, vers, names), "  • ", "    ")
+            for k = i:j
+                push!(units, Line{P}[derived[k]])
             end
         end
         i = j + 1
+    end
+    return units
+end
+
+# the packages a unit argues from — everything it names, less the package a meet
+# concludes about, which is what its sides are there to bound
+function unit_sources(u::Vector{Line{P}}) where {P}
+    ps = P[]
+    for l in u, q in packages(l.clause)
+        (length(u) ≥ 2 && q == u[1].pivot) || q in ps || push!(ps, q)
+    end
+    return ps
+end
+
+# What a unit costs the chain, as (packages it would have to introduce from
+# nowhere, whether saying it moves the chain on). A statement introduces the one
+# package it is said to, so all but one of its packages must already be reached;
+# a meet introduces the package it meets at, so all of its sources must be.
+function unit_cost(u::Vector{Line{P}}, seen::Set{P}) where {P}
+    unseen = count(q -> q ∉ seen, unit_sources(u))
+    length(u) ≥ 2 && return (unseen, u[1].pivot in seen ? 1 : 0)
+    return (max(unseen - 1, 0), unseen == 0 ? 1 : 0)
+end
+
+# Which package a statement is said to: the one the chain has not reached, so
+# that saying it moves the chain on. Where the chain has reached all of them the
+# statement closes at its own pivot, and where it has reached none the pivot
+# leads — as a statement standing in no chain would.
+function unit_subject(u::Vector{Line{P}}, seen::Set{P}, vers) where {P}
+    length(u) ≥ 2 && return u[1].pivot
+    l = only(u)
+    unseen = P[q for q in packages(l.clause) if q ∉ seen]
+    length(unseen) == 1 && return unseen[1]
+    if isempty(unseen)
+        return l.pivot === nothing ?
+            Clauses.default_subject(l.clause, vers) : l.pivot
+    end
+    l.pivot !== nothing && l.pivot in unseen && return l.pivot
+    d = Clauses.default_subject(l.clause, vers)
+    return d in unseen ? d : unseen[1]
+end
+
+# the packages the body argues *from*: everything its statements name, less the
+# package each of them concludes about. A chain runs from facts to the
+# contradiction, so a package the statements only arrive at is where it ends
+function chain_sources(units::Vector{Vector{Line{P}}}) where {P}
+    ps = Set{P}()
+    for u in units, l in u, q in packages(l.clause)
+        q == u[1].pivot || push!(ps, q)
+    end
+    return ps
+end
+
+# Where a chain starts: the heading's own subject, since that is what the
+# conflict is about — said as the user's compat where the reason narrowed it,
+# and taken as the heading's premise where it did not. A subject the statements
+# only conclude about is where the chain ends instead, which is why a source is
+# preferred to it whatever the query said about either. Among sources, one the
+# reason did NOT narrow is preferred: its root costs nothing to state, and it
+# leaves the narrowed subject's compat line free to close the chain — a chain
+# that ends "your compat leaves X …" names the range that would have worked,
+# where one that ends against the heading's silent premise names nothing. A
+# subject no statement names at all roots nothing, so the choice falls through
+# to whatever package the query narrowed and the statements do reach.
+function chain_root(c::Conflict{P,V}, order::Vector{P}, con::Dict{P,Line{P}},
+                    sources::Set{P}, mentioned::Set{P}) where {P,V}
+    heads = heading_reqs(c)
+    for pool in (sources, mentioned), narrowed in (false, true)
+        for p in heads
+            p in pool && (narrowed == haskey(con, p)) && return p
+        end
+    end
+    for narrowed in (true, false), p in order
+        p in mentioned && (!narrowed || haskey(con, p)) && return p
+    end
+    return nothing
+end
+
+function print_meet(io::IO, u::Vector{Line{P}}, vers, names) where {P}
+    if meet_is_empty(u, u[1].pivot)
+        println(io, "  • incompatible constraints on ", names(u[1].pivot), ":")
+        for g in u
+            print_wrapped(io, line_phrase(g, vers, names), "      — ", "        ")
+        end
+    else
+        for g in u
+            print_wrapped(io, line_phrase(g, vers, names), "  • ", "    ")
+        end
+    end
+end
+
+# The body of a conflict, as the chain it is.
+#
+# A statement may be said only to a package the chain has not yet reached — that
+# is what makes the body an argument rather than a list — so the walk takes, at
+# each step, a statement all but one of whose packages are already bounded and
+# says it to the one that is not. What the statement leaves that package is what
+# the next one reads against, and the query's fact about a package prints where
+# the package arrives: after the statement that reaches it, before the statement
+# that argues from it.
+#
+# Nothing follows from nothing, so the walk is seeded with a root; and a
+# statement that would still need two packages introduced brings its own, the
+# facts it rests on printing above it. A meet of three or more sides is that
+# case twice over, and prints whole.
+function print_chain(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
+                     derived::Vector{Line{P}}, vers, names) where {P,V}
+    order, con, extra, loose = given_facts(c, given)
+    units = derived_units(derived)
+    sources = chain_sources(units)
+    mentioned = Set{P}(q for u in units for l in u for q in packages(l.clause))
+    seen = Set{P}()
+    told = Set{P}()
+    acc = Dict{P,Lit}()
+
+    function tell(p::P)
+        p in told && return
+        push!(told, p)
+        haskey(con, p) &&
+            print_wrapped(io, constraint_phrase(c, p, con[p]), "  • ", "    ")
+        for l in get(extra, p, Line{P}[])
+            print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
+        end
+    end
+    function reach(p::P)
+        p in seen && return
+        push!(seen, p)
+        tell(p)
+    end
+
+    root = chain_root(c, order, con, sources, mentioned)
+    root === nothing || reach(root)
+
+    pending = collect(eachindex(units))
+    while !isempty(pending)
+        k = findfirst(i -> unit_cost(units[i], seen) == (0, 0), pending)
+        k === nothing &&
+            (k = findfirst(i -> first(unit_cost(units[i], seen)) == 0, pending))
+        k === nothing && (k = 1)
+        u = units[pending[k]]
+        deleteat!(pending, k)
+        s = unit_subject(u, seen, vers)
+        for q in unit_sources(u)
+            q == s || reach(q)
+        end
+        if length(u) ≥ 2
+            print_meet(io, u, vers, names)
+        else
+            print_wrapped(io, line_phrase(only(u), vers, names;
+                                          subject = s, acc = acc),
+                          "  • ", "    ")
+        end
+        if s !== nothing
+            for l in u
+                m = l.clause[s]
+                m === nothing && continue
+                acc[s] = haskey(acc, s) ? Lit(acc[s].bits .& m.bits) : m
+            end
+            reach(s)
+        end
+    end
+    # a fact about a package no statement reaches ends the page rather than
+    # opening it: the chain is what the reader is following
+    for p in order
+        tell(p)
+    end
+    for l in loose
+        print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
     end
 end
 
@@ -1698,12 +1879,9 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
     vers(p) = c.versions[p]
     names(p) = string(p)
     blocked = Set{Int}(first(b) for b in c.blocks)
-    print_given(io, c,
-        Line{P}[l for l in c.lines if l.given && l.proof ∉ blocked],
-        vers, names)
-    print_derived(io,
-        Line{P}[l for l in c.lines if !l.given && l.proof ∉ blocked],
-        vers, names)
+    live = Line{P}[l for l in c.lines if l.proof ∉ blocked]
+    print_chain(io, c, Line{P}[l for l in live if l.given],
+                Line{P}[l for l in live if !l.given], vers, names)
     print_menu(io, c, others)
     print_blocked(io, c)
 end

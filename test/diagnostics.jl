@@ -185,8 +185,10 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
         # what proving unsatisfiability is.
         #
         # There is no third question about how one line follows from another,
-        # because none of them does: the lines are flat, each derived from the
-        # registry rather than from its neighbours. What used to be checked
+        # because none of them does: each is entailed by the registry rather
+        # than by its neighbours. The page reads them as a chain, which is an
+        # order and a direction chosen when they are printed, never a claim
+        # that one was derived from the last. What used to be checked
         # besides -- that a line spoke in a direction the registry licensed,
         # that a bound was stated where one was claimed -- is not a separate
         # question either. A clause has no direction to get wrong, and its
@@ -542,13 +544,14 @@ end
     )
     d = check_diagnosis(data, Problem([:R]; compat = Dict(:P => [:p1])))
     # here there is a bound to state: :P has a version left, just not one
-    # :R will take
+    # :R will take. The heading has said the requirement, so the chain opens
+    # with what it forces and ends at the fact that contradicts it
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
         Conflict 1: R cannot be satisfied.
-          • your compat leaves P p1
           • R requires P p2
+          • your compat leaves P p1
           Fix it by any one of:
             1. relax your compat on P
                → allows: P p2, R r1
@@ -571,8 +574,8 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
-          • your compat leaves C c1
           • A requires C ≥c2
+          • your compat leaves C c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a3, C c3
@@ -582,19 +585,18 @@ end
 
 @testset "diagnosis: a package's availability is a premise where it speaks" begin
     # :C is the package the query emptied and the package the story ends at,
-    # and it also speaks: what is left of it needs :A back. So the chain says
-    # what the query left of it where that becomes a premise — after the line
-    # that asks for it and before the line that speaks for it. Hoisting every
-    # availability the relations name to the front puts this one first, where
-    # nothing has introduced :C yet and it reads as arriving from nowhere
+    # and it also speaks: what is left of it needs :A back. The chain says what
+    # the query left of it where the package arrives — after the line that asks
+    # for it — so the fact stands beside what it contradicts rather than ahead
+    # of anything that has introduced :C
     d = check_diagnosis(late_speaker, Problem([:A]; compat = Dict(:C => [:c1])))
     c = only(d.conflicts)
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
-          • your compat leaves C c1
           • A requires C c2
+          • your compat leaves C c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a1, C c2
@@ -648,14 +650,16 @@ end
     prob = Problem([:P, :S]; compat = Dict(:W => [:w2]))
     d = check_diagnosis(weak_bound, prob)
     c = only(d.conflicts)
-    # each requirement's own consequence follows it: the chain is stored in
-    # the order it argues in
-    # the only dependency stated is the one the registry has
+    # the chain says :P's bound on :W, then what the query left of :W, and
+    # closes with :S's dependency read the other way round -- the same
+    # statement, since a clause has no direction, and the way round the chain
+    # arrives at it
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("P constrains W w1", report)
+    @test occursin("your compat leaves W w2", report)
+    @test occursin("W absent leaves no version of S", report)
     # the only dependency stated is the one the registry has: :P's bound on
     # :W permits :W's absence, so nothing on the page says :P brings it in
-    report = sprint(show, MIME("text/plain"), d)
-    @test occursin("S requires W", report)
-    @test occursin("P constrains W w1", report)
     @test !occursin("P requires", report)
     # ... and the two lines do not leave :W nothing on their own -- what rules
     # out :w1 is the query -- so the report does not claim that they do
@@ -969,10 +973,10 @@ end
 ## rendering
 
 
-# The report is flat: the query's own facts, then what the registry says about
-# them. Nothing on the page is derived from anything else on the page, so a
-# line cannot say how its two packages reach each other -- and that is the one
-# thing `through` is there to buy back.
+# The report is a chain: a root fact, the statements that carry it, and the
+# fact it ends against. A line still cannot say how its two packages reach each
+# other -- the elimination between them is not on the page -- and that is the
+# one thing `through` is there to buy back.
 @testset "diagnosis: a line names the packages its argument went through" begin
     P, V = String, Int
     VS = Dict(p => [1, 2] for p in ("A", "B", "C", "D", "E"))
@@ -981,8 +985,8 @@ end
                                 q => literal(2, [1])])
     line(c, through...; pivot = nothing) =
         Line{P}(c, P[through...], false, 1, pivot)
-    render(lines; reqs = P[]) = sprint() do io
-        Diagnostics.print_conflict(io, Conflict{P,V}(reqs, lines, VS,
+    render(lines; reqs = P[], vs = VS) = sprint() do io
+        Diagnostics.print_conflict(io, Conflict{P,V}(reqs, lines, vs,
             Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[]))
     end
 
@@ -994,35 +998,53 @@ end
     @test occursin("A 1 requires B 1", out)
     @test !occursin("through", out)
 
-    # where the lines leave one package nothing, saying which saves the reader
-    # finding the one name every one of them has in common
+    # where three lines leave one package nothing, saying which saves the
+    # reader finding the one name every one of them has in common
+    VS3 = Dict(p => [1, 2, 3] for p in ("A", "B", "C", "E"))
+    at(p, vs) = Clauses.clause([p => literal(3, [1], true; absent = true),
+                                "E" => literal(3, vs)])
+    @test occursin("incompatible constraints on E:",
+                   render(Line{P}[line(at("A", [1, 2]); pivot = "E"),
+                                  line(at("B", [2, 3]); pivot = "E"),
+                                  line(at("C", [1, 3]); pivot = "E")];
+                          vs = VS3))
+    # ... and two sides of one package are a chain rather than a meet: a clause
+    # has no direction, so the second is said to the package it rests on and
+    # read against what the first left. (This fixture was the two-sided meet
+    # display; two sides linearize always, so the display is gone from it.)
     other(p, q) = Clauses.clause([p => literal(2, [1], true; absent = true),
                                   q => literal(2, [2])])
-    @test occursin("incompatible constraints on E:",
-                   render(Line{P}[line(dep("A", "E"); pivot = "E"),
-                                  line(other("B", "E"); pivot = "E")]))
-    # ... and where they do not, there is nothing to say
+    two = render(Line{P}[line(dep("A", "E"); pivot = "E"),
+                         line(other("B", "E"); pivot = "E")])
+    @test !occursin("incompatible constraints", two)
+    @test occursin("A 1 requires E 1", two)
+    @test occursin("E 1 constrains B 2", two)
+    # ... and where the lines do not leave the package nothing, there is
+    # nothing to say
     @test !occursin("incompatible constraints",
                     render(Line{P}[line(dep("A", "E")), line(dep("B", "D"))]))
-    # ... including where they do name one package but agree about it: two
-    # lines that both leave E at 1 leave it something, and saying otherwise
-    # would claim more than the page shows
+    # ... including where they do name one package but agree about it: lines
+    # that all leave E at 1 leave it something, and saying otherwise would
+    # claim more than the page shows
     @test !occursin("incompatible constraints",
-                    render(Line{P}[line(dep("A", "E"); pivot = "E"),
-                                   line(dep("B", "E"); pivot = "E")]))
+                    render(Line{P}[line(at("A", [1]); pivot = "E"),
+                                   line(at("B", [1]); pivot = "E"),
+                                   line(at("C", [1]); pivot = "E")];
+                           vs = VS3))
     # ... nor where there is only one of them to meet
     @test !occursin("incompatible constraints",
                     render(Line{P}[line(dep("A", "E"))]))
 
-    # the query's own limits are said first, whatever order the lines come in,
-    # and the requirement is not said at all: the heading names it, so a line
-    # for it would be the page saying one thing twice
+    # a limit on a package no statement reaches ends the page rather than
+    # opening it -- the chain is what the reader is following -- and the
+    # requirement is not said at all: the heading names it, so a line for it
+    # would be the page saying one thing twice
     given = Line{P}(Clauses.clause([
         "B" => literal(2, [1]; absent = true)]), P[], true)
     req = Line{P}(Clauses.clause([
         "A" => literal(2, [1, 2])]), P[], true)
     out = render(Line{P}[line(dep("A", "E")), given, req]; reqs = P["A"])
-    @test occursin(r"B 2 cannot.*\n.*A 1 requires E 1"m, out)
+    @test occursin(r"A 1 requires E 1.*\n.*B 2 cannot"m, out)
     @test !occursin("you require", out)
     @test length(collect(eachmatch(r"^  • "m, out))) == 2
 end
@@ -1159,9 +1181,8 @@ end
         Unsatisfiable — 2 conflicts, each of which must be fixed:
 
         Conflict 1: A and B cannot both be satisfied.
-          • incompatible constraints on C:
-              — A requires C v1
-              — B requires C v2
+          • A requires C v1
+          • C v1 leaves no version of B
           Fix it by any one of:
             1. drop requirement A
                → allows: B v1, C v2
@@ -1169,9 +1190,8 @@ end
                → allows: A v1, C v1
 
         Conflict 2: E and F cannot both be satisfied.
-          • incompatible constraints on G:
-              — E requires G v1
-              — F requires G v2
+          • E requires G v1
+          • G v1 leaves no version of F
           Fix it by any one of:
             1. drop requirement E
                → allows: F v1, G v2
@@ -1195,8 +1215,8 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A cannot be satisfied.
-          • your compat and your pin leaves no version of B
           • A requires B
+          • your compat and your pin leaves no version of B
           Fix it by any one of:
             1. relax your compat on B
                → allows: A v1, B w2

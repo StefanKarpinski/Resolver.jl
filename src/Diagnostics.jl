@@ -83,9 +83,11 @@ Line{P}(c::Clause{P}, t::Vector{P}, g::Bool, n::Integer) where {P} =
 
 One entry of a menu: the actions to carry out, and what the resolver answers
 once they are — with every other conflict settled the first way its own menu
-offers. The versions are the resolver's optimising answer for the withdrawn
-query, never a model found during diagnosis: diagnosis decides what is true,
-the resolver decides what is chosen.
+offers. A residue entry ([`Diagnosis`](@ref)) is a whole repair by itself, so
+there is nothing to settle beside it and its witness is its own. The versions
+are the resolver's optimising answer for the withdrawn query, never a model
+found during diagnosis: diagnosis decides what is true, the resolver decides
+what is chosen.
 """
 struct Fix{P,V}
     actions  :: Vector{Action{P}}
@@ -126,24 +128,32 @@ Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
     Diagnosis
 
 What [`resolve`](@ref Resolver.resolve) answers when the query cannot be
-satisfied: the conflicts, each of which must be fixed, and what the menus leave
-out — `:none` when every repair is a combination of them, `:larger` when the
-ones outside all give up more, and `:some` when equally cheap repairs lie
-outside. `truncated` records that the search for reasons was cut short, so the
-account of some conflict may be incomplete.
+satisfied: the conflicts, each of which must be fixed, the `residue` — the
+cheapest repairs no combination of the menus reaches, each a whole repair on
+its own — and what the two together still leave out: `:none` when they are
+every cheapest repair and nothing costlier exists, `:larger` when what is
+outside all gives up more, and `:some` when the enumeration of the cheapest
+repairs was cut short and one further solve found one it never reached.
+`truncated` records that the search for reasons was cut short, so the account
+of some conflict may be incomplete.
 
 `show`ing one prints the report.
 """
 struct Diagnosis{P,V}
     conflicts :: Vector{Conflict{P,V}}
+    residue   :: Vector{Fix{P,V}}
     others    :: Symbol # :none, :larger, :some
     truncated :: Bool
 end
 
 # a diagnosis rebuilt by a caller — renamed, filtered, whatever — is not one
 # whose search was cut short, so the disclosure defaults off
+Diagnosis(conflicts::Vector{Conflict{P,V}}, residue::Vector{Fix{P,V}},
+          others::Symbol) where {P,V} =
+    Diagnosis{P,V}(conflicts, residue, others, false)
+# ... and one that has nothing outside its menus has an empty residue
 Diagnosis(conflicts::Vector{Conflict{P,V}}, others::Symbol) where {P,V} =
-    Diagnosis{P,V}(conflicts, others, false)
+    Diagnosis(conflicts, Fix{P,V}[], others)
 
 ## the universe as the clause logic sees it
 
@@ -677,30 +687,41 @@ function add_at_most!(sat::SAT, lits::Vector{Int}, k::Int)
     return
 end
 
-# The cheapest repairs, and how much they cost. Raising the bound one at a time
-# stops at the first `k` a model exists at, which is the least size a correction
-# set has; at that `k` every model's violated set *is* a repair, and blocking
-# each one found enumerates them all.
+# The cheapest repairs, how much they cost, and whether the cap hid any.
+# Raising the bound one at a time stops at the first `k` a model exists at,
+# which is the least size a correction set has; at that `k` every model's
+# violated set *is* a repair, and blocking each one found enumerates them all.
+#
+# Where the cap stops the enumeration, one more solve settles what stopping
+# cost: with every member found blocked, a model at the same bound is a repair
+# the enumeration never reached, and no model means it reached them all. That
+# answer is the only thing that entitles a report to say its account of the
+# cheapest repairs is short — never the length of the vector, which says
+# nothing about what a longer search would have found.
 function min_repairs(sat::SAT, lits::Vector{Int})
     n = length(lits)
     for k = 0:n
-        found = with_temp_clauses(sat) do
+        found, more = with_temp_clauses(sat) do
             add_at_most!(sat, lits, k)
             out = Vector{Vector{Int}}()
+            more = false
             while sat_solve(sat)
                 viol = Int[i for i = 1:n if PicoSAT.deref(sat.pico, lits[i]) < 0]
                 push!(out, viol)
-                length(out) ≥ REPAIR_CAP && break
                 for i in viol
                     sat_add_var(sat, lits[i])
                 end
                 sat_add(sat)
+                if length(out) ≥ REPAIR_CAP
+                    more = sat_solve(sat)
+                    break
+                end
             end
-            return out
+            return out, more
         end
-        isempty(found) || return k, found
+        isempty(found) || return k, found, more
     end
-    return n, Vector{Int}[]
+    return n, Vector{Int}[], false
 end
 
 # Is there a repair holding none of the cheapest ones? One question, and its
@@ -1089,6 +1110,8 @@ end
 # what the analysis settles, on the instance, before anything is resolved
 struct Plan{P}
     menus     :: Vector{Vector{Int}}
+    # the cheapest repairs no combination of the menus reaches, as fact sets
+    residue   :: Vector{Vector{Int}}
     reqs      :: Vector{Vector{P}}
     lines     :: Vector{Vector{Line{P}}}
     # per conflict: proof number, the facts that proof does without, and the
@@ -1105,20 +1128,32 @@ function analyse(
     facts :: Vector{Fact{P}},
 ) where {P,V}
     lits = Int[f.lit for f in facts]
-    k, fmin = min_repairs(sat, lits)
+    k, fmin, more = min_repairs(sat, lits)
     used = sort!(unique!(reduce(vcat, fmin; init = Int[])))
     menus = Vector{Int}[]
-    covered = length(fmin)
     if !isempty(used)
         factors = product_menus(fmin, used)
-        if factors === nothing
-            menus, covered = rectangle_menus(fmin, used)
-        else
-            menus = factors
-        end
+        menus = factors === nothing ? first(rectangle_menus(fmin, used)) : factors
     end
-    others = (covered < length(fmin) || length(fmin) ≥ REPAIR_CAP) ? :some :
-        (larger_repairs(sat, lits, fmin) ? :larger : :none)
+    # What the menus reach, and what is left over: the residue, which is the
+    # cheapest repairs of the instance those selections block (Lemma 24) and
+    # is laid out after the conflicts as the fixes it is. A selection takes
+    # one entry of every menu there is — where there are none, the one empty
+    # selection, since a query already satisfiable on its facts is repaired by
+    # doing nothing — and in the product case the selections are the whole
+    # family, so nothing is left.
+    members = Set{Vector{Int}}(sort(m) for m in fmin)
+    reached = Set{Vector{Int}}()
+    for sel in Iterators.product(menus...)
+        s = sort!(collect(Int, sel))
+        s in members && push!(reached, s)
+    end
+    residue = sort!(Vector{Int}[m for m in members if m ∉ reached])
+    # With the family covered, what is outside the page is what the bounded
+    # enumeration itself missed — the cap stopping and a further solve finding
+    # a repair beyond what it found — and, failing that, Theorem 5's one
+    # question about repairs that give up more
+    others = more ? :some : (larger_repairs(sat, lits, fmin) ? :larger : :none)
 
     fcl = Dict{Int,Clause{P}}()
     for i in eachindex(facts)
@@ -1223,7 +1258,7 @@ function analyse(
         push!(blocks, blks)
         push!(reqs, sort!(unique!(P[facts[j].pkg for j in given if facts[j].req])))
     end
-    return Plan{P}(menus, reqs, lines, blocks, others, truncated)
+    return Plan{P}(menus, residue, reqs, lines, blocks, others, truncated)
 end
 
 # The kinds to lift so that a package this query emptied is choosable again.
@@ -1403,7 +1438,24 @@ function diagnose(
         push!(conflicts, Conflict{P,V}(plan.reqs[n], lines, versions, excluded,
                                        fixes, blocks))
     end
-    return Diagnosis{P,V}(conflicts, plan.others, plan.truncated)
+
+    # The residue: the cheapest repairs no combination of the menus reaches.
+    # Each is a whole repair by itself, so it becomes one fix with all of its
+    # facts' actions and a witness of its own — nothing of another conflict's
+    # menu is mixed in, because there is no other conflict left to settle. A
+    # requirement the universe holds nothing of can be settled only one way,
+    # so the entry names that too: what it asks for is the whole of what it
+    # asks for.
+    forced = Action{P}[Action(:drop, p) for p in gone]
+    residue = Fix{P,V}[]
+    for m in plan.residue
+        acts = copy(forced)
+        for j in m, a in fix_actions(prob, sat, univ, facts[j])
+            a in acts || push!(acts, a)
+        end
+        push!(residue, Fix{P,V}(acts, witness(sat, univ, prob, acts; by, order)))
+    end
+    return Diagnosis{P,V}(conflicts, residue, plan.others, plan.truncated)
 end
 
 ## the report
@@ -1833,12 +1885,12 @@ function print_chain(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
     end
 end
 
-# What the fix gets you, of the packages this conflict is about: the reader sees
-# the witness land where the opened meet says it can, which is what the versions
-# are on the page for.
-function print_allows(io::IO, c::Conflict{P,V}, f::Fix{P,V},
-                      indent::String) where {P,V}
-    ps = sort!(P[p for p in keys(c.versions) if haskey(f.solution, p)])
+# What the fix gets you, of the packages the page speaks of: the reader sees the
+# witness land where the opened meet says it can, which is what the versions are
+# on the page for. A conflict's own fix is shown of that conflict's packages; a
+# residue entry settles every conflict at once, so it is shown of all of them.
+function print_allows(io::IO, pkgs, f::Fix{P,V}, indent::String) where {P,V}
+    ps = sort!(P[p for p in pkgs if haskey(f.solution, p)])
     isempty(ps) && return
     print_wrapped(io, join(String["$p $(f.solution[p])" for p in ps], ", "),
                   indent * "→ allows: ", indent * "  ")
@@ -1848,18 +1900,23 @@ end
 # what the reader learns about the gap. Never derived from the length of a
 # vector; derived from the two decided questions — whether anything larger
 # exists, and whether the menus reach every repair as cheap as theirs.
-function print_menu(io::IO, c::Conflict{P,V}, others::Symbol) where {P,V}
+function print_menu(io::IO, c::Conflict{P,V}, others::Symbol,
+                    alone::Bool) where {P,V}
     isempty(c.fixes) && return
     if length(c.fixes) == 1
-        word = others === :none ? "The only fix" :
+        # "only" is a claim about the world, and the world includes the
+        # residue on the same page: an entry above minimal fixes that do not
+        # take it is one fix, not the only one
+        word = !alone ? "One fix" :
+               others === :none ? "The only fix" :
                others === :larger ? "The only minimal fix" : "One fix"
         println(io, "  ", word, ": ", fix_phrase(c.fixes[1]))
-        print_allows(io, c, c.fixes[1], "    ")
+        print_allows(io, keys(c.versions), c.fixes[1], "    ")
     else
         println(io, "  Fix it by any one of:")
         for (i, f) in enumerate(c.fixes)
             println(io, "    ", i, ". ", fix_phrase(f))
-            print_allows(io, c, f, "       ")
+            print_allows(io, keys(c.versions), f, "       ")
         end
     end
 end
@@ -1873,7 +1930,7 @@ about the repairs its menus do not reach, which is what a menu of one is
 entitled to say about itself.
 """
 function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
-                        others::Symbol = :some) where {P,V}
+                        others::Symbol = :some, alone::Bool = true) where {P,V}
     index === nothing ||
         println(io, "Conflict ", index, ": ", conflict_heading(c))
     vers(p) = c.versions[p]
@@ -1882,7 +1939,7 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
     live = Line{P}[l for l in c.lines if l.proof ∉ blocked]
     print_chain(io, c, Line{P}[l for l in live if l.given],
                 Line{P}[l for l in live if !l.given], vers, names)
-    print_menu(io, c, others)
+    print_menu(io, c, others, alone)
     print_blocked(io, c)
 end
 
@@ -1920,9 +1977,116 @@ function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
     end
 end
 
+## the residue on the page
+#
+# The residue's entries are whole repairs, so the plainest layout is the list
+# of them, one compound entry each. Where the family has structure that list
+# repeats itself — the same actions over and over, with one choice varying —
+# and a layer of the cover says the same thing in fewer lines: the actions all
+# of its repairs share, then the menus one entry of each completes them with.
+# Both forms are complete and neither claims structure the family does not
+# have (Section 4), so which one prints is decided by what it costs to read.
+#
+# A group is one layer of that cover: the actions every repair in it takes, and
+# the choices left. A group with no choices left is a single repair — which is
+# what every group of the flat list is — so one printer says both forms, and
+# the flat list is just the cover that gives each repair a layer of its own.
+const Group{P} = Tuple{Vector{Action{P}},Vector{Vector{Action{P}}}}
+
+# The cover of Section 4 over the actions the entries name: the family's
+# product where it has one, its best rectangle where it does not, and recurse
+# on what is left. Every selection of every layer is checked to be one of the
+# entries, so what is built from this claims nothing the flat list does not;
+# where the check fails there is no cover to print and the caller lists them.
+function residue_cover(fixes::Vector{Fix{P,V}}) where {P,V}
+    acts = Action{P}[]
+    for f in fixes, a in f.actions
+        a in acts || push!(acts, a)
+    end
+    code = Dict{Action{P},Int}(a => i for (i, a) in enumerate(acts))
+    members = Vector{Int}[sort!(Int[code[a] for a in f.actions]) for f in fixes]
+    allunique(members) || return nothing
+    left = copy(members)
+    groups = Group{P}[]
+    while !isempty(left)
+        pool = Set{Vector{Int}}(left)
+        used = sort!(unique!(reduce(vcat, left; init = Int[])))
+        menus = product_menus(left, used)
+        menus === nothing && (menus = first(rectangle_menus(left, used)))
+        isempty(menus) && return nothing
+        prod(length, menus) ≤ length(left) || return nothing
+        sels = Set{Vector{Int}}()
+        for sel in Iterators.product(menus...)
+            m = sort!(collect(Int, sel))
+            m in pool || return nothing
+            push!(sels, m)
+        end
+        push!(groups, (Action{P}[acts[only(m)] for m in menus if length(m) == 1],
+                       Vector{Action{P}}[Action{P}[acts[x] for x in m]
+                                         for m in menus if length(m) > 1]))
+        filter!(m -> m ∉ sels, left)
+    end
+    return groups
+end
+
+# what a layout costs the reader: the lines it prints, before wrapping. A
+# repair standing on its own is its actions and its witness; a layer is what
+# its repairs share, and then each choice with the witness of taking it
+group_lines(g::Group) = isempty(g[2]) ? 2 :
+    (isempty(g[1]) ? 0 : 1) + sum(m -> 1 + 2 * length(m), g[2])
+
+layout_lines(gs::Vector{<:Group}) = sum(group_lines, gs; init = 0)
+
+# The fixes no combination of the menus reaches, after the last conflict and
+# never as a conflict of its own: reasons do not layer (Corollary 25), the
+# conflicts above have already explained every one, and what is left to say is
+# the repairs themselves and what each of them allows. No proofs print here.
+function print_residue(io::IO, d::Diagnosis{P,V}) where {P,V}
+    isempty(d.residue) && return
+    pkgs = Set{P}(p for c in d.conflicts for p in keys(c.versions))
+    at = Dict{Set{Action{P}},Fix{P,V}}(Set(f.actions) => f for f in d.residue)
+    flat = Group{P}[(f.actions, Vector{Action{P}}[]) for f in d.residue]
+    cover = residue_cover(d.residue)
+    groups = cover !== nothing && layout_lines(cover) < layout_lines(flat) ?
+        cover : flat
+    println(io, "If none of the fixes above suits, ",
+            "the remaining minimal fixes are:")
+    phrases(as) = join_and(String[action_phrase(a) for a in as])
+    for (i, (core, menus)) in enumerate(groups)
+        opened = false
+        if !isempty(core)
+            print_wrapped(io, isempty(menus) ? phrases(core) :
+                          "all of: " * phrases(core), "  $i. ", "     ")
+            opened = true
+        end
+        if isempty(menus)
+            f = get(at, Set(core), nothing)
+            f === nothing || print_allows(io, pkgs, f, "     ")
+            continue
+        end
+        for (j, menu) in enumerate(menus)
+            println(io, opened ? "     and any one of:" : "  $i. any one of:")
+            opened = true
+            for a in menu
+                print_wrapped(io, action_phrase(a), "       • ", "         ")
+                # the witness of taking this entry with the layer's other
+                # choices settled the first way they offer, which is how every
+                # menu on the page reads
+                key = Set{Action{P}}([core; a;
+                    Action{P}[first(m) for (l, m) in enumerate(menus) if l != j]])
+                f = get(at, key, nothing)
+                f === nothing || print_allows(io, pkgs, f, "         ")
+            end
+        end
+    end
+end
+
 function Base.show(io::IO, d::Diagnosis)
     n = length(d.conflicts)
-    f = prod(length(c.fixes) for c in d.conflicts; init = 1)
+    # the ways of repairing the whole query: one entry from each menu, in
+    # every combination, and then the residue's own entries, each of which is
+    # a repair of the whole query by itself
+    f = prod(length(c.fixes) for c in d.conflicts; init = 1) + length(d.residue)
     print(io, "Diagnosis: ", n, n == 1 ? " conflict, " : " conflicts, ",
           f, f == 1 ? " fix" : " fixes")
 end
@@ -1934,14 +2098,22 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
     println(io, ":")
     for (i, c) in enumerate(d.conflicts)
         println(io)
-        print_conflict(io, c, i; others = d.others)
+        print_conflict(io, c, i; others = d.others, alone = isempty(d.residue))
     end
-    if d.others === :larger
+    if !isempty(d.residue)
         println(io)
-        println(io, "Larger solutions also exist.")
+        print_residue(io, d)
+    end
+    # A printed blocked entry *is* a costlier fix, named — so where any
+    # printed, the footer that announces them in the abstract says nothing the
+    # page has not already said better (Theorems 26–27) and is left off. The
+    # other footer is the enumeration's own gap, and nothing else says it.
+    if d.others === :larger && all(c -> isempty(c.blocks), d.conflicts)
+        println(io)
+        println(io, "Costlier fixes also exist.")
     elseif d.others === :some
         println(io)
-        println(io, "Other solutions also exist.")
+        println(io, "There are more minimal fixes than are shown.")
     end
     if d.truncated
         println(io)
@@ -1982,14 +2154,18 @@ Everything Section 8's checker can decide without asking the solver:
     on is named by a line; the requirements the report answers for are named
     by its heading, or by the lines of the reason that argues from them;
   * **(V5) witness coherence** — each fix's witness lands inside every line the
-    fix's own withdrawal leaves standing. Silent breakage here is invisible to
-    every other check, which is exactly why this one exists.
+    fix's own withdrawal leaves standing, the menus' fixes and the residue's
+    alike. Silent breakage here is invisible to every other check, which is
+    exactly why this one exists.
 
 Empty when the report is sound. The remaining obligation — that each printed
 line is true of the universe this query left (V1) — is one entailment query per
-line and belongs to whoever holds the instance; the menu wordings (V6) are read
-off the two decided questions when the page is printed, so there is no second
-place for them to disagree.
+line and belongs to whoever holds the instance. The disclosures (V6) are read
+off the decided questions when the page is printed and have no second place to
+disagree: the menu wording off Section 4's table, the residue block off whether
+the cover has a layer the menus do not reach, the enumeration-cut sentence off
+the cap's own deciding solve, and the costlier-fixes footer off Theorem 5 and
+whether any blocked entry has already said it concretely.
 
 Every check is per explanation, never against a union: where two explanations'
 lines are `S₁ ∪ S₂` and `S₂` alone contradicts, the union stays contradictory
@@ -2010,6 +2186,14 @@ function report_problems(d::Diagnosis{P,V}) where {P,V}
                              for a in firsts[j])
         for s in conflict_problems(c, rest)
             push!(bad, "conflict $n: $s")
+        end
+    end
+    # ... and the residue's entries against every conflict's lines. Nothing is
+    # held out beside such a fix: it repairs the query by itself, so what it
+    # answers for is every line its own withdrawal does not touch.
+    for (n, f) in enumerate(d.residue), c in d.conflicts
+        for s in witness_problems(f, c, Set{P}())
+            push!(bad, "residue $n: $s")
         end
     end
     return bad
@@ -2064,14 +2248,24 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
 
     # (V5) the witness lands where the opened meet says it can
     for f in c.fixes
-        isempty(f.solution) && continue
-        gone = union(touched(f), rest)
-        for l in c.lines
-            any(p -> p in gone, packages(l.clause)) && continue
-            models(l.clause, f.solution, c.versions) && continue
-            push!(bad, "the witness for " * fix_phrase(f) *
-                  " does not satisfy: " * line_phrase(l, p -> c.versions[p], string))
-        end
+        append!(bad, witness_problems(f, c, rest))
+    end
+    return bad
+end
+
+# (V5), of one fix against one conflict's lines: everything the withdrawal
+# leaves alone — this fix's own actions, and whatever else is held out beside
+# it — the witness still has to satisfy.
+function witness_problems(f::Fix{P,V}, c::Conflict{P,V},
+                          rest::Set{P}) where {P,V}
+    bad = String[]
+    isempty(f.solution) && return bad
+    gone = union(touched(f), rest)
+    for l in c.lines
+        any(p -> p in gone, packages(l.clause)) && continue
+        models(l.clause, f.solution, c.versions) && continue
+        push!(bad, "the witness for " * fix_phrase(f) * " does not satisfy: " *
+              line_phrase(l, p -> c.versions[p], string))
     end
     return bad
 end

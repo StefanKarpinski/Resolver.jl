@@ -35,10 +35,13 @@ Conflict 2: Plots cannot be satisfied.
 ```
 
 Every fix is *verified*: the version list after each one is what a resolve of
-the fixed query actually returns, not a guess. When the menus do not reach
-every minimal fix the report says so — "Larger solutions also exist." when the
-ones left out cost more, "Other solutions also exist." when it cannot promise
-even that — and says nothing at all when the menus are the whole of it.
+the fixed query actually returns, not a guess. Where the menus do not reach
+every minimal fix, the rest are listed after the conflicts as the whole repairs
+they are — "If none of the fixes above suits, the remaining minimal fixes
+are:" — and whatever is still outside the page is confessed: "Costlier fixes
+also exist." when what was left out gives up more, "There are more minimal
+fixes than are shown." when the search for them was cut short. When the menus
+are the whole of it, the report says nothing at all.
 
 What "optimal" means, precisely, and why the resolver's aggressive problem
 filtering provably does not change the answer, is worked out in the Theory

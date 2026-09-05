@@ -256,6 +256,27 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
             end
         end
 
+        ## the residue
+        #
+        # An entry there is a whole repair by itself — no menu's fix is taken
+        # beside it, because there is nothing left for it to settle — so it is
+        # checked the way a menu's fix is: the actions turned into a withdrawal
+        # here, independently of how the diagnosis turns them into one, and the
+        # relaxed problem prepared and resolved from scratch
+        for fix in d.residue
+            @test !isempty(fix.actions)
+            @test allunique(fix.actions)
+            @test fix_resolve(info, prob, fix.actions; order, by) == fix.solution
+        end
+        # ... and it is the part of the family the menus do *not* reach: no
+        # entry repeats a combination they offer, or another entry
+        if !isempty(d.residue) &&
+           prod(length(c.fixes) for c in d.conflicts; init = 1) ≤ 64
+            residue = Set(Set(fix.actions) for fix in d.residue)
+            @test length(residue) == length(d.residue)
+            @test isempty(intersect(residue, fix_combinations(d)))
+        end
+
         ## every combination is a fix
         #
         # The claim the whole report rests on: the menus are independent, so
@@ -386,6 +407,25 @@ const conflict_path = Dict(
     :P => PkgData([:p2, :p1], DEPS_NONE, COMP_NONE),
     :Q => PkgData([:q2, :q1], DEPS_NONE, COMP_NONE),
     :R => PkgData([:r2, :r1], DEPS_NONE, COMP_NONE),
+)
+
+# Two pairs of requirements that press on the same two packages, so their
+# repairs entangle: :A, :L and :T all want :C, which the query has narrowed,
+# and :L and :T disagree about :D besides. The cheapest repairs are then
+# {compat C} × {L, T, compat T} together with {A} × {L, T} — five of them,
+# and no product, since dropping :A leaves the reason :L and :T have for
+# needing incompatible versions of :C standing unless one of them goes too.
+const entangled = Dict(
+    :A => PkgData([:a1], Dict(:a1 => [:C]), Dict(:a1 => Dict(:C => [:c3]))),
+    :L => PkgData([:l1], Dict(:l1 => [:C, :D]),
+        Dict(:l1 => Dict(:C => [:c2, :c3], :D => [:d1]))),
+    # :T's versions take disjoint windows of :D, so the prepared universe keeps
+    # both of them and relaxing the compat on :T is a fix the menu can offer
+    :T => PkgData([:t2, :t1], Dict(:t2 => [:C, :D], :t1 => [:C, :D]),
+        Dict(:t2 => Dict(:C => [:c1, :c3], :D => [:d2]),
+             :t1 => Dict(:C => [:c1, :c3], :D => [:d1]))),
+    :C => PkgData([:c3, :c2, :c1], DEPS_NONE, COMP_NONE),
+    :D => PkgData([:d2, :d1], DEPS_NONE, COMP_NONE),
 )
 
 # Two conflicts at once, the second of them squeezed twice over: :B needs :U at
@@ -734,7 +774,11 @@ end
     # the menus reach every cheapest repair and only larger ones lie outside,
     # so this is the only *minimal* fix -- not the only fix there is
     @test occursin("The only minimal fix: relax your compat on C", report)
-    @test occursin("Larger solutions also exist.", report)
+    # ... and the costlier one is on the page already, named: a blocked entry
+    # *is* a costlier fix, so the footer that would announce them in the
+    # abstract says nothing better and is left off
+    @test occursin("Blocked fixes:", report)
+    @test !occursin("Costlier fixes also exist.", report)
 end
 
 @testset "diagnosis: a costlier repair is asked about, not counted" begin
@@ -764,8 +808,11 @@ end
     @test all(length(r) > smallest
               for r in setdiff(repairs, fix_combinations(d)))
     @test d.others === :larger
-    @test occursin("Larger solutions also exist.",
-        sprint(show, MIME("text/plain"), d))
+    # what costs more is named on the page, as the blocked entry that reports
+    # on it, so the footer for costlier fixes stays off
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("Blocked fixes:", report)
+    @test !occursin("Costlier fixes also exist.", report)
 
     # the same shape of menu over a query where every repair is a smallest one:
     # two conflicts with nothing to do but drop a requirement from each
@@ -776,7 +823,12 @@ end
     @test allequal(length(r) for r in repairs)
     @test fix_combinations(d) == repairs
     @test d.others === :none
-    @test !occursin("Other", sprint(show, MIME("text/plain"), d))
+    # every repair is on the menus, so there is no residue and no footer:
+    # nothing is left for the page to confess
+    @test isempty(d.residue)
+    report = sprint(show, MIME("text/plain"), d)
+    @test !occursin("also exist", report)
+    @test !occursin("more minimal fixes", report)
 end
 
 @testset "diagnosis: one reason, every requirement it breaks" begin
@@ -824,8 +876,11 @@ end
     @test !occursin("your compat leaves B b2", report)
     @test !occursin("B b2 requires C c2", report)
     @test any(l -> :B in packages(l.clause), c.lines)
-    # dropping both requirements repairs it too, and gives up more
+    # dropping both requirements repairs it too, and gives up more -- which
+    # the page says as the blocked entry above rather than as a footer, so the
+    # abstract announcement is suppressed while the fact behind it stands
     @test d.others === :larger
+    @test !occursin("Costlier fixes also exist.", report)
     @test occursin("The only minimal fix: relax your compat on C", report)
     # the witness names both of them too
     @test occursin("→ allows: A a2, B b2, C c2", report)
@@ -877,20 +932,84 @@ end
     repairs = minimal_repairs(info, prob, pool)
     @test repairs == Set(Set([Action(:drop, x), Action(:drop, y)])
                          for (x, y) in ((:A, :B), (:A, :C), (:B, :D)))
-    # what the report offers is a proper part of that, all of it cheapest
+    # what the menus offer is a proper part of that, all of it cheapest
     offered = fix_combinations(d)
     @test offered ⊊ repairs
     @test length(offered) == 2
-    @test d.others === :some
+    # ... and the rest is the residue, which is the whole of the rest: between
+    # the menus and it the page reaches every cheapest repair there is
+    residue = Set(Set(fix.actions) for fix in d.residue)
+    @test residue == setdiff(repairs, offered)
+    @test offered ∪ residue == repairs
+    # so nothing is outside the cover, and the enumeration was not cut short
+    @test d.others === :none
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("Other solutions also exist.", report)
-    @test !occursin("larger", report)
-    # A menu of one may only claim as much as `others` knows. Dropping :A is
-    # the whole of the first conflict's menu, and it is *not* the only way to
-    # settle it -- {drop B, drop D} is a repair the menus never reach, and is
-    # no larger. So the report says one fix, not the only one.
+    wrapped = replace(report, r"\n\s+" => " ")
+    @test occursin("If none of the fixes above suits, the remaining minimal " *
+                   "fixes are:", wrapped)
+    @test occursin("1. drop requirement B and drop requirement D", wrapped)
+    @test !occursin("also exist", report)
+    @test !occursin("more minimal fixes than are shown", report)
+    # A menu of one claims exactly what the two decided questions license: the
+    # cover is complete and nothing costlier exists, so within the offer the
+    # reader is reading, dropping :A is how this conflict is settled -- and
+    # the residue below is where the family's other shapes are — and its
+    # minimal fixes do not take this entry, so "only" would be false: the
+    # wording weakens to "One fix" whenever a residue prints
     @test occursin("One fix: drop requirement A", report)
-    @test !occursin("The only", report)
+    @test !occursin("The only fix", report)
+end
+
+@testset "diagnosis: the residue completes an entangled family" begin
+    # :A, :L and :T all want :C, which the query has narrowed, and :L and :T
+    # disagree about :D besides. The cheapest repairs are five and no product
+    # of anything: the menus reach {compat C} × {compat T, drop L, drop T},
+    # and what is left — dropping :A with one of :L and :T — is the residue,
+    # printed after the conflicts as the whole repairs those entries are
+    prob = Problem([:A, :L, :T]; compat = Dict(:C => [:c1, :c2], :T => [:t2]))
+    d = check_diagnosis(entangled, prob)
+    info = pkg_info(entangled, prob)
+    pool = [Action(:compat, :C), Action(:compat, :T), Action(:drop, :A),
+            Action(:drop, :L), Action(:drop, :T)]
+    repairs = minimal_repairs(info, prob, pool)
+    @test length(repairs) == 5
+    @test all(length(r) == 2 for r in repairs)
+    # the menus are a rectangle and reach three of the five ...
+    offered = fix_combinations(d)
+    @test offered ⊊ repairs
+    @test length(offered) == 3
+    # ... and the residue is the other two, each a whole repair on its own and
+    # so a compound entry, with nothing of a menu mixed into it
+    residue = Set(Set(fix.actions) for fix in d.residue)
+    @test residue == Set([Set([Action(:drop, :A), Action(:drop, :L)]),
+                          Set([Action(:drop, :A), Action(:drop, :T)])])
+    @test all(length(fix.actions) == 2 for fix in d.residue)
+    # between them the page reaches every cheapest repair there is
+    @test offered ∪ residue == repairs
+    # each carries a witness of its own, which resolves
+    for fix in d.residue
+        @test !isempty(fix.solution)
+        @test fix_resolve(info, prob, fix.actions) == fix.solution
+    end
+    report = sprint(show, MIME("text/plain"), d)
+    wrapped = replace(report, r"\n\s+" => " ")
+    @test occursin("If none of the fixes above suits, the remaining minimal " *
+                   "fixes are:", wrapped)
+    @test occursin("1. drop requirement A and drop requirement L " *
+                   "→ allows: C c1, D d2, T t2", wrapped)
+    @test occursin("2. drop requirement A and drop requirement T " *
+                   "→ allows: C c2, D d1, L l1", wrapped)
+    # and no proof: reasons do not layer, so the conflicts above have already
+    # explained every one there is and the residue states fixes only
+    tail = split(report, "If none of the fixes above suits,")[2]
+    @test !occursin("requires", tail)
+    @test !occursin("your compat", tail)
+    @test !occursin("Blocked fixes", tail)
+    # nothing is outside the cover and nothing costlier exists, so the page
+    # has no gap to confess and prints no footer
+    @test d.others === :none
+    @test !occursin("also exist", report)
+    @test !occursin("more minimal fixes than are shown", report)
 end
 
 @testset "diagnosis: the instance is left as it was found" begin
@@ -1103,6 +1222,58 @@ end
 # holds with its entry's actions withdrawn, so what it argues is that those
 # actions settle nothing. One sentence per entry — the actions in the trying
 # and their verdict — with the proof behind it, in the lines, unprinted.
+# Which of the two sound layouts the residue takes is decided by what it costs
+# to read, so it is decided on the page and checked here: the same family said
+# as a list of whole repairs and as the layer it factors into, and the shorter
+# one printed. Built by hand, since what is under test is the layout and not
+# the analysis that found the family.
+@testset "diagnosis: the residue takes the shorter of its two layouts" begin
+    P, V = String, Int
+    VS = Dict("X" => [1, 2])
+    conflict() = Conflict{P,V}(P["X"],
+        Line{P}[Line{P}(Clauses.clause(["X" => literal(2, [1])]), P[], true)],
+        VS, Dict{P,Vector{Vector{Symbol}}}(),
+        Fix{P,V}[Fix{P,V}([Action(:drop, "X")], Dict("X" => 1))])
+    family(xs, ys) = Fix{P,V}[Fix{P,V}([Action(:drop, a), Action(:drop, b)],
+                                       Dict("X" => 1)) for a in xs for b in ys]
+    page(res) = sprint(show, MIME("text/plain"),
+                       Diagnosis(Conflict{P,V}[conflict()], res, :none))
+
+    # four repairs: the list is two lines each, the layer form two menus of two
+    # with a heading apiece, so the list is shorter and every entry compound
+    flat = page(family(("A", "B"), ("D", "E")))
+    @test occursin("1. drop requirement A and drop requirement D", flat)
+    @test occursin("4. drop requirement B and drop requirement E", flat)
+    @test !occursin("any one of", flat)
+
+    # nine repairs of the same shape: now the two menus cost six entries where
+    # the list costs nine, and the layer form wins. Each entry still carries a
+    # witness — the one for taking it with the other menu settled the first
+    # way it offers, which is how every menu on the page reads
+    layered = page(family(("A", "B", "C"), ("D", "E", "F")))
+    @test occursin("1. any one of:", layered)
+    @test occursin("and any one of:", layered)
+    @test !occursin("drop requirement A and drop requirement D", layered)
+    @test count("→ allows: X 1", layered) == 7  # one per entry, and the menu's
+    for p in ("A", "B", "C", "D", "E", "F")
+        @test occursin("• drop requirement $p", layered)
+    end
+    # a layer with a core and two choices says the core once, above them --
+    # which is the whole of what the layer form buys over the list, and why it
+    # takes two choices to buy anything: one choice and a core is a compound
+    # entry said in three lines instead of one
+    core = Fix{P,V}[
+        Fix{P,V}([Action(:drop, "A"), Action(:drop, b), Action(:drop, c)],
+                 Dict("X" => 1))
+        for b in ("D", "E", "F") for c in ("G", "H", "I")]
+    @test occursin("all of: drop requirement A", page(core))
+    @test count("and any one of:", page(core)) == 2
+
+    # and nothing at all where the menus reach every cheapest repair
+    @test !occursin("If none of the fixes above suits",
+                    page(Fix{P,V}[]))
+end
+
 @testset "diagnosis: blocked fixes print after the menu" begin
     P, V = String, Int
     VS = Dict(p => [1, 2] for p in ("A", "B", "E"))

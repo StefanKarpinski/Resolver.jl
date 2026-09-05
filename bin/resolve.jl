@@ -544,19 +544,23 @@ function named(d::Resolver.Diagnosis, name::Function)
                 name(p) => vs for (p, vs) in c.versions),
             Dict{String,Vector{Vector{Symbol}}}(
                 name(p) => ks for (p, ks) in c.excluded),
-            [Diagnostics.Fix{String,VersionNumber}(
-                [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
-                Dict{String,VersionNumber}(
-                    name(p) => v for (p, v) in fix.solution))
-             for fix in c.fixes],
+            named(c.fixes, name),
             Tuple{Int,Vector{Diagnostics.Action{String}},
                   Vector{Diagnostics.Action{String}}}[
                 (n, [Diagnostics.Action(a.kind, name(a.pkg)) for a in as],
                     [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
                 for (n, as, us) in c.blocks])
          for c in d.conflicts],
+        named(d.residue, name),
         d.others)
 end
+
+# a fix is actions and a solution, both keyed by package
+named(fixes::Vector{<:Diagnostics.Fix}, name::Function) =
+    [Diagnostics.Fix{String,VersionNumber}(
+        [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
+        Dict{String,VersionNumber}(name(p) => v for (p, v) in fix.solution))
+     for fix in fixes]
 
 # A clause is a set of literals keyed by package, so renaming one is renaming
 # the keys; the masks are about versions and do not care what a package is

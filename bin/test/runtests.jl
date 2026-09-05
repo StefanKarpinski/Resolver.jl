@@ -715,7 +715,7 @@ end
         # by name, since a uuid is not what the reader knows the package as.
         # The requirement is the heading's to say, and it says it once: no line
         # under it restates what the reader has just read
-        @test occursin("LinearAlgebra cannot be satisfied", msg)
+        @test occursin("Conflict 1: LinearAlgebra", msg)
         @test !occursin("you require", msg)
         # the query's own compat is what took every version away, so it is
         # named: "no version of LinearAlgebra is available" is the other thing

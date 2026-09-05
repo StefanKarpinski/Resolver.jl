@@ -256,6 +256,28 @@ function check_diagnosis(data, prob::Problem{P}; order = nothing,
             end
         end
 
+        ## blocked entries
+        #
+        # An entry answers for an action the page makes tempting and no fix
+        # anywhere on it takes, so nothing on a menu and nothing in the residue
+        # may say that action. Where the entry names a completion, that
+        # completion is the rest of a costlier repair — never a repair the page
+        # has printed already (Lemma 28), which would make the road it excuses
+        # dead weight instead and the sentence the wrong one
+        offered = Set{Action{P}}(a for c in d.conflicts for fix in c.fixes
+                                 for a in fix.actions)
+        for fix in d.residue, a in fix.actions
+            push!(offered, a)
+        end
+        for c in d.conflicts, (tried, unless) in c.blocks
+            @test !isempty(tried)
+            @test all(a -> a ∉ offered, tried)
+            isempty(unless) && continue
+            inside(fix) = Set(fix.actions) ⊆ Set(unless)
+            @test !any(inside, d.residue)
+            @test !all(x -> any(inside, x.fixes), d.conflicts)
+        end
+
         ## the residue
         #
         # An entry there is a whole repair by itself — no menu's fix is taken
@@ -589,7 +611,7 @@ end
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
-        Conflict 1: R cannot be satisfied.
+        Conflict 1: R
           • R requires P p2
           • your compat leaves P p1
           Fix it by any one of:
@@ -613,7 +635,7 @@ end
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
-        Conflict 1: A cannot be satisfied.
+        Conflict 1: A
           • A requires C ≥c2
           • your compat leaves C c1
           Fix it by any one of:
@@ -634,7 +656,7 @@ end
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
-        Conflict 1: A cannot be satisfied.
+        Conflict 1: A
           • A requires C c2
           • your compat leaves C c1
           Fix it by any one of:
@@ -774,10 +796,15 @@ end
     # the menus reach every cheapest repair and only larger ones lie outside,
     # so this is the only *minimal* fix -- not the only fix there is
     @test occursin("The only minimal fix: relax your compat on C", report)
-    # ... and the costlier one is on the page already, named: a blocked entry
-    # *is* a costlier fix, so the footer that would announce them in the
-    # abstract says nothing better and is left off
+    # the page's own line makes dropping :A tempting and no fix takes it, so
+    # the page answers for it: dropping :A alone settles nothing, but it does
+    # lie in the costlier minimal repair {:A, :B}, so the verdict names its
+    # price rather than dismissing it
     @test occursin("Blocked fixes:", report)
+    @test occursin("dropping requirement A would not help unless you also " *
+                   "dropped requirement B.", replace(report, r"\n\s+" => " "))
+    # that entry is itself the costlier fix, named, so the abstract footer has
+    # nothing left to add
     @test !occursin("Costlier fixes also exist.", report)
 end
 
@@ -808,10 +835,12 @@ end
     @test all(length(r) > smallest
               for r in setdiff(repairs, fix_combinations(d)))
     @test d.others === :larger
-    # what costs more is named on the page, as the blocked entry that reports
-    # on it, so the footer for costlier fixes stays off
-    report = sprint(show, MIME("text/plain"), d)
-    @test occursin("Blocked fixes:", report)
+    # what costs more is named where it is tempting: dropping :A lies in a
+    # costlier minimal repair, so the verdict states its price, and being a
+    # named costlier fix it leaves the abstract footer nothing to say
+    report = replace(sprint(show, MIME("text/plain"), d), r"\n\s+" => " ")
+    @test occursin("dropping requirement A would not help unless you also " *
+                   "dropped requirement B and dropped requirement F.", report)
     @test !occursin("Costlier fixes also exist.", report)
 
     # the same shape of menu over a query where every repair is a smallest one:
@@ -831,59 +860,62 @@ end
     @test !occursin("more minimal fixes", report)
 end
 
-@testset "diagnosis: one reason, every requirement it breaks" begin
+@testset "diagnosis: one reason, and what the roads round it cost" begin
     # :A and :B are each unsatisfiable on their own, for the same reason, and
-    # one action rescues both. Either of them alone is enough to make that
-    # reason a conflict, so a story that stopped at the smallest one would name
-    # one of them and leave the other out of the report altogether — the user
-    # would relax the bound on :C and never learn the other had been broken
+    # one action rescues both. The conflict is about the reason it owns —
+    # :A's — and :B is not left out of the report: every road round that
+    # reason runs through :B, which is what the blocked entries say
     prob = Problem([:A, :B];
         compat = Dict(:A => [:a2], :B => [:b2], :C => [:c1]))
     d = check_diagnosis(shared_bound, prob)
     c = only(d.conflicts)
-    # both requirements, each with the bound that pins it to the version that
-    # needs :C, and the bound on :C they share. Each requirement's own story is
-    # told in one piece: what the query left of it, then what that needs
-    @test c.reqs == [:A, :B]
+    # the conflict answers for the requirement its own reason uses, with the
+    # bound that pins it to the version that needs :C and the bound on :C it
+    # collides with. That story is told in one piece
+    @test c.reqs == [:A]
     @test [fix.actions for fix in c.fixes] == [[Action(:compat, :C)]]
     @test only(c.fixes).solution == Dict(:A => :a2, :B => :b2, :C => :c2)
-    # ... and neither of them can be satisfied on its own, which is what makes
-    # leaving one out a lie rather than a shortening
+    # ... and neither requirement can be satisfied on its own, which is why no
+    # action on :A alone is on the menu
     for p in (:A, :B)
         @test resolve(shared_bound, Problem([p];
             compat = Dict(p => [Symbol("$(lowercase(string(p)))2")],
                           :C => [:c1])); diagnose = false) === nothing
     end
     report = sprint(show, MIME("text/plain"), d)
-    # the heading names the primary reason's requirement — the conflict reads
-    # under an implicit "given the rest of the requirements" — and B, whose
-    # requirement only the second reason uses, is accounted for by the blocked
-    # entry that reports on it, not by the sentence
-    @test occursin("A cannot be satisfied", report)
-    @test !occursin("A and B cannot both be satisfied", report)
-    # the page tells the primary reason in full: what the query left of :A,
-    # what that forces, and the bound on :C it collides with
+    wrapped = replace(report, r"\n\s+" => " ")
+    # the heading names the requirement and claims nothing about it: the
+    # conflict reads under an implicit "given the rest of the requirements"
+    @test occursin("Conflict 1: A\n", report)
+    # the page tells that reason in full: what the query left of :A, what that
+    # forces, and the bound on :C it collides with
     @test occursin("your compat leaves A a2", report)
     @test occursin("A a2 requires C c2", report)
     @test occursin("your compat leaves C c1", report)
-    # :B is not left out: no action on :A alone repairs this, and the blocked
-    # entry says so by naming what :B would have to give up as well. That is
-    # the whole of the entry — its proof stays in the lines, for the checkers,
-    # and the page never states it
-    @test occursin("relaxing your compat on A and dropping requirement A " *
-                   "would not help unless you also relaxed your compat on B.",
-                   replace(report, r"\n\s+" => " "))
+    # the two actions on :A the page makes tempting and no fix takes, each
+    # with the solver's verdict: each lies in a costlier minimal repair — the
+    # bound on :A with :B given up, the requirement on :A with :B's bound
+    # relaxed — which is where :B is accounted for. A tried bundle is a vector
+    # per tempting fact, so each entry's first component is nested
+    @test c.blocks == [([[Action(:compat, :A)]], [Action(:drop, :B)]),
+                       ([[Action(:drop, :A)]], [Action(:compat, :B)])]
+    @test occursin("relaxing your compat on A would not help unless you " *
+                   "also dropped requirement B.", wrapped)
+    @test occursin("dropping requirement A would not help unless you also " *
+                   "relaxed your compat on B.", wrapped)
+    # :B's own reason proves the same conflict a second way and prints
+    # nothing: one conflict, one story, and no line of it names :B
     @test !occursin("your compat leaves B b2", report)
     @test !occursin("B b2 requires C c2", report)
-    @test any(l -> :B in packages(l.clause), c.lines)
+    @test !any(l -> :B in packages(l.clause), c.lines)
     # dropping both requirements repairs it too, and gives up more -- which
-    # the page says as the blocked entry above rather than as a footer, so the
-    # abstract announcement is suppressed while the fact behind it stands
+    # the unless entry above has already named concretely, so the abstract
+    # announcement is left off while the fact behind it stands
     @test d.others === :larger
     @test !occursin("Costlier fixes also exist.", report)
     @test occursin("The only minimal fix: relax your compat on C", report)
-    # the witness names both of them too
-    @test occursin("→ allows: A a2, B b2, C c2", report)
+    # the witness is shown of the packages the page speaks of
+    @test occursin("→ allows: A a2, C c2", report)
 end
 
 @testset "diagnosis: a story ends where its own facts are" begin
@@ -1275,69 +1307,58 @@ end
 end
 
 @testset "diagnosis: blocked fixes print after the menu" begin
+    # The section is indexed by action, not by reason: one sentence for each
+    # action the page makes tempting and no fix takes, and the verdict in it
+    # was decided by the solver long before this printer saw it. No proof
+    # prints here -- why a fix is not offered is a second-order question, and
+    # the verdict has already answered it.
     P, V = String, Int
     VS = Dict(p => [1, 2] for p in ("A", "B", "E"))
     dep(p, q, v) = Clauses.clause([p => literal(2, [1], true; absent = true),
                                    q => literal(2, [v])])
-    lines = Line{P}[
-        Line{P}(dep("A", "B", 1), P[], false, 1, nothing),
-        Line{P}(dep("A", "E", 1), P[], false, 2, "E"),
-        Line{P}(dep("B", "E", 2), P[], false, 2, "E")]
-    blocks = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
-        (2, [Action(:compat, "A")], Action{P}[])]
-    out = sprint() do io
+    lines = Line{P}[Line{P}(dep("A", "B", 1), P[], false, 1, nothing)]
+    entries(bs...) = Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}[bs...]
+    page(blocks, index = nothing) = sprint() do io
         Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"], lines, VS,
-            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], blocks))
+            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], blocks), index)
     end
+
+    idle = entries(([[Action(:compat, "A")]], Action{P}[]))
+    out = page(idle)
     @test occursin("Blocked fixes:", out)
     @test occursin("relaxing your compat on A does not help.", out)
-    # the entry is its verdict: the proof that licenses it stays in `lines`
-    @test !occursin("A 1 requires E 1", out)
-    @test !occursin("B 1 requires E 2", out)
-    # the primary proof stays in the body, above the blocked section
+    # the body stays above it: the reader meets the argument and the offer
+    # first, and the roads not taken second
     @test first(findfirst("A 1 requires B 1", out)) <
           first(findfirst("Blocked fixes:", out))
-    # a verified completion turns the refusal into "unless you also"
-    with_unless = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
-        (2, [Action(:compat, "A")], [Action(:drop, "B")])]
-    outu = sprint() do io
-        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"], lines, VS,
-            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], with_unless))
-    end
+
+    # a completion turns the flat refusal into what the road would cost
+    outu = page(entries(([[Action(:compat, "A")]], [Action(:drop, "B")])))
     @test occursin("relaxing your compat on A would not help unless you " *
                    "also dropped requirement B.",
                    replace(outu, r"\n\s+" => " "))
 
-    # two entries that would say the same sentence say it once
-    twice = Tuple{Int,Vector{Action{P}},Vector{Action{P}}}[
-        (2, [Action(:compat, "A")], Action{P}[]),
-        (3, [Action(:compat, "A")], Action{P}[])]
-    outd = sprint() do io
-        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"], lines, VS,
-            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], twice))
-    end
-    @test count("relaxing your compat on A does not help.", outd) == 1
+    # two tempting actions that exhibit one repair are one entry: each is
+    # insufficient alone and the repair carries them both, so the page says
+    # the repair once from both its ends
+    outg = page(entries(([[Action(:compat, "A")], [Action(:drop, "B")]],
+                         Action{P}[])))
+    @test occursin("relaxing your compat on A or dropping requirement B " *
+                   "would only help if you do both.",
+                   replace(outg, r"\n\s+" => " "))
+    # lifting several kinds is one edit of the reader's, so it is one bundle,
+    # and the verb agrees with the actions rather than with the entry
+    outm = page(entries(([[Action(:compat, "A"), Action(:pin, "A")]],
+                         Action{P}[])))
+    @test occursin("relaxing your compat on A and unpinning A do not help.",
+                   replace(outm, r"\n\s+" => " "))
 
-    # a requirement only a blocked entry's reason uses stays out of the
-    # heading: the conflict is about its primary reason, under an implicit
-    # "given the rest of the requirements"
-    given = Line{P}[
-        Line{P}(Clauses.clause(["A" => literal(2, 1:2)]), P[], true, 1, nothing),
-        Line{P}(Clauses.clause(["B" => literal(2, 1:2)]), P[], true, 2, nothing)]
-    outh = sprint() do io
-        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"],
-            Line{P}[given; lines], VS,
-            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[], blocks), 1)
-    end
-    @test occursin("Conflict 1: A cannot be satisfied.", outh)
-    @test !occursin("A and B cannot", outh)
+    # the heading is the requirements the conflict answers for, bare: it says
+    # what the conflict is about and claims nothing about them
+    @test occursin("Conflict 1: A and B\n", page(idle, 1))
 
-    # a conflict with no further reasons says nothing about blocked fixes
-    solo = sprint() do io
-        Diagnostics.print_conflict(io, Conflict{P,V}(P["A", "B"],
-            lines[1:1], VS, Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[]))
-    end
-    @test !occursin("Blocked fixes", solo)
+    # a conflict with nothing tempting says nothing about blocked fixes
+    @test !occursin("Blocked fixes", page(entries()))
 end
 
 
@@ -1351,7 +1372,7 @@ end
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 2 conflicts, each of which must be fixed:
 
-        Conflict 1: A and B cannot both be satisfied.
+        Conflict 1: A and B
           • A requires C v1
           • C v1 leaves no version of B
           Fix it by any one of:
@@ -1360,7 +1381,7 @@ end
             2. drop requirement B
                → allows: A v1, C v1
 
-        Conflict 2: E and F cannot both be satisfied.
+        Conflict 2: E and F
           • E requires G v1
           • G v1 leaves no version of F
           Fix it by any one of:
@@ -1385,7 +1406,7 @@ end
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
-        Conflict 1: A cannot be satisfied.
+        Conflict 1: A
           • A requires B
           • your compat and your pin leaves no version of B
           Fix it by any one of:

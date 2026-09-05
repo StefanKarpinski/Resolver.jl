@@ -495,12 +495,11 @@ distinct witnesses — so more than `k` reasons exist. Each contains a whole
 menu (Theorem 9) and there are `k` menus, so some menu lies inside two of
 them. ∎
 
-The consequence for the page: a printed blocked entry *is* a costlier fix,
-named — so where any blocked entry printed, the footer that would announce
-costlier fixes in the abstract says nothing the page has not already said
-better, and is omitted. Where none printed but costlier fixes exist, the
-walk missed a second reason Theorem 27 guarantees, the truncation sentence
-is already on the page, and the footer speaks.
+The consequence for the page: a blocked entry of the *unless* form is a
+costlier fix, named (Section 7) — so where one printed, the footer that
+would announce costlier fixes in the abstract says nothing the page has not
+already said better, and is omitted. Where only idle verdicts printed, or
+none, the footer speaks for what remains unshown.
 
 **Finding the owned reasons.** Reasons are enumerated by removal, over the
 full fact set — never over a restricted pool, since a reason can contain this
@@ -828,6 +827,61 @@ diagnosis. A model witnesses satisfiability; which versions the user would
 by the substrate (S4). Diagnosis decides what is true; the resolver decides
 what is chosen.
 
+### Blocked fixes: which, and how
+
+The page's own lines make some actions tempting: the reader sees "your
+compat leaves QuantumLattices 0.15.4" and asks why relaxing it is not
+offered. A **tempting action** is an action on a package a conflict's lines
+or heading name that appears nowhere in the cover. The blocked-fixes
+section answers for exactly these — one sentence per action, so nothing is
+said twice and nothing tempting goes unanswered.
+
+What the sentence says is decided by solves, not judged, and the question
+must be *well posed*: `x` is **load-bearing** when it lies in **some**
+minimal repair, **idle** when it lies in none. Asking of one repair a solver
+happened to return is not enough — a tie between equal repairs could call
+the same action idle in one sentence and a rescue in the next, which is
+exactly the inconsistency this phrasing exists to avoid. So the search
+favours `x`: take a repair `W ∋ x` within the bound, shrink its *other*
+members while it still repairs, and ask whether `x` too can go. If it
+cannot, the shrunk `W` is a minimal repair carrying `x` and `x` is
+load-bearing; the sentence names its price, *"«x» would not help unless you
+also «W ∖ {x}»."* If `x` can go, that witnesses a smaller repair without it —
+block `W` and try again, a few rounds, before concluding **idle** and
+printing the flat *"«x» does not help."* Because the cover holds every
+cheapest repair, a tempting `x` is in none of them, so a load-bearing `x`'s
+minimal repair is always strictly costlier than `k` (Lemma 28), and idle
+means dead weight in every repair within reach.
+
+**One repair, said once.** Two tempting actions can be load-bearing in the
+*same* minimal repair — each insufficient alone, the repair carrying both.
+Mirroring it from each end ("relax A unless you also drop B" beside "drop B
+unless you also relax A") says one thing twice and reads as a contradiction.
+So entries are grouped by the repair they exhibit: the actions that share
+one are one entry, said as the choice they are not: *"«x₁» or «x₂» would
+only help if you do both."* An
+entry of this form still exhibits a costlier fix, so it suppresses the
+footer exactly as an *unless*-entry does.
+
+**Lemma 28 (completions never restate the cover).** A load-bearing
+completion `W ∖ {x}` contains no printed fix.
+
+*Proof.* A correction set's supersets are correction sets, so if
+`W ∖ {x}` contained a fix it would itself repair — and then `x` is idle in
+`W`, not load-bearing. ∎
+
+So the unless-sentences and the residue cannot duplicate one another: the
+residue lists the cheapest fixes, and each unless-sentence exhibits a
+strictly costlier one in which its action genuinely participates. That
+sharpens the footer rule of Section 5: an *unless*-entry names a costlier
+fix, so where one printed, the costlier-fixes footer says nothing new and
+is omitted; idle verdicts name none, and do not suppress it.
+
+None of this consults the reason walk: blocked fixes are questions about
+repairs, and the completed cover plus one bounded search per tempting
+action decides them. The walk's remaining duty is the conflicts' own
+stories.
+
 ## 8. Verification
 
 What a checker checks, and what it need not.
@@ -855,7 +909,7 @@ What a checker checks, and what it need not.
   (V5); the enumeration-cut sentence appears exactly when the repair
   enumeration was truncated and the deciding solve found more; the
   costlier-fixes footer appears exactly when Theorem 5 answered yes and no
-  blocked entry printed; the reason-walk truncation sentence appears
+  unless-entry printed; the reason-walk truncation sentence appears
   whenever that walk was cut short.
 
 **Every check is per-explanation, never against a union.** Where two
@@ -916,28 +970,23 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   ruled out weakens the clause, so the line stays true and says what the
   reader is holding. Only a meet of three or more sides breaks the chain
   (Proposition 22), and that alone prints whole, its sides adjacent.
-* **The heading names the primary reason's requirements.** Every conflict
-  reads under an implicit *given the rest of the requirements*, so its
-  heading says what it is about — the requirements its primary reason
-  collides — not an inventory of everything its reasons touch. A requirement
-  only a blocked entry's reason uses is named nowhere on the page: that
-  entry prints its verdict, not its argument. The checkers still premise
-  every requirement the conflict answers for, and still read the lines of
-  every reason: what shrinks is the page, not the claim set.
-* **Further reasons print as blocked fixes, after the menu.** The primary
-  reason is the conflict's story; each further owned reason omits some fact
-  of it (minimal sets are incomparable), and what it omits is exactly the
-  action it rules out — the reason holds with that action withdrawn. So it
-  prints under the menu it justifies, as one sentence: the actions it does
-  without and their verdict ("relaxing your compat on A does not help."),
-  or, where a completion was found, what would have to go with them
-  ("relaxing your compat on A would not help unless you also dropped
-  requirement B."). Both the blocking proof and the completion are computed
-  and verified — the completion by one solve, which is what keeps a
-  truncated walk from promising a repair that is not one — and neither is
-  printed: why a fix is not offered is second-order, and the verdict has
-  already said it. Entries whose actions and completion agree say the same
-  sentence, and the page says it once.
+* **The heading names the primary reason's requirements, and claims
+  nothing.** "Conflict 1: QuantumLattices" — the colon form says these
+  packages are the conflict's core and stops. A sentence would either claim
+  too much ("cannot be satisfied" is false absolutely, true only under the
+  unstated *given the rest*) or spell the context out at absurd length; the
+  bare form is as clear, shorter, and never wrong. The one sentence heading
+  that survives is the absolute truth: "no version of X is available." The
+  checkers still premise every requirement the conflict answers for: what
+  shrinks is the sentence, not the claim set.
+* **Blocked fixes answer for actions, one sentence each.** For every
+  tempting action — named by the conflict's lines or heading, in no fix of
+  the cover — the section prints its solve-decided verdict (Section 7): an
+  idle action gets *"«x» does not help."*, a load-bearing one gets
+  *"«x» would not help unless you also «W ∖ {x}»."* Action-indexed, so
+  nothing is said twice; solver-licensed, so nothing is judged; and no
+  proof prints — why a fix is not offered is second-order, and the verdict
+  has already said it.
 * **The residue prints as fixes, not as a conflict.** When the cover has
   more than one layer, the later layers print after the last conflict,
   introduced as what they are — *"If none of the fixes above suits, the
@@ -946,8 +995,9 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   witness like any fix. No proofs print there: reasons do not layer
   (Corollary 25), and the conflicts above have already explained every one.
 * **Footers.** *Costlier fixes also exist.* prints only when Theorem 5
-  answered yes and no blocked entry printed (Theorems 26–27 make the
-  blocked entries the same news, said concretely). *There are more minimal
+  answered yes and no *unless*-entry printed — an unless-entry exhibits a
+  costlier fix (Lemma 28 says it never merely restates a cheap one), while
+  an idle verdict exhibits none and does not suppress the news. *There are more minimal
   fixes than are shown.* prints only when the repair enumeration hit its
   cap and the deciding solve confirmed more. The reader is told about every
   gap in the page's own vocabulary — fixes, not solutions.

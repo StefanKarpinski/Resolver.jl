@@ -14,7 +14,7 @@ query:
 ```
 Unsatisfiable — 2 conflicts, each of which must be fixed:
 
-Conflict 1: DataFrames cannot be satisfied.
+Conflict 1: DataFrames
   • your compat leaves DataFrames ≥1.0.0
   • DataFrames 1.0.0–1.8.2 requires PrettyTables
   • your compat leaves no version of PrettyTables
@@ -25,7 +25,7 @@ Conflict 1: DataFrames cannot be satisfied.
        → allows: DataFrames 1.8.2, PrettyTables 3.4.8
     3. drop requirement DataFrames
 
-Conflict 2: Plots cannot be satisfied.
+Conflict 2: Plots
   • Plots requires RecipesBase
   • your compat leaves no version of RecipesBase
   Fix it by any one of:

@@ -545,11 +545,12 @@ function named(d::Resolver.Diagnosis, name::Function)
             Dict{String,Vector{Vector{Symbol}}}(
                 name(p) => ks for (p, ks) in c.excluded),
             named(c.fixes, name),
-            Tuple{Int,Vector{Diagnostics.Action{String}},
+            Tuple{Vector{Vector{Diagnostics.Action{String}}},
                   Vector{Diagnostics.Action{String}}}[
-                (n, [Diagnostics.Action(a.kind, name(a.pkg)) for a in as],
-                    [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
-                for (n, as, us) in c.blocks])
+                ([[Diagnostics.Action(a.kind, name(a.pkg)) for a in b]
+                  for b in bs],
+                 [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
+                for (bs, us) in c.blocks])
          for c in d.conflicts],
         named(d.residue, name),
         d.others)

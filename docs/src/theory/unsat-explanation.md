@@ -987,6 +987,17 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   nothing is said twice; solver-licensed, so nothing is judged; and no
   proof prints — why a fix is not offered is second-order, and the verdict
   has already said it.
+* **The headline claims a product only when there is one.** With more than
+  one conflict the headline adds *", each of which must be fixed"* — but only
+  when the residue is empty. The clause is not false on its own: by hitting-set
+  duality every solution resolves every displayed conflict, so every fix,
+  residue fixes included, does fix each one. What misleads is the clause
+  *together with* the per-conflict menus below it, which read as: the solutions
+  are exactly one-fix-from-each-menu, the product of the menus. That is just the
+  exhaustiveness a residue denies — the residue *is* the cheapest fixes that are
+  not one-from-each-menu — so the confident clause is honest only when the
+  presentation is a genuine product, i.e. the residue is empty. Where a residue
+  prints, the headline is the bare *"Unsatisfiable — N conflicts:"*.
 * **The residue prints as fixes, not as a conflict.** When the cover has
   more than one layer, the later layers print after the last conflict,
   introduced as what they are — *"If none of the fixes above suits, the

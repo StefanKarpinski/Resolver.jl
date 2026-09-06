@@ -976,6 +976,12 @@ end
     # so nothing is outside the cover, and the enumeration was not cut short
     @test d.others === :none
     report = sprint(show, MIME("text/plain"), d)
+    # a residue prints, so the headline drops "each of which must be fixed":
+    # that clause plus the menus would imply the solutions are the product of
+    # the menus, and the residue is exactly the cheapest fixes that product
+    # misses
+    @test startswith(report, "Unsatisfiable — 2 conflicts:")
+    @test !occursin("each of which must be fixed", report)
     wrapped = replace(report, r"\n\s+" => " ")
     @test occursin("If none of the fixes above suits, the remaining minimal " *
                    "fixes are:", wrapped)
@@ -1024,6 +1030,11 @@ end
         @test fix_resolve(info, prob, fix.actions) == fix.solution
     end
     report = sprint(show, MIME("text/plain"), d)
+    # a residue prints, so the headline is bare: "each of which must be fixed"
+    # would tell the reader the solutions are one-fix-from-each-menu, and the
+    # residue is precisely the cheapest fixes that are not
+    @test startswith(report, "Unsatisfiable — 2 conflicts:")
+    @test !occursin("each of which must be fixed", report)
     wrapped = replace(report, r"\n\s+" => " ")
     @test occursin("If none of the fixes above suits, the remaining minimal " *
                    "fixes are:", wrapped)
@@ -1369,6 +1380,10 @@ end
     # shown are of every package the conflict names, :C and :G included: they
     # are named because the story is about them
     d = resolve(two_conflicts, Problem([:A, :B, :E, :F]))
+    # the menus are a genuine product — every combination is a repair and the
+    # residue is empty — so the headline earns "each of which must be fixed":
+    # the solutions really are one-fix-from-each-menu
+    @test isempty(d.residue)
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 2 conflicts, each of which must be fixed:
 

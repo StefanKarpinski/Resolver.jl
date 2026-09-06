@@ -134,12 +134,12 @@ Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
     Diagnosis
 
 What [`resolve`](@ref Resolver.resolve) answers when the query cannot be
-satisfied: the conflicts, each of which must be fixed, the `residue` — the
-cheapest repairs no combination of the menus reaches, each a whole repair on
-its own — and what the two together still leave out: `:none` when they are
-every cheapest repair and nothing costlier exists, `:larger` when what is
-outside all gives up more, and `:some` when the enumeration of the cheapest
-repairs was cut short and one further solve found one it never reached.
+satisfied: the conflicts, every one of which every solution resolves, the
+`residue` — the cheapest repairs no combination of the menus reaches, each a
+whole repair on its own — and what the two together still leave out: `:none`
+when they are every cheapest repair and nothing costlier exists, `:larger` when
+what is outside all gives up more, and `:some` when the enumeration of the
+cheapest repairs was cut short and one further solve found one it never reached.
 `truncated` records that the search for reasons was cut short, so the account
 of some conflict may be incomplete.
 
@@ -2159,7 +2159,15 @@ end
 function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
     n = length(d.conflicts)
     print(io, "Unsatisfiable — ", n, n == 1 ? " conflict" : " conflicts")
-    n > 1 && print(io, ", each of which must be fixed")
+    # "each of which must be fixed" is not false on its own — by hitting-set
+    # duality every solution resolves every conflict, so every fix does fix
+    # each one. What misleads is the clause *together with* the per-conflict
+    # menus: it implies the solutions are exactly one-fix-from-each-menu, the
+    # product of the menus. That exhaustiveness is just what a residue denies —
+    # the residue IS the cheapest fixes that are not one-from-each-menu — so the
+    # clause is honest only when the presentation is a genuine product, i.e. the
+    # residue is empty.
+    n > 1 && isempty(d.residue) && print(io, ", each of which must be fixed")
     println(io, ":")
     for (i, c) in enumerate(d.conflicts)
         println(io)

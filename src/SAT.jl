@@ -1,3 +1,29 @@
+"""
+    Resolver.Relation{P}(dep, pkg, classes, other, others)
+
+One registry statement, as a diagnostic instance can switch it off — and
+everything the statement says, so that a proof can be read off a core without
+asking the universe anything. These `classes` of `pkg` either need `other`
+installed (`dep`), or rule out its `others` classes (`!dep`):
+
+  * `classes` — the classes of `pkg` the clause's own literals cover. Exactly
+    the ones it speaks for: a conflict groups them by pattern, and a pattern
+    need not be a run.
+  * `others` — the classes of `other` a conflict clause forbids, which is one
+    run of them; empty for a dependency, which forbids none and asks only that
+    `other` be installed.
+
+It is the unit a clause is emitted in, so it is also the unit a proof can be
+minimal down to.
+"""
+struct Relation{P}
+    dep     :: Bool
+    pkg     :: P
+    classes :: Vector{Int}
+    other   :: P
+    others  :: UnitRange{Int}
+end
+
 mutable struct SAT{P,V}
     info :: Dict{P,PkgInfo{P,V}}
     # per package, the version index each class stands for (0: deactivated) —
@@ -16,6 +42,11 @@ mutable struct SAT{P,V}
     # with `sat_pop`, which retracts whatever was pushed last, and getting that
     # wrong retracts someone else's clauses instead of the query's
     depth :: Int
+    # per selector variable, the registry statement it switches on. Empty
+    # unless the instance was built to be explained: a selector occurs only
+    # negatively, so assuming them all gives back exactly the instance without
+    # them, and a core over them is the registry's share of the blame
+    why :: Dict{Int,Relation{P}}
 end
 
 function Base.show(io::IO, sat::SAT)
@@ -80,17 +111,31 @@ function run_lits!(lits::Vector{Int}, v::Int, l::Int, lo::Int, hi::Int, n::Int)
 end
 
 function SAT(
-    univ :: Universe{P,V},
+    univ :: Universe{P,V};
+    # record a selector per registry statement, so a core can say which of
+    # them a query cannot live with. Off for resolving: the clauses are then
+    # exactly as they were, and nothing extra is emitted
+    explain :: Bool = false,
 ) where {P,V}
     info = univ.info
     names, vars, lads, N = sat_variables(info)
 
+    why = Dict{Int,Relation{P}}()
     # instantiate picosat solver
     pico = PicoSAT.init() # TODO: use jl_malloc?
     try # free memory on error
         PicoSAT.adjust(pico, N)
 
         lits = Int[]
+        # close a clause, with a selector of its own when explaining
+        function close!(r::Union{Nothing,Relation{P}})
+            if explain && r !== nothing
+                v = PicoSAT.inc_max_var(pico)
+                why[v] = r
+                PicoSAT.add(pico, -v)
+            end
+            PicoSAT.add(pico, 0)
+        end
         # default unconstrained variables to false: models then carry
         # fewer spuriously-true packages ("junk"), which makes solves
         # faster and improvement steps land on better versions
@@ -184,7 +229,7 @@ function SAT(
                             PicoSAT.add(pico, x)
                         end
                         PicoSAT.add(pico, v_q)
-                        PicoSAT.add(pico, 0)
+                        close!(Relation{P}(true, p, collect(lo:i), q, 1:0))
                     end
                     i += 1
                 end
@@ -282,7 +327,7 @@ function SAT(
                         for x in lits
                             PicoSAT.add(pico, x)
                         end
-                        PicoSAT.add(pico, 0)
+                        close!(Relation{P}(false, p, copy(Sg), q, lo:hi))
                     end
                 end
             end
@@ -291,7 +336,7 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[], 0))
+    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[], 0, why))
     try deactivate_classes!(sat)
     catch
         finalize(sat)
@@ -303,7 +348,8 @@ end
 # the structural instance for a bare artifact: every class stands for its best
 # member and nothing is deactivated, which is what an unconstrained query makes
 # of it (see `Universe`)
-SAT(info :: Dict{P,PkgInfo{P,V}}) where {P,V} = SAT(Universe(info))
+SAT(info :: Dict{P,PkgInfo{P,V}}; explain::Bool = false) where {P,V} =
+    SAT(Universe(info); explain)
 
 # Forbid the deactivated classes — the ones this query admits no member of.
 #

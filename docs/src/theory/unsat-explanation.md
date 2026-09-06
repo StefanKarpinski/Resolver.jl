@@ -79,7 +79,7 @@ with empty support is unsatisfiable; a clause with `C(p) = V⊥(p)` is a
 tautology. Clause `C` **subsumes** `D` when `C(p) ⊆ D(p)` for every `p`: then
 every model of `C` models `D`.
 
-Five readings of one shape cover everything a report says:
+Six readings of one shape cover everything a report says:
 
 | clause | reads as |
 |---|---|
@@ -88,11 +88,13 @@ Five readings of one shape cover everything a report says:
 | `⟨A : (V(A)∖R) ∪ {⊥}⟩` | A cannot be any of `R` |
 | `⟨A : (V(A)∖R) ∪ {⊥}, B : S⟩` | `A@R` **requires** `B@S` |
 | `⟨A : (V(A)∖R) ∪ {⊥}, B : S ∪ {⊥}⟩` | `A@R` **constrains** `B@S` |
+| `⟨A : (V(A)∖R) ∪ {⊥}, B : {⊥}⟩` | `A@R` **leaves no version of** `B` |
 
-The difference between the two verbs is only whether `⊥` is in the
-consequent: *requires* brings the package in, *constrains* permits its
-absence. Whether a statement forces is data in the clause, never a flag
-beside it.
+The difference between the verbs is only what the consequent admits:
+*requires* brings the package in, *constrains* permits its absence, and a
+consequent of `{⊥}` alone rules the package out. Whether a statement forces
+is data in the clause, never a flag beside it — which is why either package
+may be taken as the consequent, and the verb follows (Section 9).
 
 **One rule.** Clauses compose by resolution on a package. It is stated for
 any finite set of clauses at once, because literals are sets and more than
@@ -294,25 +296,104 @@ all have size `k`, so a convenient family to search is: for each
 facts completing it to a member — that is `k−1` singleton menus and one
 free menu, every selection literally a member of `F_min`. Any rectangle is
 a legitimate offer; take one of maximal coverage among those searched, break
-ties deterministically, and when coverage is below `|F_min|`, (C3) requires
-the report to say that other, equally cheap repairs exist. Nothing in
-Section 5 depends on which rectangle was taken. (Unlike the product case, a
-maximal rectangle need not be unique; the tie-break is a genuine choice and
-should be a stable one.)
+ties deterministically. Nothing in Section 5 depends on which rectangle was
+taken. (Unlike the product case, a maximal rectangle need not be unique; the
+tie-break is a genuine choice and should be a stable one.)
 
-**What a one-entry menu may say about itself.** With `F_min` in hand and
-Theorem 5 answered, a menu of one entry has exactly three honest wordings,
-and the wording is the whole of what the reader learns about the gap:
+**Entries may be sets.** Nothing above needs an entry to be a single fact.
+With entries as fact-sets and a selection taking the union of one entry per
+menu, (C1) and (C2) read verbatim, and Theorem 9 generalizes with
+"contains some whole menu" read as "meets every entry of some menu" — the
+proof is the same, picking per menu an entry disjoint from the reason. A
+menu whose entries are whole repairs is the degenerate case: one choice,
+compound entries, trivially a product. The primary presentation below keeps
+singleton entries, so everything in Sections 5–7 applies to it unchanged;
+compound entries appear only where the residue is laid out flat.
 
-| what is outside the menus | a menu of one says |
+**Theorem 23 (the finest factorization).** Call a partition `P` of the used
+facts *factoring* when `F_min` is exactly the unions of one trace per block
+— `F_min|B = {M ∩ B : M ∈ F_min}` — with every combination realized. Then:
+the trivial partition factors; if `P` and `Q` factor, so does their common
+refinement; hence a unique finest factoring partition exists. Moreover each
+block's traces have one size.
+
+*Proof.* The trivial partition factors by definition. For the refinement:
+it suffices that any one block `A ∩ B` of the refinement swaps freely, and
+the general combination follows block by block. Given members `M, M′`, form
+`M₁` as `M′` with its `A`-trace replaced by `M`'s — a member, since `P`
+factors — and then `M₂` as `M′` with its `B`-trace replaced by `M₁`'s — a
+member, since `Q` factors. `M₂` is `M′` everywhere except `A ∩ B`, where it
+is `M`. Factoring partitions are thus closed under common refinement, and
+the refinement of all of them is the finest. Sizes: were two traces of one
+block of different sizes, combining every block's smallest trace would give
+a member smaller than `k`. ∎
+
+The finest factorization is the canonical presentation *when it is fine*:
+menus are its blocks, entries its traces, compound exactly where a trace is
+not a singleton, and the plain product is the case where every trace is.
+Measured on entangled registry queries, however, the families are bimodal:
+either the plain product holds, or the family is **prime** — no nontrivial
+factoring partition at all — and the finest factorization degenerates to
+the one-menu list of whole repairs. So structure, where it exists, is found
+by Theorem 23; where it does not, coverage is completed by layers.
+
+**The residue, and the cover.** Whatever presentation is offered first —
+the product, or the best rectangle — call the members of `F_min` its
+selections reach *reached*, and the rest the **residue**.
+
+**Lemma 24 (the residue is a blocked instance's cheapest repairs).** Add to
+the instance, for each reached member `M`, the clause that some fact of `M`
+holds. The blocked instance's minimal correction sets of size `k` are
+exactly the residue.
+
+*Proof.* As in Theorem 5: a model of the blocked instance violates a set
+containing no reached member, and if that set has size `k` it is a minimal
+correction set of the original instance — a member of `F_min` — that is not
+reached; conversely a residue member's witnessing model satisfies every
+blocking clause, since distinct members of `F_min` are incomparable. ∎
+
+So the residue is defined by the family, not by any choice of fixes — and
+it is itself a repair family over the same facts, so the same factoring
+applies to it: take its product where it has one, its best rectangle where
+it does not, and recurse. The layers so produced **cover** `F_min`: every
+selection of every layer is a cheapest repair, and every cheapest repair is
+some layer's selection. Covers are not unique, and least covers need not
+be; the order of construction — largest first, product before rectangle —
+is a stated preference, like the rectangle tie-break.
+
+**Corollary 25 (reasons do not layer).** The first layer satisfies (C1), so
+by Theorem 9 every reason contains one of *its* menus whole. The reasons —
+and with them the explanations of Section 6 — attach entirely to the first
+layer; later layers repartition repairs, not reasons, and owe the reader
+menus and witnesses, never proofs. (The blocked instance of Lemma 24 does
+have minimal unsatisfiable sets of its own, but they mix the query's facts
+with the refusal clauses — "given that none of the fixes above is taken" —
+and a proof from refusals is contingent on them. The page never prints
+one.)
+
+**How the residue is laid out** is an explainability preference among sound
+forms, decided by what it costs to read: the flat list — the residue's own
+members as compound entries, one line each — against the cover's layers,
+whichever prints fewer lines, with no entry ever pairing more than the few
+actions a size-`k` member has left. Both forms are complete; neither claims
+structure the family does not have.
+
+**What a one-entry menu may say about itself.** With `F_min` covered and
+Theorem 5 answered, the gap a menu's wording must confess has three
+sources: minimal fixes in the residue below (which do not take this entry),
+costlier fixes, and an enumeration cut short (the one way coverage can
+silently fail — and one further blocked solve at the cap decides even that,
+so it is known, not guessed). "Only" is a claim about the world, and the
+world includes the residue on the same page:
+
+| what exists beyond this entry | a menu of one says |
 |---|---|
 | nothing | *The only fix:* |
-| only larger repairs | *The only minimal fix:* |
-| possibly an equally cheap repair | *One fix:* |
+| only costlier fixes | *The only minimal fix:* |
+| residue fixes, or a cut enumeration | *One fix:* |
 
-The third row is forced whenever (C3) has fired or Theorem 5's question was
-not asked. Never derive "only" from the length of a vector; derive it from
-the two decided questions.
+Never derive "only" from the length of a vector; derive it from the decided
+questions.
 
 ## 5. Ownership: which reasons a conflict answers for
 
@@ -386,6 +467,39 @@ every conflict that owns it — redundant, never wrong — and Corollary 11
 guarantees the redundancy is never load-bearing: each conflict also has
 private grounds. (A deduplicating presentation is possible but buys little;
 measure the frequency of sharing before spending design on it.)
+
+**Costlier fixes and second reasons are the same phenomenon.** Two results
+pin down when repairs beyond the cheapest exist, and they meet exactly at
+the blocked-fix entries of Section 9.
+
+**Theorem 26 (a second owned reason forces a costlier fix).** In the
+product case, if a conflict owns two reasons, then `F ≠ F_min`.
+
+*Proof.* Let conflict `i` own `R₁ ≠ R₂` and let `T` be a transversal of the
+other menus. Every reason not owned by `i` contains some other menu whole
+and so contains its `T`-pick. Every reason owned by `i` contains `Dᵢ`
+properly — were `Dᵢ` itself a reason, the antichain property would leave it
+the only owned one — so the owned reasons' parts outside `Dᵢ` are nonempty,
+and some finite set `S` of facts outside `Dᵢ` meets them all. Then `T ∪ S`
+is a correction set avoiding `Dᵢ` entirely, and the minimal correction set
+inside it is no selection; since `F_min` is exactly the selections
+(Theorem 8), it is not of size `k`, so it is strictly larger. ∎
+
+**Theorem 27 (a costlier fix forces a second owned reason).** If some
+minimal correction set has size greater than `k`, then some conflict owns
+two reasons.
+
+*Proof.* Let `N` be minimal with `|N| > k`. Minimality gives every `e ∈ N`
+a witness reason meeting `N` in `{e}` alone, and distinct elements get
+distinct witnesses — so more than `k` reasons exist. Each contains a whole
+menu (Theorem 9) and there are `k` menus, so some menu lies inside two of
+them. ∎
+
+The consequence for the page: a blocked entry of the *unless* form is a
+costlier fix, named (Section 7) — so where one printed, the footer that
+would announce costlier fixes in the abstract says nothing the page has not
+already said better, and is omitted. Where only idle verdicts printed, or
+none, the footer speaks for what remains unshown.
 
 **Finding the owned reasons.** Reasons are enumerated by removal, over the
 full fact set — never over a restricted pool, since a reason can contain this
@@ -536,6 +650,9 @@ hundred of tens of thousands of bounded compat entries are disconnected, and
 genuine same-shape triples are countable on one hand. This is a remark, not
 a premise; nothing above depends on it.)
 
+This is also what bounds how often a meet has to be *displayed* as one:
+two sides always read out as a chain and three need not (Proposition 22).
+
 ### Sources: what a side rests on
 
 Say `X ⊨ σ` ("`X` entails `σ`") when every installation satisfying every
@@ -622,6 +739,45 @@ source toward the pivot; and where a route is long, that is the registry's
 length, not the presentation's — say it as a route rather than spending a
 line per hop.
 
+### Licensed coarsening
+
+Real cores carry **parallel families**: many statements about one set of
+packages, differing only in version thresholds — a staircase of couplings the
+argument may never need. Left as they are, the projection pays for their
+combinations; the report, if it survives, pays in lines.
+
+The remedy is the resolution rule read as a merge. For a parallel family
+`{C₁, …, Cₙ}` over one package set, resolving on a package `q` of it —
+intersect at `q`, union everywhere else — yields one clause entailed by the
+family (Lemma 1), so printing it in their place keeps every line registry-true
+and inherits the union of their supports and routes. On the antecedent package
+this is exactly the join of implications: `A@R₁ → B@S₁` with `A@R₂ → B@S₂`
+gives `A@(R₁∪R₂) → B@(S₁∪S₂)`, the antecedent literals being stored
+complemented.
+
+The join is weaker than the family, so it needs a licence, and the licence is
+the whole criterion: **the claim's clause set must still contradict with the
+join in the family's place** — one satisfiability check, against that
+reason's facts and the rest of its core, per claim and never against a union
+of claims. No local rule can stand in for it: whether two thresholds may be
+treated as one depends on what happens links away, and a boundary the
+contradiction stands on must refuse to join while its neighbours collapse.
+Bisecting a family that refuses to join whole gives up exactly the boundaries
+the proof is standing on.
+
+Two disciplines make the pass sound as a whole. Families are coarsened
+sequentially, each licence asked against the set *as it stands* — earlier
+joins included — so the invariant after every accepted join is that the whole
+current set still contradicts; licensed against the original set instead, two
+joins could each pass and jointly satisfy. And coarsening is not confluent, so
+the order of attempts is a stated preference, not an accident.
+
+Where it runs: when no pivot's elimination finishes within budget, the core is
+coarsened and the projection tried once more — which is what makes a lockstep
+family of nine parallel edges projectable at all — and if the projection still
+fails, the coarsened core is the fallback, every join of it true and the set
+still contradicting.
+
 ## 7. Fixes on the page
 
 The two halves now connect, with no machinery at the joint.
@@ -671,6 +827,61 @@ diagnosis. A model witnesses satisfiability; which versions the user would
 by the substrate (S4). Diagnosis decides what is true; the resolver decides
 what is chosen.
 
+### Blocked fixes: which, and how
+
+The page's own lines make some actions tempting: the reader sees "your
+compat leaves QuantumLattices 0.15.4" and asks why relaxing it is not
+offered. A **tempting action** is an action on a package a conflict's lines
+or heading name that appears nowhere in the cover. The blocked-fixes
+section answers for exactly these — one sentence per action, so nothing is
+said twice and nothing tempting goes unanswered.
+
+What the sentence says is decided by solves, not judged, and the question
+must be *well posed*: `x` is **load-bearing** when it lies in **some**
+minimal repair, **idle** when it lies in none. Asking of one repair a solver
+happened to return is not enough — a tie between equal repairs could call
+the same action idle in one sentence and a rescue in the next, which is
+exactly the inconsistency this phrasing exists to avoid. So the search
+favours `x`: take a repair `W ∋ x` within the bound, shrink its *other*
+members while it still repairs, and ask whether `x` too can go. If it
+cannot, the shrunk `W` is a minimal repair carrying `x` and `x` is
+load-bearing; the sentence names its price, *"«x» would not help unless you
+also «W ∖ {x}»."* If `x` can go, that witnesses a smaller repair without it —
+block `W` and try again, a few rounds, before concluding **idle** and
+printing the flat *"«x» does not help."* Because the cover holds every
+cheapest repair, a tempting `x` is in none of them, so a load-bearing `x`'s
+minimal repair is always strictly costlier than `k` (Lemma 28), and idle
+means dead weight in every repair within reach.
+
+**One repair, said once.** Two tempting actions can be load-bearing in the
+*same* minimal repair — each insufficient alone, the repair carrying both.
+Mirroring it from each end ("relax A unless you also drop B" beside "drop B
+unless you also relax A") says one thing twice and reads as a contradiction.
+So entries are grouped by the repair they exhibit: the actions that share
+one are one entry, said as the choice they are not: *"«x₁» or «x₂» would
+only help if you do both."* An
+entry of this form still exhibits a costlier fix, so it suppresses the
+footer exactly as an *unless*-entry does.
+
+**Lemma 28 (completions never restate the cover).** A load-bearing
+completion `W ∖ {x}` contains no printed fix.
+
+*Proof.* A correction set's supersets are correction sets, so if
+`W ∖ {x}` contained a fix it would itself repair — and then `x` is idle in
+`W`, not load-bearing. ∎
+
+So the unless-sentences and the residue cannot duplicate one another: the
+residue lists the cheapest fixes, and each unless-sentence exhibits a
+strictly costlier one in which its action genuinely participates. That
+sharpens the footer rule of Section 5: an *unless*-entry names a costlier
+fix, so where one printed, the costlier-fixes footer says nothing new and
+is omitted; idle verdicts name none, and do not suppress it.
+
+None of this consults the reason walk: blocked fixes are questions about
+repairs, and the completed cover plus one bounded search per tempting
+action decides them. The walk's remaining duty is the conflicts' own
+stories.
+
 ## 8. Verification
 
 What a checker checks, and what it need not.
@@ -692,10 +903,14 @@ What a checker checks, and what it need not.
   the witness's pivot value lies in every side whose printed support avoids
   the withdrawn facts. Membership tests; no solver. Silent breakage here is
   invisible to every other check, which is exactly why this one exists.
-* **(V6) Disclosures.** The menu wording matches the two decided questions
-  (Section 4's table); the coverage sentence appears whenever the rectangle
-  fired; the incompleteness sentence appears whenever the reason walk was
-  truncated.
+* **(V6) Disclosures.** The menu wording matches the decided questions
+  (Section 4's table); the residue block appears exactly when the cover has
+  more than one layer, and its fixes' witnesses are checked like any fix's
+  (V5); the enumeration-cut sentence appears exactly when the repair
+  enumeration was truncated and the deciding solve found more; the
+  costlier-fixes footer appears exactly when Theorem 5 answered yes and no
+  unless-entry printed; the reason-walk truncation sentence appears
+  whenever that walk was cut short.
 
 **Every check is per-explanation, never against a union.** Where two
 explanations' line-sets are `S₁ ∪ S₂` and `S₂` alone is contradictory, the
@@ -708,9 +923,10 @@ rule exists to make it impossible rather than detectable.
 
 Rules, not preferences — each guards a truth-condition or an attribution:
 
-* **A side is stated from its support.** The facts of the reason print once,
-  as the query's own lines ("you require A"; "your compat leaves A 1.2");
-  each side prints as the implication from its support's packages to its
+* **A side is stated from its support.** The requirements the conflict
+  answers for are said by its heading and nowhere else; the reason's other
+  facts print once, as the query's own lines ("your compat leaves A 1.2").
+  Each side prints as the implication from its support's packages to its
   bound, with its route in parentheses. A conditional side names all of its
   support ("A 1.2 and B ≥ 2 together …"). This is what makes every fix
   traceable: the fact a fix withdraws is the stated antecedent of a visible
@@ -720,24 +936,144 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   license needed — and only query lines may say "your"; everything else is
   the registry's, and a registry statement never attributes a bound to a
   `Project.toml` it cannot see.
-* **Requires vs constrains.** A side whose bound excludes `⊥` *requires*
-  (its truth includes the package's presence); one admitting `⊥`
-  *constrains* (it binds only if the package is installed). The verb is read
-  off the clause, never carried beside it.
+* **The verb is read off the printed consequent** — see the verb table
+  below. Never carried beside the clause: a line said the other way round
+  re-derives its own verb, which is what makes contraposition and
+  composition safe to print.
 * **Direction is chosen at print time.** A clause has no direction; state a
   two-package statement from the side that declares the dependency edge
   where exactly one does, and symmetrically ("X and Y are incompatible")
   where neither. Among otherwise equal readings prefer the one whose stated
   consequent has versions to name: a consequent with an empty range prints
   shortest and says least, and choosing it throws away the very bound the
-  reader was about to hold against another.
+  reader was about to hold against another. A line that *continues* a chain
+  overrides all of this: it is said to the package the chain has not
+  reached, whichever that is.
 * **A range is printed when something narrowed it.** An antecedent that is a
   package's entire offering prints as the bare package name; naming the full
   range reads as a narrowing that never happened.
-* **Reading order.** A line may argue only from packages the query named or
-  a line above introduced; the meet prints last, its sides adjacent, so the
-  contradiction is the page's visible bottom line.
+* **Reading order: a proof is one chain.** A proof prints as a
+  polysyllogism — a root fact, then implications each arguing from what the
+  line above it left, ending at the fact that contradicts the accumulated
+  bound. The root is the heading's own subject, said as the user's compat
+  where the reason narrowed it and taken as the heading's premise where it
+  did not; a subject the statements only *conclude* about is where the chain
+  ends instead, so a source is preferred to it. A line may argue only from
+  packages the query named or a line above introduced, and the query's fact
+  about a package prints where the package arrives: after the line that
+  reaches it, before the line that argues from it. Prefer to close at a
+  printed compat line where one contradicts the chain; otherwise the last
+  line closes against the heading's implicit *given the rest of the
+  requirements*, and the package it leaves nothing of is named in no further
+  line. A line continuing through a package reads its antecedent against the
+  bound the chain left there — widening its literal by everything already
+  ruled out weakens the clause, so the line stays true and says what the
+  reader is holding. Only a meet of three or more sides breaks the chain
+  (Proposition 22), and that alone prints whole, its sides adjacent.
+* **The heading names the primary reason's requirements, and claims
+  nothing.** "Conflict 1: QuantumLattices" — the colon form says these
+  packages are the conflict's core and stops. A sentence would either claim
+  too much ("cannot be satisfied" is false absolutely, true only under the
+  unstated *given the rest*) or spell the context out at absurd length; the
+  bare form is as clear, shorter, and never wrong. The one sentence heading
+  that survives is the absolute truth: "no version of X is available." The
+  checkers still premise every requirement the conflict answers for: what
+  shrinks is the sentence, not the claim set.
+* **Blocked fixes answer for actions, one sentence each.** For every
+  tempting action — named by the conflict's lines or heading, in no fix of
+  the cover — the section prints its solve-decided verdict (Section 7): an
+  idle action gets *"«x» does not help."*, a load-bearing one gets
+  *"«x» would not help unless you also «W ∖ {x}»."* Action-indexed, so
+  nothing is said twice; solver-licensed, so nothing is judged; and no
+  proof prints — why a fix is not offered is second-order, and the verdict
+  has already said it.
+* **The headline claims a product only when there is one.** With more than
+  one conflict the headline adds *", each of which must be fixed"* — but only
+  when the residue is empty. The clause is not false on its own: by hitting-set
+  duality every solution resolves every displayed conflict, so every fix,
+  residue fixes included, does fix each one. What misleads is the clause
+  *together with* the per-conflict menus below it, which read as: the solutions
+  are exactly one-fix-from-each-menu, the product of the menus. That is just the
+  exhaustiveness a residue denies — the residue *is* the cheapest fixes that are
+  not one-from-each-menu — so the confident clause is honest only when the
+  presentation is a genuine product, i.e. the residue is empty. Where a residue
+  prints, the headline is the bare *"Unsatisfiable — N conflicts:"*.
+* **The residue prints as fixes, not as a conflict.** When the cover has
+  more than one layer, the later layers print after the last conflict,
+  introduced as what they are — *"If none of the fixes above suits, the
+  remaining minimal fixes are:"* — as a flat list of compound entries or as
+  a layer's menus, whichever costs fewer lines (Section 4). Each carries a
+  witness like any fix. No proofs print there: reasons do not layer
+  (Corollary 25), and the conflicts above have already explained every one.
+* **Footers.** *Costlier fixes also exist.* prints only when Theorem 5
+  answered yes and no *unless*-entry printed — an unless-entry exhibits a
+  costlier fix (Lemma 28 says it never merely restates a cheap one), while
+  an idle verdict exhibits none and does not suppress the news. *There are more minimal
+  fixes than are shown.* prints only when the repair enumeration hit its
+  cap and the deciding solve confirmed more. The reader is told about every
+  gap in the page's own vocabulary — fixes, not solutions.
 * **Menu wording.** Exactly the three-state table of Section 4.
+
+### The verbs
+
+Four forms, and which one is printed is data in the clause rather than a
+flag beside it. Write `S` for the literal on the package a line is said to —
+its printed consequent — and read `⊥ ∈ S` as "this statement is satisfied by
+the package not being installed".
+
+| form | when | what it says |
+| --- | --- | --- |
+| `your ‹kinds› leaves X r` | the line is one of the query's own facts | of `X`, the query's own constraints of those kinds left `r` — and only such a line may say *your* |
+| `… requires X r` | `⊥ ∉ S` | `X` is installed, at one of `r` |
+| `… constrains X r` | `⊥ ∈ S`, some version in `S` | if `X` is installed it is at one of `r`; the statement is silent if it is not |
+| `… leaves no version of X` | `S = {⊥}` | `X` is not installed at all |
+
+*Leaves* is the user's; *requires* forces; *constrains* binds only what is
+there; *leaves no version of* is forced-empty. The bare package name is a
+consequent whose range is the package's whole offering, never a consequent
+with nothing in it — the fourth row exists so that a flipped line cannot
+print as the package arriving when what it says is the package's going.
+
+A trailing `(through P, Q and R)` is the whole of the difference between a
+statement the registry makes directly and one an elimination composed: the
+packages the route passed through, carrying no claim of their own (Routes,
+Section 6). Its absence says the statement stands as it is.
+
+Because the verb follows the printed consequent, flipping a line re-derives
+it. That is what makes the next result safe to print.
+
+### Linearization
+
+**Proposition 22 (two sides linearize; three need not).** A meet of two
+sides prints as one chain. A meet of three pairwise-overlapping sides does
+not.
+
+*Proof.* A clause has no direction (Section 2), so which of its packages is
+the printed consequent is chosen when it is printed, and the contrapositive
+is the same clause said the other way. Let the sides at pivot `P` be `S₁`
+and `S₂`. Say `S₁` forward, from the packages its support names to the bound
+it puts on `P`; the reader now holds `P ∈ S₁`. Say `S₂` to the package *it*
+rests on, with `P` as its antecedent: what the chain has left at `P` — `S₁`,
+narrowed by the query's own line about `P` where there is one — meets `S₂`
+in nothing, since the family closes, so everything still open at `P` denies
+`S₂` and the line fires on exactly what the lines before it left. That is
+the resolution rule of Section 2, read out one step at a time, and the chain
+ends at `S₂`'s own root fact. With three sides the same walk cannot be
+arranged: one side opens the chain and one closes it, and the
+third has both of its ends already spoken for — its support is introduced by
+nothing the chain has said. The page is then two chains meeting at `P`,
+which is what the meet display says in one place rather than leaving the
+reader to find. And three sides can genuinely be needed: `{1,2}`, `{2,3}`,
+`{1,3}` overlap pairwise and have empty intersection, so no two of them
+contradict and no pair stands for the family. ∎
+
+The pivot's own facts are not sides in this counting: a query line about `P`
+is not an implication needing a root, and prints where the chain reaches `P`
+— which is why "the compat leaves `P` `r`, and the one side says `P` `s`"
+is a chain of two lines and not a meet at all. So the meet display survives
+exactly at three sides and more, and Proposition 18 says how rare that is:
+in a convex world an irredundant meet has at most three sides, and three of
+them require a package one of whose bounds has a hole in it.
 
 ## 10. Substrate obligations
 

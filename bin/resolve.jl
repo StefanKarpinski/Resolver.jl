@@ -536,26 +536,39 @@ function named(d::Resolver.Diagnosis, name::Function)
     Resolver.Diagnosis(
         [Diagnostics.Conflict{String,VersionNumber}(
             String[name(p) for p in c.reqs],
-            Diagnostics.Fact[named(f, name) for f in c.chain],
-            [Diagnostics.Fix{String,VersionNumber}(
-                [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
-                Dict{String,VersionNumber}(
-                    name(p) => v for (p, v) in fix.solution))
-             for fix in c.fixes])
+            [Diagnostics.Line{String}(named(l.clause, name),
+                String[name(p) for p in l.through], l.given, l.proof,
+                l.pivot === nothing ? nothing : name(l.pivot))
+             for l in c.lines],
+            Dict{String,Vector{VersionNumber}}(
+                name(p) => vs for (p, vs) in c.versions),
+            Dict{String,Vector{Vector{Symbol}}}(
+                name(p) => ks for (p, ks) in c.excluded),
+            named(c.fixes, name),
+            Tuple{Vector{Vector{Diagnostics.Action{String}}},
+                  Vector{Diagnostics.Action{String}}}[
+                ([[Diagnostics.Action(a.kind, name(a.pkg)) for a in b]
+                  for b in bs],
+                 [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
+                for (bs, us) in c.blocks])
          for c in d.conflicts],
+        named(d.residue, name),
         d.others)
 end
 
-named(f::Diagnostics.Requirement, name::Function) =
-    Diagnostics.Requirement(name(f.pkg))
-named(f::Diagnostics.Availability, name::Function) =
-    Diagnostics.Availability(name(f.pkg), f.members, f.excluded)
-named(f::Diagnostics.Dependency, name::Function) =
-    Diagnostics.Dependency(name(f.pkg), f.versions, name(f.dep),
-        f.offering, f.allowed, f.newest, f.oldest)
-named(f::Diagnostics.Incompatibility, name::Function) =
-    Diagnostics.Incompatibility(name(f.pkg), f.versions, name(f.other),
-        f.offering, f.allowed, f.newest, f.oldest)
+# a fix is actions and a solution, both keyed by package
+named(fixes::Vector{<:Diagnostics.Fix}, name::Function) =
+    [Diagnostics.Fix{String,VersionNumber}(
+        [Diagnostics.Action(a.kind, name(a.pkg)) for a in fix.actions],
+        Dict{String,VersionNumber}(name(p) => v for (p, v) in fix.solution))
+     for fix in fixes]
+
+# A clause is a set of literals keyed by package, so renaming one is renaming
+# the keys; the masks are about versions and do not care what a package is
+# called. Sorting again is what keeps the result in normal form.
+named(c::Resolver.Clauses.Clause, name::Function) =
+    Resolver.Clauses.Clause{String}(
+        sort!([name(p) => m for (p, m) in c.lits]; by = first))
 
 function package_name(uuid::UUID)
     uuid == JULIA_UUID && return "julia"

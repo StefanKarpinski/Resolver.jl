@@ -1373,6 +1373,49 @@ end
 end
 
 
+# A heading is the requirements its conflict answers for, so two conflicts
+# rooted in the same requirement print the same one -- which reads as one
+# conflict said twice rather than as two problems sharing a root. Where
+# headings collide, each is extended with the package that conflict closes
+# against; a heading nothing collides with is untouched, and conflicts whose
+# lines say the same thing leave the number to do the whole of the telling.
+# Built by hand, since what is under test is the rendering and not the
+# analysis that found the conflicts.
+@testset "diagnosis: a repeated heading names what tells the two apart" begin
+    P, V = String, Int
+    VS = Dict(p => [1, 2] for p in ("A", "B", "C", "D", "E"))
+    dep(p, q) = Clauses.clause([p => literal(2, [1], true; absent = true),
+                                q => literal(2, [1])])
+    bound(q) = Clauses.clause([q => literal(2, [2]; absent = true)])
+    # `p 1 requires q 1`, and the user's compat on q contradicting it
+    conflict(p, q) = Conflict{P,V}(P[p],
+        Line{P}[Line{P}(dep(p, q), P[], false, 1, nothing),
+                Line{P}(bound(q), P[], true)],
+        VS, Dict{P,Vector{Vector{Symbol}}}(q => [[:compat]]), Fix{P,V}[])
+    page(cs...) = replace(sprint(show, MIME("text/plain"),
+                                 Diagnosis(Conflict{P,V}[cs...], :none)),
+                          r"\n\s+" => " ")
+
+    # two conflicts about A closing at different packages: each heading names
+    # the package that conflict contradicts at, and neither names the other's
+    out = page(conflict("A", "B"), conflict("A", "C"), conflict("D", "E"))
+    @test occursin("Conflict 1: A and B • A 1 requires B 1", out)
+    @test occursin("Conflict 2: A and C • A 1 requires C 1", out)
+    # ... and the conflict nothing collides with keeps its bare heading
+    @test occursin("Conflict 3: D • D 1 requires E 1", out)
+
+    # a heading with nothing to collide with is untouched, same packages or no
+    @test occursin("Conflict 1: A • A 1 requires B 1",
+                   page(conflict("A", "B")))
+
+    # two conflicts whose lines say the same thing have nothing to add: the
+    # number is the whole of the difference
+    same = page(conflict("A", "B"), conflict("A", "B"))
+    @test occursin("Conflict 1: A • A 1 requires B 1", same)
+    @test occursin("Conflict 2: A • A 1 requires B 1", same)
+    @test !occursin("A and B", same)
+end
+
 @testset "diagnosis: the report" begin
     # each conflict carries its own menu, and the menus do not multiply: two
     # menus of two, not one of four. There is no closing sentence — every

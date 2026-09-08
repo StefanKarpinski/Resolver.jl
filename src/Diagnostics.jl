@@ -871,6 +871,162 @@ function rectangle_menus(fmin::Vector{Vector{Int}}, used::Vector{Int})
     return menus, length(free)
 end
 
+## decomposition tree
+
+# The substitution (modular) decomposition of the cheapest-repair family: the
+# canonical tree of the monotone repair function, one node per fix-instruction.
+# A `:menu` chooses one of `facts`; an `:and` fixes all its `children`; an `:or`
+# fixes one of them; a `:threshold` fixes `k` of `facts`; a `:prime` is the
+# incompressible remainder, carrying `fmin` over `facts` for the existing
+# rectangle + local-residue split. One immutable struct with a kind tag; the
+# five constructors below name the shapes and leave the irrelevant fields empty.
+struct DecompNode
+    kind     :: Symbol                 # :menu | :and | :or | :threshold | :prime
+    facts    :: Vector{Int}            # :menu, :threshold, :prime — the ground U
+    children :: Vector{DecompNode}     # :and, :or
+    k        :: Int                    # :threshold — the K in "any K of"
+    fmin     :: Vector{Vector{Int}}    # :prime — the local family
+end
+
+MenuNode(facts::Vector{Int}) =
+    DecompNode(:menu, facts, DecompNode[], 0, Vector{Int}[])
+AndNode(children::Vector{DecompNode}) =
+    DecompNode(:and, Int[], children, 0, Vector{Int}[])
+OrNode(children::Vector{DecompNode}) =
+    DecompNode(:or, Int[], children, 0, Vector{Int}[])
+ThresholdNode(k::Int, facts::Vector{Int}) =
+    DecompNode(:threshold, facts, DecompNode[], k, Vector{Int}[])
+PrimeNode(fmin::Vector{Vector{Int}}, facts::Vector{Int}) =
+    DecompNode(:prime, facts, DecompNode[], 0, fmin)
+
+# The projection of the family onto a block: each member's trace on `B`, deduped.
+proj(F::Vector{Vector{Int}}, B::Vector{Int}) =
+    unique!(sort!(Vector{Int}[sort!(intersect(m, B)) for m in F]))
+
+# The members that lie wholly within `B`.
+within(F::Vector{Vector{Int}}, B::Vector{Int}) =
+    Vector{Int}[m for m in F if issubset(m, B)]
+
+# The co-occurrence components of `U`: two facts are joined when some member
+# holds both, so a component is a maximal set of facts that reach each other
+# through shared members. More than one means the family splits as an OR.
+function cooccur_components(F::Vector{Vector{Int}}, U::Vector{Int})
+    n = length(U)
+    at = Dict{Int,Int}(u => i for (i, u) in enumerate(U))
+    parent = collect(1:n)
+    function root(x::Int)
+        while parent[x] != x
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        end
+        return x
+    end
+    for m in F, a in m, b in m
+        a == b && continue
+        ra, rb = root(at[a]), root(at[b])
+        ra == rb || (parent[ra] = rb)
+    end
+    comps = Dict{Int,Vector{Int}}()
+    for i = 1:n
+        push!(get!(Vector{Int}, comps, root(i)), U[i])
+    end
+    sort!(Vector{Int}[sort!(c) for c in values(comps)])
+end
+
+# The finest factoring partition of `U`: the coarsest-to-finest fixpoint of
+# merging any two blocks whose joint projection is not the product of their
+# separate projections. Returns the blocks when the family genuinely factors as
+# their product (more than one block, every combination realised, the counts
+# agree), and `nothing` otherwise.
+function factoring_partition(F::Vector{Vector{Int}}, U::Vector{Int})
+    blocks = Vector{Int}[[u] for u in U]
+    changed = true
+    while changed
+        changed = false
+        for i = 1:length(blocks), j = i+1:length(blocks)
+            B1, B2 = blocks[i], blocks[j]
+            BU = sort!(vcat(B1, B2))
+            p1, p2, pu = proj(F, B1), proj(F, B2), proj(F, BU)
+            combos = Set(sort!(vcat(a, b)) for a in p1 for b in p2)
+            indep = length(pu) == length(p1) * length(p2) && Set(pu) == combos
+            if !indep
+                blocks[i] = BU
+                deleteat!(blocks, j)
+                changed = true
+                break
+            end
+        end
+    end
+    total = prod(B -> length(proj(F, B)), blocks; init = 1)
+    gen = Set{Vector{Int}}()
+    function build(bi::Int, acc::Vector{Int})
+        if bi > length(blocks)
+            push!(gen, sort!(copy(acc)))
+            return
+        end
+        for tr in proj(F, blocks[bi])
+            build(bi + 1, vcat(acc, tr))
+        end
+    end
+    build(1, Int[])
+    (length(blocks) > 1 && gen == Set(F) && length(F) == total) ?
+        sort!(blocks; by = first) : nothing
+end
+
+# The decomposition tree of family `fmin` (all members size `k`) over facts
+# `used`. Recursion: a lone fact is a menu; a disconnected co-occurrence graph
+# is an OR of its components; a family that factors is an AND of its blocks; an
+# indecomposable block that is every `k`-subset is a threshold; anything else is
+# a prime. Canonical — the same family always yields the same tree.
+function decompose(fmin::Vector{Vector{Int}}, used::Vector{Int})
+    U = sort(used)
+    k = isempty(fmin) ? 0 : length(first(fmin))
+    length(U) ≤ 1 && return MenuNode(U)
+    comps = cooccur_components(fmin, U)
+    length(comps) > 1 &&
+        return OrNode(DecompNode[decompose(within(fmin, c), c) for c in comps])
+    part = factoring_partition(fmin, U)
+    part === nothing ||
+        return AndNode(DecompNode[decompose(proj(fmin, B), B) for B in part])
+    (k > 0 && length(fmin) == binomial(length(U), k)) &&
+        return ThresholdNode(k, U)
+    return PrimeNode(fmin, U)
+end
+
+# The tree as the flat menu list `analyse` consumes today, or `nothing` where a
+# node is not a plain product of choose-one menus. A `:menu` is one menu; an
+# `:or` of singleton leaves is itself one choose-one menu; an `:and` is the
+# concatenation of its children's menus. Threshold, prime, and any OR of
+# non-singletons have no menu-product form and return `nothing`.
+function flatten_menus(t::DecompNode)
+    t.kind === :menu && return Vector{Int}[copy(t.facts)]
+    if t.kind === :or
+        all(c -> c.kind === :menu && length(c.facts) == 1, t.children) ||
+            return nothing
+        return Vector{Int}[sort!(Int[c.facts[1] for c in t.children])]
+    end
+    if t.kind === :and
+        menus = Vector{Int}[]
+        for c in t.children
+            sub = flatten_menus(c)
+            sub === nothing && return nothing
+            append!(menus, sub)
+        end
+        return sort!(menus; by = first)
+    end
+    return nothing
+end
+
+# A readable one-line shape of a tree, for tests: mirrors the prototype's
+# `shape`, e.g. `AND(OR(menu[1], menu[2]), T2of[3, 4, 5])`.
+function tree_shape(t::DecompNode)
+    t.kind === :menu && return "menu$(t.facts)"
+    t.kind === :and && return "AND(" * join(map(tree_shape, t.children), ", ") * ")"
+    t.kind === :or && return "OR(" * join(map(tree_shape, t.children), ", ") * ")"
+    t.kind === :threshold && return "T$(t.k)of$(t.facts)"
+    return "PRIME$(t.facts)"
+end
+
 ## reasons
 
 # Reasons are enumerated by removal, over the whole pool and never a restricted
@@ -1201,6 +1357,16 @@ function analyse(
     if !isempty(used)
         factors = product_menus(fmin, used)
         menus = factors === nothing ? first(rectangle_menus(fmin, used)) : factors
+        # Stage 1 of the hierarchy: the decomposition tree is computed and drives
+        # the page only where it is provably today's product — an AND of, or a
+        # single, choose-one menu whose flattening equals the product factors.
+        # Every other shape (threshold, prime, OR) defers to the existing split
+        # unchanged, so the menus here are identical to the line above.
+        tree = decompose(fmin, used)
+        tmenus = flatten_menus(tree)
+        if factors !== nothing && tmenus == factors
+            menus = tmenus
+        end
     end
     # What the menus reach, and what is left over: the residue, which is the
     # cheapest repairs of the instance those selections block (Lemma 24) and

@@ -1633,12 +1633,77 @@ heading_reqs(c::Conflict) = c.reqs
 # sentence that survives is the absolute truth: a requirement whose package the
 # universe holds nothing of has no argument to make, and what became of it is
 # the whole of what there is to say.
-function conflict_heading(c::Conflict)
+function conflict_heading(c::Conflict, also = nothing)
     rs = heading_reqs(c)
     isempty(c.lines) && length(rs) == 1 &&
         return "no version of $(only(rs)) is available."
     isempty(rs) && return "the requirements"
-    return join_and(String[string(r) for r in rs])
+    parts = String[string(r) for r in rs]
+    also === nothing || push!(parts, string(also))
+    return join_and(parts)
+end
+
+# The packages a conflict's lines name, in the order the lines name them.
+function line_packages(c::Conflict{P,V}) where {P,V}
+    ps = P[]
+    for l in c.lines, p in packages(l.clause)
+        p in ps || push!(ps, p)
+    end
+    return ps
+end
+
+# Which package tells this conflict apart from the others its heading collides
+# with: one its own lines name and `common` — the packages every one of them
+# names — does not, or nothing where its lines say nothing the others do not.
+# Among several, the package the chain closes against — the last query fact the
+# page states, read off the chain itself rather than guessed at — since that is
+# where this conflict contradicts, and so the difference the reader is being
+# pointed at rather than a name picked off a list. Failing that the meet's
+# pivot, which is what a page that states no query fact argues about. A
+# requirement the heading already names is never the answer.
+function distinguishing_package(c::Conflict{P,V}, common::Set{P}) where {P,V}
+    cands = P[p for p in line_packages(c) if p ∉ common && p ∉ c.reqs]
+    isempty(cands) && return nothing
+    for p in Iterators.reverse(chain_closers(c))
+        p in cands && return p
+    end
+    for l in Iterators.reverse(c.lines)
+        l.pivot in cands && return l.pivot
+    end
+    return cands[1]
+end
+
+# The packages the page states the query's own facts about, in the order it
+# states them — the chain's own walk, asked and not printed.
+chain_closers(c::Conflict{P,V}) where {P,V} =
+    print_chain(devnull, c, Line{P}[l for l in c.lines if l.given],
+                Line{P}[l for l in c.lines if !l.given],
+                p -> c.versions[p], string)
+
+# Two conflicts rooted in the same requirements print the same bare list, and a
+# heading repeated reads as one conflict said twice rather than as two separate
+# problems with one requirement in common. So a colliding heading is extended
+# with the package that conflict contradicts at: still a bare list, still
+# claiming nothing, and now naming what makes it its own conflict. A heading
+# nothing collides with is untouched, and where the lines overlap entirely
+# there is nothing to add — the conflict's number is the whole of the
+# difference. Presentation only: what the conflict answers for is `reqs`, which
+# this does not touch.
+function heading_extras(cs::Vector{Conflict{P,V}}) where {P,V}
+    extras = Dict{Int,P}()
+    groups = Dict{String,Vector{Int}}()
+    for (i, c) in enumerate(cs)
+        push!(get!(Vector{Int}, groups, conflict_heading(c)), i)
+    end
+    for is in values(groups)
+        length(is) > 1 || continue
+        common = reduce(intersect, (Set{P}(line_packages(cs[i])) for i in is))
+        for i in is
+            p = distinguishing_package(cs[i], common)
+            p === nothing || (extras[i] = p)
+        end
+    end
+    return extras
 end
 
 # Which of the query's kinds took versions of `p` away, and what they left.
@@ -1881,6 +1946,9 @@ end
 # statement that would still need two packages introduced brings its own, the
 # facts it rests on printing above it. A meet of three or more sides is that
 # case twice over, and prints whole.
+#
+# Answers with the packages it stated the query's own facts about, in the order
+# it stated them: the last of them is the fact the chain closed against.
 function print_chain(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
                      derived::Vector{Line{P}}, vers, names) where {P,V}
     order, con, extra, loose = given_facts(c, given)
@@ -1891,11 +1959,14 @@ function print_chain(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
     told = Set{P}()
     acc = Dict{P,Lit}()
 
+    closers = P[]
     function tell(p::P)
         p in told && return
         push!(told, p)
-        haskey(con, p) &&
+        if haskey(con, p)
             print_wrapped(io, constraint_phrase(c, p, con[p]), "  • ", "    ")
+            push!(closers, p)
+        end
         for l in get(extra, p, Line{P}[])
             print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
         end
@@ -1945,6 +2016,7 @@ function print_chain(io::IO, c::Conflict{P,V}, given::Vector{Line{P}},
     for l in loose
         print_wrapped(io, line_phrase(l, vers, names), "  • ", "    ")
     end
+    return closers
 end
 
 # What the fix gets you, of the packages the page speaks of: the reader sees the
@@ -1990,12 +2062,15 @@ One conflict's page: its heading (where it is numbered), the lines that prove
 it, the menu that settles it, and the verdict on each action the page makes
 tempting and no fix takes. `others` is what the whole diagnosis knows about
 the repairs its menus do not reach, which is what a menu of one is entitled to
-say about itself.
+say about itself. `also` is a package to name in the heading beside the
+requirements, which a page whose heading would otherwise repeat another's is
+given (`heading_extras`).
 """
 function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
-                        others::Symbol = :some, alone::Bool = true) where {P,V}
+                        others::Symbol = :some, alone::Bool = true,
+                        also = nothing) where {P,V}
     index === nothing ||
-        println(io, "Conflict ", index, ": ", conflict_heading(c))
+        println(io, "Conflict ", index, ": ", conflict_heading(c, also))
     vers(p) = c.versions[p]
     names(p) = string(p)
     print_chain(io, c, Line{P}[l for l in c.lines if l.given],
@@ -2169,9 +2244,11 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
     # residue is empty.
     n > 1 && isempty(d.residue) && print(io, ", each of which must be fixed")
     println(io, ":")
+    extras = heading_extras(d.conflicts)
     for (i, c) in enumerate(d.conflicts)
         println(io)
-        print_conflict(io, c, i; others = d.others, alone = isempty(d.residue))
+        print_conflict(io, c, i; others = d.others, alone = isempty(d.residue),
+                       also = get(extras, i, nothing))
     end
     if !isempty(d.residue)
         println(io)

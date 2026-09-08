@@ -976,9 +976,13 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   too much ("cannot be satisfied" is false absolutely, true only under the
   unstated *given the rest*) or spell the context out at absurd length; the
   bare form is as clear, shorter, and never wrong. The one sentence heading
-  that survives is the absolute truth: "no version of X is available." The
-  checkers still premise every requirement the conflict answers for: what
-  shrinks is the sentence, not the claim set.
+  that survives is the absolute truth: "no version of X is available." Where
+  two conflicts share a root requirement their headings would read as one
+  conflict said twice, so each is extended with the package it contradicts
+  at — the package its own lines name and the others' do not, taken where
+  the chain closes — which leaves the heading a true bare list and stops it
+  reading as a duplicate. The checkers still premise every requirement the
+  conflict answers for: what shrinks is the sentence, not the claim set.
 * **Blocked fixes answer for actions, one sentence each.** For every
   tempting action — named by the conflict's lines or heading, in no fix of
   the cover — the section prints its solve-decided verdict (Section 7): an

@@ -552,7 +552,10 @@ function named(d::Resolver.Diagnosis, name::Function)
                  [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
                 for (bs, us) in c.blocks])
          for c in d.conflicts],
-        named(d.residue, name),
+        [Diagnostics.Alternative{String,VersionNumber}(
+            a.conflicts, a.avoided,
+            [named(m, name) for m in a.menus])
+         for a in d.alternatives],
         d.others)
 end
 

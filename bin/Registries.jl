@@ -2,7 +2,7 @@ module Registries
 
 export registry_provider, package_info, bundled_versions,
     prerelease_exclusion, yanked_versions, is_registered, is_bundled,
-    UPGRADABLE_STDLIBS_UUIDS
+    stdlib_snapshot, host_stdlibs, UPGRADABLE_STDLIBS_UUIDS
 
 import Base: UUID
 import HistoricalStdlibVersions: STDLIBS_BY_VERSION, UNREGISTERED_STDLIBS, StdlibInfo
@@ -110,6 +110,40 @@ filter!(JULIA_VERSIONS) do v
     end
 end
 
+## the stdlib snapshot
+#
+# HistoricalStdlibVersions records what each Julia release bundles, but only as
+# stanzas at the versions where the set *changed*, so the stanza describing a
+# Julia is the newest one at or below it. Prerelease and build parts are
+# stripped first: a stanza is a statement about a patch release, and a
+# prerelease of it bundles what it will bundle.
+function stdlib_snapshot(julia_ver::VersionNumber)
+    stanza = UNREGISTERED_STDLIBS
+    for (v, this_stdlibs) in STDLIBS_BY_VERSION
+        v > Base.thispatch(julia_ver) && break
+        stanza = this_stdlibs
+    end
+    return stanza
+end
+
+# What the *running* Julia bundles, read out of its own stdlib directory --
+# ground truth, as against `stdlib_snapshot`'s recollection of it. Every stdlib
+# ships the Project.toml it was built from, `version` and all. This is the only
+# thing here that looks at the host rather than a target Julia; it exists so the
+# snapshot can be checked against a Julia that is actually present (see
+# bin/check_stdlibs.jl), which is what keeps a stale pin from going unnoticed.
+function host_stdlibs()
+    bundled = Dict{UUID,VersionNumber}()
+    for dir in readdir(Sys.STDLIB; join = true)
+        file = joinpath(dir, "Project.toml")
+        isfile(file) || continue
+        project = Pkg.TOML.parsefile(file)
+        haskey(project, "uuid") && haskey(project, "version") || continue
+        bundled[UUID(project["uuid"])] = VersionNumber(project["version"])
+    end
+    return bundled
+end
+
 ## extracting the dependency graph from registries
 
 # The canonical version order: newest first. It is a property of the registry
@@ -167,11 +201,7 @@ function julia_and_stdlib_versions(
     stdlibs = Dict{UUID,Dict{VersionNumber,StdlibInfo}}()
     bundlers = Dict{UUID,Dict{VersionNumber,VersionSpec}}()
     for julia_ver in julia_vers
-        last_stdlibs = UNREGISTERED_STDLIBS
-        for (v, this_stdlibs) in STDLIBS_BY_VERSION
-            v > Base.thispatch(julia_ver) && break
-            last_stdlibs = this_stdlibs
-        end
+        last_stdlibs = stdlib_snapshot(julia_ver)
         for (uuid, stdlib_info) in last_stdlibs
             stdlib_ver = something(stdlib_info.version, julia_ver)
             deps_u = get!(()->valtype(stdlibs)(), stdlibs, uuid)
@@ -386,12 +416,7 @@ function registry_provider(
             union!(vers, JULIA_VERSIONS)
             for v in vers
                 deps[v] = valtype(deps)()
-                # find relevant stdlibs stanza
-                last_stdlibs = UNREGISTERED_STDLIBS
-                for (v′, this_stdlibs) in STDLIBS_BY_VERSION
-                    v′ > Base.thispatch(v) && break
-                    last_stdlibs = this_stdlibs
-                end
+                last_stdlibs = stdlib_snapshot(v)
                 # pin every stdlib this Julia bundles to its bundled version
                 # -- except the upgradable ones, which Julia bundles without
                 # pinning: for those the registry versions compete with the

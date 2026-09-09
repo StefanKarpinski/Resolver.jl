@@ -27,10 +27,10 @@ version = "1.6.0"
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 
 [[deps.HistoricalStdlibVersions]]
-deps = ["Pkg"]
-git-tree-sha1 = "7e72d0ce251105cebeab1e156977af2346cbe558"
+deps = ["Pkg", "PrecompileTools"]
+git-tree-sha1 = "e2c444d79d406f80f316b779761eef0cf17fc137"
 uuid = "6df8b67a-e8a0-4029-b4b7-ac196fe72102"
-version = "2.0.2"
+version = "2.0.7"
 
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]

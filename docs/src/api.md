@@ -15,6 +15,8 @@ its own report without asking the resolver anything further.
 ```@docs
 Resolver.Diagnostics
 Resolver.Diagnostics.Conflict
+Resolver.Diagnostics.Alternative
+Resolver.Diagnostics.selections
 Resolver.Diagnostics.Fix
 Resolver.Diagnostics.Action
 Resolver.Diagnostics.action_phrase

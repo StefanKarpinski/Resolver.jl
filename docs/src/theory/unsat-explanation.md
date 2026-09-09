@@ -287,19 +287,6 @@ itself. This is the menu-side twin of the pivot theorem of Section 6: there
 the choice is proved entirely free, here it is proved entirely absent, and
 each is the strongest possible statement of its kind.
 
-**The rectangle.** When `F_min` is not a product, offer the largest part of
-it that is. A **rectangle** is a presentation whose selections' pick-sets all
-lie in `F_min` (that is (C1)+(C2) with room left over); its **coverage** is
-the number of members of `F_min` its selections reach. Members of `F_min`
-all have size `k`, so a convenient family to search is: for each
-`M ∈ F_min` and `c ∈ M`, the core `M ∖ {c}` together with the menu of all
-facts completing it to a member — that is `k−1` singleton menus and one
-free menu, every selection literally a member of `F_min`. Any rectangle is
-a legitimate offer; take one of maximal coverage among those searched, break
-ties deterministically. Nothing in Section 5 depends on which rectangle was
-taken. (Unlike the product case, a maximal rectangle need not be unique; the
-tie-break is a genuine choice and should be a stable one.)
-
 **Entries may be sets.** Nothing above needs an entry to be a single fact.
 With entries as fact-sets and a selection taking the union of one entry per
 menu, (C1) and (C2) read verbatim, and Theorem 9 generalizes with
@@ -307,8 +294,8 @@ menu, (C1) and (C2) read verbatim, and Theorem 9 generalizes with
 proof is the same, picking per menu an entry disjoint from the reason. A
 menu whose entries are whole repairs is the degenerate case: one choice,
 compound entries, trivially a product. The primary presentation below keeps
-singleton entries, so everything in Sections 5–7 applies to it unchanged;
-compound entries appear only where the residue is laid out flat.
+entries small — single facts wherever the family lets it — so everything in
+Sections 5–7 applies to it unchanged.
 
 **Theorem 23 (the finest factorization).** Call a partition `P` of the used
 facts *factoring* when `F_min` is exactly the unions of one trace per block
@@ -335,65 +322,161 @@ Measured on entangled registry queries, however, the families are bimodal:
 either the plain product holds, or the family is **prime** — no nontrivial
 factoring partition at all — and the finest factorization degenerates to
 the one-menu list of whole repairs. So structure, where it exists, is found
-by Theorem 23; where it does not, coverage is completed by layers.
+by Theorem 23; where it does not, it is found inside `F_min` a piece at a
+time, and coverage is completed by layers.
 
-**The residue, and the cover.** Whatever presentation is offered first —
-the product, or the best rectangle — call the members of `F_min` its
-selections reach *reached*, and the rest the **residue**.
+### Covering the cheapest fixes by products
 
-**Lemma 24 (the residue is a blocked instance's cheapest repairs).** Add to
-the instance, for each reached member `M`, the clause that some fact of `M`
-holds. The blocked instance's minimal correction sets of size `k` are
-exactly the residue.
+A **generalized rectangle** in `F_min` is a presentation `M₁, …, M_j` over
+pairwise disjoint groups of facts — the group of `Mᵢ` being the union of its
+entries, an entry a set of facts — such that **every** selection's pick-set
+is a member of `F_min`. It is *exact*: it offers nothing the family does not
+hold, so (C1) and (C2) come for free and only (C3) is left to answer. Its
+**coverage** is the number of members its selections reach, which is `∏ᵢ|Mᵢ|`
+exactly, since the groups are disjoint and a set determines its elements.
+Three things follow immediately from the definition. Every member `M` alone
+is a rectangle, of coverage one — one menu, one entry. Any subfamily
+`S ⊆ F_min` that factors in the sense of Theorem 23 is a rectangle, its menus
+the blocks' traces. And `F_min` itself is a rectangle of one menu whose
+entries are whole members, which is the flat list.
+
+A **product cover** of `F_min` is a sequence of generalized rectangles — the
+**layers** — whose selections' pick-sets are together exactly `F_min`. Build
+one greedily: take a rectangle, emit it, delete the members it reaches, and
+recurse on what is left, which is again a family of size-`k` fact sets over
+the same facts.
+
+**Theorem 29 (a product cover exists, is finite, and presents the family
+exactly).** The construction terminates, and its layers present `F_min`: no
+selection of any layer is outside `F_min`, and no member of `F_min` is the
+selection of no layer.
+
+*Proof.* Exactness is the definition of a rectangle, and a rectangle in the
+family that is left is a rectangle in `F_min`, since what is left is a subset
+of it. For termination, each layer reaches at least one member — a single
+member is always available as a rectangle — so the remainder strictly
+shrinks and the construction stops with it empty. Completeness is then the
+stopping condition: a member never reached would still be there. ∎
+
+Which rectangle to take is an explainability preference among sound forms,
+not a soundness question — Section 5 needs (C1) alone — and the preference
+is what a layer costs to read against how much of the family it saves the
+reader from reading: a line for each menu, a line for each entry under it,
+and a phrase for each action an entry names. That price is what keeps the
+flat list from winning by default: it reaches everything, and it costs an
+entry, and every action of that entry, per member.
+
+The first layer is constrained beyond that, and Corollary 25 says why: it is
+the one the proofs answer for. It is required to be a product of two or more
+menus wherever one exists, so the reader is shown the family's structure and
+not a list of it.
+
+**So a conflict is a menu of the leading layer.** The leading layer satisfies
+(C1), so by Theorem 9 each of its menus owns a reason, and by Theorem 10 one of
+its very own; the layers after it own none (Corollary 25). A conflict is
+whatever a page can argue for, and that is exactly a leading menu: it gets a
+heading, the reason it owns as its chain, its own menu of fixes, and the
+verdicts on the actions those make tempting. A menu of compound entries earns a
+further owned reason wherever the first leaves a package the menu offers
+unspoken of — a page that asks the reader to change something its argument
+never mentioned is talking past them, which is what V3 of Section 8 checks.
+
+The block's later layers are then not conflicts but **alternatives** to all of
+its conflicts at once, printed after them. Each is a product of menus like any
+layer, and every one of its selections is a cheapest repair the block's
+conflicts do not offer between them. What an alternative replaces is its own
+block and nothing else: by Theorem 30 the blocks are independent, so a repair
+of the query takes one selection from each block, and where the reader takes an
+alternative for one block the other blocks stand exactly as printed. That is
+the whole of what "without any of the fixes for Conflicts 1–3" means, and the
+label carries it.
+
+**Lemma 31 (an unreached member avoids a whole menu).** Let `M ∈ F_min` be no
+selection of the leading layer. Then `M` is disjoint from some menu of that
+layer.
+
+*Proof.* Suppose `M` meets every menu, say in the entry `eᵢ ⊆ M` of `Mᵢ` — a
+menu's entries need not be disjoint from one another, so fix one such `eᵢ` per
+menu. The selection `S = ⋃ᵢ eᵢ` is a member of `F_min` by exactness, and
+`S ⊆ M`. Members of `F_min` are minimal correction sets, hence pairwise
+incomparable, so `S = M` — and `M` is a selection after all. ∎
+
+So every selection of a later layer declines a whole menu, and what the label
+may say the layer as a whole is instead of is the menus the layer shares no
+fact with at all — those its every selection declines. Where each of them
+offers a single fix, that fix is a single thing the reader is doing without and
+the label says it; where one of them offers a choice there is no single thing
+to name, and the label names those conflicts instead. Lemma 31 is per member,
+not per layer, so the set can be empty — the layer's selections declining
+different menus and none of them all — and then the label says only that the
+layer is another way.
+
+**Lemma 24 (what a layer leaves is a blocked instance's cheapest repairs).**
+Add to the instance, for each member `M` a layer reaches, the clause that
+some fact of `M` holds. The blocked instance's minimal correction sets of
+size `k` are exactly the members left.
 
 *Proof.* As in Theorem 5: a model of the blocked instance violates a set
 containing no reached member, and if that set has size `k` it is a minimal
 correction set of the original instance — a member of `F_min` — that is not
-reached; conversely a residue member's witnessing model satisfies every
+reached; conversely a left member's witnessing model satisfies every
 blocking clause, since distinct members of `F_min` are incomparable. ∎
 
-So the residue is defined by the family, not by any choice of fixes — and
-it is itself a repair family over the same facts, so the same factoring
-applies to it: take its product where it has one, its best rectangle where
-it does not, and recurse. The layers so produced **cover** `F_min`: every
-selection of every layer is a cheapest repair, and every cheapest repair is
-some layer's selection. Covers are not unique, and least covers need not
-be; the order of construction — largest first, product before rectangle —
-is a stated preference, like the rectangle tie-break.
+So what is left is defined by the family and not by any choice of fixes, and
+it is itself a repair family over the same facts — which is what licenses the
+recursion. Covers are not unique and least covers need not be; the order of
+construction is a stated preference, like the pivot tie-break of Section 6.
 
 **Corollary 25 (reasons do not layer).** The first layer satisfies (C1), so
-by Theorem 9 every reason contains one of *its* menus whole. The reasons —
-and with them the explanations of Section 6 — attach entirely to the first
-layer; later layers repartition repairs, not reasons, and owe the reader
-menus and witnesses, never proofs. (The blocked instance of Lemma 24 does
-have minimal unsatisfiable sets of its own, but they mix the query's facts
-with the refusal clauses — "given that none of the fixes above is taken" —
-and a proof from refusals is contingent on them. The page never prints
-one.)
+by Theorem 9 every reason meets every entry of one of *its* menus. The
+reasons — and with them the explanations of Section 6 — attach entirely to
+the first layer; later layers repartition repairs, not reasons, and owe the
+reader menus and witnesses, never proofs. (The blocked instance of Lemma 24
+does have minimal unsatisfiable sets of its own, but they mix the query's
+facts with the refusal clauses — "given that none of the fixes above is
+taken" — and a proof from refusals is contingent on them. The page never
+prints one.)
 
-**How the residue is laid out** is an explainability preference among sound
-forms, decided by what it costs to read: the flat list — the residue's own
-members as compound entries, one line each — against the cover's layers,
-whichever prints fewer lines, with no entry ever pairing more than the few
-actions a size-`k` member has left. Both forms are complete; neither claims
-structure the family does not have.
+**Theorem 30 (factoring composes, so nothing is left across factors).** Let
+`P = {B₁, …, B_r}` be a factoring partition of `F_min` (Theorem 23) and give
+each block `Bₜ` a product cover of its own trace family `F_min|Bₜ`. Reading
+each block as one conflict, and a repair of the whole query as one selection
+from each, the presentation is exact and complete: the selections are
+exactly `F_min`.
 
-**What a one-entry menu may say about itself.** With `F_min` covered and
-Theorem 5 answered, the gap a menu's wording must confess has three
-sources: minimal fixes in the residue below (which do not take this entry),
-costlier fixes, and an enumeration cut short (the one way coverage can
-silently fail — and one further blocked solve at the cap decides even that,
-so it is known, not guessed). "Only" is a claim about the world, and the
-world includes the residue on the same page:
+*Proof.* `P` factoring says `F_min` is the set of unions of one trace per
+block, every combination realized. Each block's cover presents `F_min|Bₜ`
+exactly (Theorem 29), so the selections available at block `t` are exactly
+its traces; the combinations of them are therefore exactly the unions of one
+trace per block, which is `F_min`. ∎
+
+Two consequences. Completeness of the whole presentation is the *product* of
+the factors' completeness, so where the finest factorization is nontrivial
+there is no cross-factor remainder to print: a page that covers each factor
+covers the query, and a residue enumerating combinations across factors is
+enumerating repairs the factors have each already offered. And a block that
+is prime is covered on its own facts alone: the search runs over that block's
+trace family, not over the whole of `F_min`.
+
+**What a one-entry menu may say about itself.** With `F_min` covered
+(Theorems 29 and 30) and Theorem 5 answered, the gap a menu's wording must
+confess has two sources: costlier fixes, and an enumeration cut short (the
+one way coverage can silently fail — and one further blocked solve at the cap
+decides even that, so it is known, not guessed). "Only" is a claim about the
+world:
 
 | what exists beyond this entry | a menu of one says |
 |---|---|
 | nothing | *The only fix:* |
 | only costlier fixes | *The only minimal fix:* |
-| residue fixes, or a cut enumeration | *One fix:* |
+| an alternative to this conflict's block, or a cut enumeration | *One fix:* |
 
 Never derive "only" from the length of a vector; derive it from the decided
-questions.
+questions. The alternative row is block-local: an alternative to some *other*
+block is another repair of the query and no repair of this conflict, so it
+takes nothing away from what this entry may say about itself, while an
+alternative to this conflict's own block is a cheapest repair that settles the
+block without this entry and denies "only" outright.
 
 ## 5. Ownership: which reasons a conflict answers for
 
@@ -429,7 +512,7 @@ and it contains no other whole menu. ∎
 its very own — containing no other conflict's whole menu — for *every* way
 the other conflicts might be settled.
 
-**Corollary 12 (settled residue).** Fix a transversal `T` of the other
+**Corollary 12 (what is left is settled).** Fix a transversal `T` of the other
 menus. Every reason of the query that avoids `T` — in particular, every
 reason of the `T`-withdrawn query — is owned by conflict `i`.
 
@@ -520,8 +603,8 @@ hypothesis. ∎
 The walk is exponential in the worst case and must be run with a budget.
 Truncation is sound — nothing below depends on the enumeration having
 finished; a conflict simply explains fewer of the reasons it owns — but it is
-**never silent**: when the budget stops the walk, the report says the account
-may be incomplete (Section 11).
+**recorded**: when the budget stops the walk the diagnosis says so, though
+the page does not (Section 11).
 
 ## 6. The explanation of a reason
 
@@ -846,7 +929,10 @@ favours `x`: take a repair `W ∋ x` within the bound, shrink its *other*
 members while it still repairs, and ask whether `x` too can go. If it
 cannot, the shrunk `W` is a minimal repair carrying `x` and `x` is
 load-bearing; the sentence names its price, *"«x» would not help unless you
-also «W ∖ {x}»."* If `x` can go, that witnesses a smaller repair without it —
+also «W ∖ {x}»."* — in full while the price is a few actions, and as a count,
+*"without «n» other changes"*, beyond that: a long completion is a verdict on
+the road and not a list anyone will follow, and the exhibit behind it is
+checked either way (Section 8). If `x` can go, that witnesses a smaller repair without it —
 block `W` and try again, a few rounds, before concluding **idle** and
 printing the flat *"«x» does not help."* Because the cover holds every
 cheapest repair, a tempting `x` is in none of them, so a load-bearing `x`'s
@@ -870,8 +956,8 @@ completion `W ∖ {x}` contains no printed fix.
 `W ∖ {x}` contained a fix it would itself repair — and then `x` is idle in
 `W`, not load-bearing. ∎
 
-So the unless-sentences and the residue cannot duplicate one another: the
-residue lists the cheapest fixes, and each unless-sentence exhibits a
+So the unless-sentences and the cover cannot duplicate one another: the
+cover lists the cheapest fixes, and each unless-sentence exhibits a
 strictly costlier one in which its action genuinely participates. That
 sharpens the footer rule of Section 5: an *unless*-entry names a costlier
 fix, so where one printed, the costlier-fixes footer says nothing new and
@@ -895,22 +981,30 @@ What a checker checks, and what it need not.
 * **(V3) Source coverage.** Every fact of the reason roots a printed side.
   Guaranteed by Theorem 19 once V1 and V2 hold; assert it as a sanity check
   on the rootedness bookkeeping, not as a gate.
-* **(V4) Menu contract.** Every selection's pick-set is in `F_min`. By
-  construction in both presentations (Theorem 6's check; the rectangle's
-  selections are members by definition); test the construction, don't
-  re-verify per report.
+* **(V4) Cover contract.** Every selection's pick-set is in `F_min`, and
+  every member of `F_min` is some selection. What the page offers is defined
+  over blocks: a block's own repairs are one entry from each of its conflicts'
+  menus in every combination, together with every selection of each
+  alternative to it, and a repair of the query is one of each block's, in
+  every combination. By construction (Theorem 6's check; a generalized
+  rectangle's selections are members by definition; Theorems 29 and 30 for the
+  layers and the blocks) — and asserted per report, since it is a set
+  comparison over at most `|F_min|` members and costs nothing.
 * **(V5) Witness coherence.** For each fix's witness and each printed meet:
   the witness's pivot value lies in every side whose printed support avoids
   the withdrawn facts. Membership tests; no solver. Silent breakage here is
   invisible to every other check, which is exactly why this one exists.
 * **(V6) Disclosures.** The menu wording matches the decided questions
-  (Section 4's table); the residue block appears exactly when the cover has
-  more than one layer, and its fixes' witnesses are checked like any fix's
-  (V5); the enumeration-cut sentence appears exactly when the repair
-  enumeration was truncated and the deciding solve found more; the
-  costlier-fixes footer appears exactly when Theorem 5 answered yes and no
-  unless-entry printed; the reason-walk truncation sentence appears
-  whenever that walk was cut short.
+  (Section 4's table), its alternative row read block by block; the
+  alternatives appear exactly when some block's cover has more than one layer,
+  one per layer after the leading one, and their entries' witnesses are checked
+  like any entry's (V5); the headline's *", pick a fix for each"* appears
+  exactly when there is more than one conflict; the enumeration-cut
+  sentence appears exactly when the repair enumeration was truncated and the
+  deciding solve found more; the costlier-fixes footer appears exactly when
+  Theorem 5 answered yes and no unless-entry printed. A reason walk cut
+  short is recorded on the diagnosis and not announced on the page (Section
+  11).
 
 **Every check is per-explanation, never against a union.** Where two
 explanations' line-sets are `S₁ ∪ S₂` and `S₂` alone is contradictory, the
@@ -987,28 +1081,49 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   tempting action — named by the conflict's lines or heading, in no fix of
   the cover — the section prints its solve-decided verdict (Section 7): an
   idle action gets *"«x» does not help."*, a load-bearing one gets
-  *"«x» would not help unless you also «W ∖ {x}»."* Action-indexed, so
-  nothing is said twice; solver-licensed, so nothing is judged; and no
-  proof prints — why a fix is not offered is second-order, and the verdict
-  has already said it.
-* **The headline claims a product only when there is one.** With more than
-  one conflict the headline adds *", each of which must be fixed"* — but only
-  when the residue is empty. The clause is not false on its own: by hitting-set
-  duality every solution resolves every displayed conflict, so every fix,
-  residue fixes included, does fix each one. What misleads is the clause
-  *together with* the per-conflict menus below it, which read as: the solutions
-  are exactly one-fix-from-each-menu, the product of the menus. That is just the
-  exhaustiveness a residue denies — the residue *is* the cheapest fixes that are
-  not one-from-each-menu — so the confident clause is honest only when the
-  presentation is a genuine product, i.e. the residue is empty. Where a residue
-  prints, the headline is the bare *"Unsatisfiable — N conflicts:"*.
-* **The residue prints as fixes, not as a conflict.** When the cover has
-  more than one layer, the later layers print after the last conflict,
-  introduced as what they are — *"If none of the fixes above suits, the
-  remaining minimal fixes are:"* — as a flat list of compound entries or as
-  a layer's menus, whichever costs fewer lines (Section 4). Each carries a
-  witness like any fix. No proofs print there: reasons do not layer
-  (Corollary 25), and the conflicts above have already explained every one.
+  *"«x» would not help unless you also «W ∖ {x}»."*, or *"«x» would not help
+  without «n» other changes."* once the completion is more than a few
+  actions long. Action-indexed, so nothing is said twice; solver-licensed,
+  so nothing is judged; and no proof prints — why a fix is not offered is
+  second-order, and the verdict has already said it.
+* **The headline tells the reader what to do.** With more than one conflict
+  it reads *"Unsatisfiable — N conflicts, pick a fix for each:"*. That is an
+  instruction, and a true one: by hitting-set duality every solution resolves
+  every conflict (Theorem 9), and one entry from each menu, in every
+  combination, is a cheapest repair (Theorem 6, or the leading layer's
+  exactness). It is not a claim that those are the only cheapest repairs, and
+  it must not be read as one where an alternative exists — an alternative is
+  a cheapest repair taking no entry of some conflict's menu (Lemma 31). The
+  page does not leave that to the reader: every alternative opens with
+  *"Or, to fix …"*, so the instruction and its exceptions stand side by side,
+  the instruction first because it is the route the conflicts argue for.
+* **An alternative prints after the conflicts, as fixes and not as a
+  conflict.** Where a block's cover has more than one layer, each layer after
+  the leading one prints after the last conflict, introduced by what it
+  declines: *"Or, to fix without dropping requirement Knet:"* where every
+  menu it avoids offers a single fix (their gerunds joined by *or*: without
+  either), *"Or, to fix without any of the fixes for Conflicts 1 and 3:"*
+  where one of them offers a choice, and *"Or, to fix another way:"* in the
+  case Lemma 31 does not rule out, where the layer's selections avoid
+  different menus and none of them all. Then what it offers: its menus of one
+  entry said as one thing to do, joined by *and*, since they are all to be
+  done; a menu with a choice numbered like a conflict's menu, *"…, and one
+  of:"*, one witness under each entry, since an entry there completes the
+  whole alternative; a single line and one witness where the layer leaves no
+  choice at all; and, where several menus offer a choice, *"settle each of
+  these:"* with one bullet per menu and its entries joined by *or*. Each
+  witness is taken with the layer's other menus at their first entries and
+  every other block settled the first way its menus offer. No proofs print
+  there: reasons do not layer (Corollary 25), and the conflicts above have
+  already explained every one. An alternative replaces the menus of its own
+  block and nothing else — the rest of the report stands as printed, which is
+  what its label says.
+* **A coupled factor prints as a choice of whole options.** Where a menu's
+  entries are compound — a factor the family couples, so that no one action
+  of it is a choice on its own — each entry names the whole of what it asks
+  for: *"relax both, or relax P and drop T, or drop both"*, never a list of
+  actions the reader has to recombine. An entry is a thing to do, and a menu
+  is a choice between things to do, at every arity.
 * **Footers.** *Costlier fixes also exist.* prints only when Theorem 5
   answered yes and no *unless*-entry printed — an unless-entry exhibits a
   costlier fix (Lemma 28 says it never merely restates a cheap one), while
@@ -1108,12 +1223,17 @@ constrains how.
 
 ## 11. Boundaries and honesty
 
-Three enumerations in this design can be cut short, and each has a required
-disclosure; nothing else in the design is allowed to be incomplete.
+Three enumerations in this design can be cut short, and each is accounted
+for — two by a sentence on the page, one by a record on the diagnosis;
+nothing else in the design is allowed to be incomplete.
 
 1. **The reason walk** (Theorem 13) is exponential. Truncation costs
-   completeness of each conflict's account, never soundness — and the report
-   must say the account may be incomplete when it happens.
+   completeness of each conflict's account, never soundness: every conflict
+   still has a reason of its very own (Theorem 10), and every fix and every
+   verdict on the page is decided by a solve and not by the walk. So the
+   diagnosis records it, and the page does not announce it — a sentence
+   saying "there may be more to say" gives the reader nothing to do, and the
+   page owes only what can be acted on.
 2. **Rectangle coverage** can be below `|F_min|`; the report says other
    equally cheap solutions exist (C3), and a one-entry menu then says "One
    fix:", never "The only".

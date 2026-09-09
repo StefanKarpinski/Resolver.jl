@@ -12,7 +12,7 @@ each gets its own menu, and any one alternative from each menu resolves the
 query:
 
 ```
-Unsatisfiable — 2 conflicts, each of which must be fixed:
+Unsatisfiable — 2 conflicts, pick a fix for each:
 
 Conflict 1: DataFrames
   • your compat leaves DataFrames ≥1.0.0
@@ -35,13 +35,15 @@ Conflict 2: Plots
 ```
 
 Every fix is *verified*: the version list after each one is what a resolve of
-the fixed query actually returns, not a guess. Where the menus do not reach
-every minimal fix, the rest are listed after the conflicts as the whole repairs
-they are — "If none of the fixes above suits, the remaining minimal fixes
-are:" — and whatever is still outside the page is confessed: "Costlier fixes
-also exist." when what was left out gives up more, "There are more minimal
-fixes than are shown." when the search for them was cut short. When the menus
-are the whole of it, the report says nothing at all.
+the fixed query actually returns, not a guess. Between them the conflicts
+reach every fix as cheap as the cheapest, so nothing is left over: where a
+group of conflicts that stand or fall together has cheapest fixes that taking
+one entry from each of their menus does not reach, those print after the last
+conflict as the alternatives they are — "Or, to fix without dropping
+requirement Knet:", and then what to do instead. Whatever is outside the page even so is
+confessed: "Costlier fixes also exist." when what was left out gives up more,
+"There are more minimal fixes than are shown." when the search for them was
+cut short. When the menus are the whole of it, the report says nothing at all.
 
 What "optimal" means, precisely, and why the resolver's aggressive problem
 filtering provably does not change the answer, is worked out in the Theory
@@ -60,9 +62,11 @@ section:
   that a universe filtered for one query answers every relaxation of it, which
   is what lets a failed resolve be explained rather than merely reported.
 - [Explaining an unsatisfiable resolve](theory/unsat-explanation.md) — the
-  complete theory a `Diagnosis` implements: reasons, repairs, and the menus
-  they factor into; the pivot-and-sides form of an explanation; and why the
-  versions it shows come from a resolve rather than from the instance.
+  complete theory a `Diagnosis` implements: reasons, repairs, the menus they
+  factor into, the products that cover what does not factor and the
+  alternatives that are what those products leave; the pivot-and-sides form of
+  an explanation; and why the versions it shows come from a resolve rather than
+  from the instance.
 
 For the package's motivation and project status, see the
 [README](https://github.com/StefanKarpinski/Resolver.jl).

@@ -4,8 +4,8 @@
 Why an unsatisfiable query fails, and what its user could change.
 
 A report owes three things: the **fixes** — how many independent things are
-wrong and, for each, a menu of alternatives such that any combination of
-choices, one per menu, repairs the query while giving up as little as any
+wrong and, for each, the menu that settles it, such that any combination of
+choices, one per conflict, repairs the query while giving up as little as any
 repair can; the **explanations** — for each conflict, which of the user's own
 facts collide, at which package, and through which of the registry's
 statements; and the **witnesses** — what taking each fix yields.
@@ -15,9 +15,10 @@ own limits on *which versions of it* are admissible. Package granularity is the
 finest grain that stays a user action — no edit gives back one excluded version
 while keeping its siblings excluded. A **reason** is a minimal unsatisfiable set
 of facts, a **repair** a minimal set whose withdrawal is satisfiable, and the
-two are hitting-set duals; the menus are the factors the cheapest repairs
-decompose into, and each conflict explains the reasons its whole menu is
-contained in.
+two are hitting-set duals; the conflicts are the menus the cheapest repairs
+decompose into, each explaining a reason of its own, and where a group of them
+that stand or fall together has cheapest repairs their product does not reach,
+those print after the conflicts as **alternatives** to the whole group.
 
 See the manual's *Explaining an unsatisfiable resolve* for the theory this
 implements, including the proof of every claim above.
@@ -33,7 +34,7 @@ using ..Resolver.Clauses: Clauses, Clause, Lit, literal, clause, packages,
     range_phrase, selected, unselected, nversions
 using ..Resolver.UnsatCores: sat_mus
 
-export Diagnosis, Conflict, Fix, Action, Line, action_phrase
+export Diagnosis, Conflict, Alternative, Fix, Action, Line, action_phrase
 
 ## what a report is made of
 
@@ -82,12 +83,12 @@ Line{P}(c::Clause{P}, t::Vector{P}, g::Bool, n::Integer) where {P} =
     Fix(actions, solution)
 
 One entry of a menu: the actions to carry out, and what the resolver answers
-once they are — with every other conflict settled the first way its own menu
-offers. A residue entry ([`Diagnosis`](@ref)) is a whole repair by itself, so
-there is nothing to settle beside it and its witness is its own. The versions
-are the resolver's optimising answer for the withdrawn query, never a model
-found during diagnosis: diagnosis decides what is true, the resolver decides
-what is chosen.
+once they are — with everything else on the page settled the first way it
+offers, the other menus of this entry's own layer included. An entry may ask
+for several actions at once, where the family couples them and no one of them
+is a repair without the rest. The versions are the resolver's optimising answer
+for the withdrawn query, never a model found during diagnosis: diagnosis
+decides what is true, the resolver decides what is chosen.
 """
 struct Fix{P,V}
     actions  :: Vector{Action{P}}
@@ -99,9 +100,16 @@ end
 
 One independent thing that is wrong: the requirements it answers for, the lines
 that prove it, the version list each named package is spoken of in, which of
-the query's constraint kinds exclude which of those versions, the menu of
-alternatives that settle it, and the verdict on each action the page makes
-tempting.
+the query's constraint kinds exclude which of those versions, the menu of fixes
+that settles it, and the verdict on each action the page makes tempting.
+
+A conflict is one **menu**: choose one entry of `fixes` and this conflict is
+settled. An entry may ask for several actions at once, where the family couples
+them and no one of them is a repair without the rest. Where a block of the
+query's cheapest repairs is not the product of its conflicts' menus, what the
+product misses is not hidden inside a conflict: it is an
+[`Alternative`](@ref) on the [`Diagnosis`](@ref), printed after the conflicts
+and replacing the menus of the block it belongs to.
 
 An action is **tempting** when this conflict's lines or heading name its
 package and no fix anywhere on the page takes it: the reader can see it and
@@ -131,35 +139,137 @@ Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
                   Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}[])
 
 """
+    selections(c) :: Vector{Vector{Action{P}}}
+
+Every repair `c` offers: its menu's entries, one by one.
+"""
+selections(c::Conflict{P,V}) where {P,V} =
+    Vector{Action{P}}[unique(f.actions) for f in c.fixes]
+
+"""
+    Alternative(conflicts, avoided, menus)
+
+Another way of settling a whole block of conflicts at once — the cheapest
+repairs of that block which taking one entry from each of its conflicts' menus
+does not reach.
+
+`conflicts` are the indices of the conflicts it replaces, which are exactly one
+block of the query's independent factors; the rest of the report stands as
+printed, settled the way its own menus offer. `menus` is a product: settle each
+of them, one entry apiece, and every combination of those is a repair as cheap
+as any there is. `avoided` are the replaced conflicts — as indices again —
+whose menus every selection of this alternative misses entirely, which is what
+the page says the alternative is instead of.
+
+No proof prints under an alternative: reasons attach to the conflicts and do
+not layer (Corollary 25 of the theory page), so what it owes the reader is its
+menus and a witness under every entry.
+"""
+struct Alternative{P,V}
+    conflicts :: Vector{Int}
+    avoided   :: Vector{Int}
+    menus     :: Vector{Vector{Fix{P,V}}}
+end
+
+"""
+    selections(a) :: Vector{Vector{Action{P}}}
+
+Every repair `a` offers: one entry from each of its menus, in every
+combination.
+"""
+function selections(a::Alternative{P,V}) where {P,V}
+    sels = Vector{Action{P}}[Action{P}[]]
+    for m in a.menus
+        sels = Vector{Action{P}}[[s; f.actions] for s in sels for f in m]
+    end
+    return Vector{Action{P}}[unique!(s) for s in sels]
+end
+
+"""
     Diagnosis
 
 What [`resolve`](@ref Resolver.resolve) answers when the query cannot be
 satisfied: the conflicts, every one of which every solution resolves, the
-`residue` — the cheapest repairs no combination of the menus reaches, each a
-whole repair on its own — and what the two together still leave out: `:none`
-when they are every cheapest repair and nothing costlier exists, `:larger` when
-what is outside all gives up more, and `:some` when the enumeration of the
-cheapest repairs was cut short and one further solve found one it never reached.
-`truncated` records that the search for reasons was cut short, so the account
-of some conflict may be incomplete.
+alternatives to whole blocks of them, and what all of that leaves out.
+
+The conflicts fall into independent blocks, and a block's repairs are one entry
+from each of its conflicts' menus in every combination, together with every
+selection of each [`Alternative`](@ref) naming it. A repair of the query is one
+of each block's, and between them they are every repair as cheap as the
+cheapest — see [`selections`](@ref). So `others` is about what costs more:
+`:none` when nothing outside them exists at all, `:larger` when what is outside
+gives up more, and `:some` when the enumeration of the cheapest repairs was cut
+short and one further solve found one it never reached. `truncated` records
+that the search for reasons was cut short — a conflict may then argue from a
+reason that is not the shortest it owns — which the report does not announce,
+since nothing on the page is false or missing for the reader on that account.
 
 `show`ing one prints the report.
 """
 struct Diagnosis{P,V}
-    conflicts :: Vector{Conflict{P,V}}
-    residue   :: Vector{Fix{P,V}}
-    others    :: Symbol # :none, :larger, :some
-    truncated :: Bool
+    conflicts    :: Vector{Conflict{P,V}}
+    alternatives :: Vector{Alternative{P,V}}
+    others       :: Symbol # :none, :larger, :some
+    truncated    :: Bool
 end
 
 # a diagnosis rebuilt by a caller — renamed, filtered, whatever — is not one
 # whose search was cut short, so the disclosure defaults off
-Diagnosis(conflicts::Vector{Conflict{P,V}}, residue::Vector{Fix{P,V}},
-          others::Symbol) where {P,V} =
-    Diagnosis{P,V}(conflicts, residue, others, false)
-# ... and one that has nothing outside its menus has an empty residue
+Diagnosis(conflicts::Vector{Conflict{P,V}},
+          alternatives::Vector{Alternative{P,V}}, others::Symbol) where {P,V} =
+    Diagnosis{P,V}(conflicts, alternatives, others, false)
 Diagnosis(conflicts::Vector{Conflict{P,V}}, others::Symbol) where {P,V} =
-    Diagnosis(conflicts, Fix{P,V}[], others)
+    Diagnosis(conflicts, Alternative{P,V}[], others)
+
+# The conflicts of each block, as their indices. A block with alternatives is
+# named by them; every conflict no alternative names is a block on its own,
+# since a block whose repairs its conflicts' menus present as a product is
+# exactly one whose factors are those conflicts (Theorem 30).
+function conflict_blocks(d::Diagnosis)
+    groups = Vector{Int}[]
+    for a in d.alternatives
+        a.conflicts in groups || push!(groups, a.conflicts)
+    end
+    named = Set{Int}(i for g in groups for i in g)
+    for i in eachindex(d.conflicts)
+        i in named || push!(groups, Int[i])
+    end
+    sort!(groups; by = first)
+    return groups
+end
+
+# every repair one block offers: one entry from each of its conflicts' menus,
+# in every combination, and every selection of every alternative to it
+function block_selections(d::Diagnosis{P,V}, g::Vector{Int}) where {P,V}
+    out = Vector{Action{P}}[Action{P}[]]
+    for i in g
+        out = Vector{Action{P}}[[s; f.actions]
+                                for s in out for f in d.conflicts[i].fixes]
+    end
+    out = Vector{Action{P}}[unique!(s) for s in out]
+    for a in d.alternatives
+        a.conflicts == g && append!(out, selections(a))
+    end
+    return out
+end
+
+"""
+    selections(d) :: Vector{Vector{Action{P}}}
+
+Every repair of the query the report presents: one of each block's, in every
+combination. A block's own are one entry from each of its conflicts' menus,
+together with every selection of each alternative to it. Between them these are
+exactly the repairs as cheap as the cheapest — nothing offered that is not one,
+and none of them left unsaid.
+"""
+function selections(d::Diagnosis{P,V}) where {P,V}
+    out = Vector{Action{P}}[Action{P}[]]
+    for g in conflict_blocks(d)
+        out = Vector{Action{P}}[unique!([s; b]) for s in out
+                                for b in block_selections(d, g)]
+    end
+    return out
+end
 
 ## the universe as the clause logic sees it
 
@@ -847,28 +957,415 @@ function product_menus(fmin::Vector{Vector{Int}}, used::Vector{Int})
     return factors
 end
 
-# The largest part of the family that *is* a product: `k-1` singleton menus and
-# one free menu, every selection of which is a member. Any such rectangle is a
-# legitimate offer; this takes one of maximal coverage among those searched and
-# breaks ties on the fact order, so the same family always yields the same page.
-function rectangle_menus(fmin::Vector{Vector{Int}}, used::Vector{Int})
-    members = Set{Vector{Int}}(sort(m) for m in fmin)
-    best = nothing
-    bestkey = nothing
-    for m in fmin, c in m
-        core = sort!(Int[x for x in m if x != c])
-        free = Int[d for d in used if d ∉ core && sort!([core; d]) in members]
-        key = (-length(free), core, free)
-        if bestkey === nothing || key < bestkey
-            best, bestkey = (core, free), key
+## decomposition tree
+
+# The substitution (modular) decomposition of the cheapest-repair family: the
+# canonical tree of the monotone repair function, one node per fix-instruction.
+# A `:menu` chooses one of `facts`; an `:and` fixes all its `children`; an `:or`
+# fixes one of them; a `:threshold` fixes `k` of `facts`; a `:prime` is the
+# incompressible remainder, carrying `fmin` over `facts` for the product cover
+# below to present. One immutable struct with a kind tag; the
+# five constructors below name the shapes and leave the irrelevant fields empty.
+struct DecompNode
+    kind     :: Symbol                 # :menu | :and | :or | :threshold | :prime
+    facts    :: Vector{Int}            # :menu, :threshold, :prime — the ground U
+    children :: Vector{DecompNode}     # :and, :or
+    k        :: Int                    # :threshold — the K in "any K of"
+    fmin     :: Vector{Vector{Int}}    # :prime — the local family
+end
+
+MenuNode(facts::Vector{Int}) =
+    DecompNode(:menu, facts, DecompNode[], 0, Vector{Int}[])
+AndNode(children::Vector{DecompNode}) =
+    DecompNode(:and, Int[], children, 0, Vector{Int}[])
+OrNode(children::Vector{DecompNode}) =
+    DecompNode(:or, Int[], children, 0, Vector{Int}[])
+ThresholdNode(k::Int, facts::Vector{Int}) =
+    DecompNode(:threshold, facts, DecompNode[], k, Vector{Int}[])
+PrimeNode(fmin::Vector{Vector{Int}}, facts::Vector{Int}) =
+    DecompNode(:prime, facts, DecompNode[], 0, fmin)
+
+# The projection of the family onto a block: each member's trace on `B`, deduped.
+proj(F::Vector{Vector{Int}}, B::Vector{Int}) =
+    unique!(sort!(Vector{Int}[sort!(intersect(m, B)) for m in F]))
+
+# The members that lie wholly within `B`.
+within(F::Vector{Vector{Int}}, B::Vector{Int}) =
+    Vector{Int}[m for m in F if issubset(m, B)]
+
+# The co-occurrence components of `U`: two facts are joined when some member
+# holds both, so a component is a maximal set of facts that reach each other
+# through shared members. More than one means the family splits as an OR.
+function cooccur_components(F::Vector{Vector{Int}}, U::Vector{Int})
+    n = length(U)
+    at = Dict{Int,Int}(u => i for (i, u) in enumerate(U))
+    parent = collect(1:n)
+    function root(x::Int)
+        while parent[x] != x
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        end
+        return x
+    end
+    for m in F, a in m, b in m
+        a == b && continue
+        ra, rb = root(at[a]), root(at[b])
+        ra == rb || (parent[ra] = rb)
+    end
+    comps = Dict{Int,Vector{Int}}()
+    for i = 1:n
+        push!(get!(Vector{Int}, comps, root(i)), U[i])
+    end
+    sort!(Vector{Int}[sort!(c) for c in values(comps)])
+end
+
+# The finest factoring partition of `U`: the coarsest-to-finest fixpoint of
+# merging any two blocks whose joint projection is not the product of their
+# separate projections. Returns the blocks when the family genuinely factors as
+# their product (more than one block, every combination realised, the counts
+# agree), and `nothing` otherwise.
+function factoring_partition(F::Vector{Vector{Int}}, U::Vector{Int})
+    blocks = Vector{Int}[[u] for u in U]
+    changed = true
+    while changed
+        changed = false
+        for i = 1:length(blocks), j = i+1:length(blocks)
+            B1, B2 = blocks[i], blocks[j]
+            BU = sort!(vcat(B1, B2))
+            p1, p2, pu = proj(F, B1), proj(F, B2), proj(F, BU)
+            combos = Set(sort!(vcat(a, b)) for a in p1 for b in p2)
+            indep = length(pu) == length(p1) * length(p2) && Set(pu) == combos
+            if !indep
+                blocks[i] = BU
+                deleteat!(blocks, j)
+                changed = true
+                break
+            end
         end
     end
-    best === nothing && return Vector{Int}[], 0
-    core, free = best
-    menus = Vector{Int}[Int[x] for x in core]
-    push!(menus, free)
-    sort!(menus; by = first)
-    return menus, length(free)
+    total = prod(B -> length(proj(F, B)), blocks; init = 1)
+    gen = Set{Vector{Int}}()
+    function build(bi::Int, acc::Vector{Int})
+        if bi > length(blocks)
+            push!(gen, sort!(copy(acc)))
+            return
+        end
+        for tr in proj(F, blocks[bi])
+            build(bi + 1, vcat(acc, tr))
+        end
+    end
+    build(1, Int[])
+    (length(blocks) > 1 && gen == Set(F) && length(F) == total) ?
+        sort!(blocks; by = first) : nothing
+end
+
+# The decomposition tree of family `fmin` (all members size `k`) over facts
+# `used`. Recursion: a lone fact is a menu; a disconnected co-occurrence graph
+# is an OR of its components; a family that factors is an AND of its blocks; an
+# indecomposable block that is every `k`-subset is a threshold; anything else is
+# a prime. Canonical — the same family always yields the same tree.
+function decompose(fmin::Vector{Vector{Int}}, used::Vector{Int})
+    U = sort(used)
+    k = isempty(fmin) ? 0 : length(first(fmin))
+    length(U) ≤ 1 && return MenuNode(U)
+    comps = cooccur_components(fmin, U)
+    length(comps) > 1 &&
+        return OrNode(DecompNode[decompose(within(fmin, c), c) for c in comps])
+    part = factoring_partition(fmin, U)
+    part === nothing ||
+        return AndNode(DecompNode[decompose(proj(fmin, B), B) for B in part])
+    (k > 0 && length(fmin) == binomial(length(U), k)) &&
+        return ThresholdNode(k, U)
+    return PrimeNode(fmin, U)
+end
+
+# The tree as the flat menu list `analyse` consumes today, or `nothing` where a
+# node is not a plain product of choose-one menus. A `:menu` is one menu; an
+# `:or` of singleton leaves is itself one choose-one menu; an `:and` is the
+# concatenation of its children's menus. Threshold, prime, and any OR of
+# non-singletons have no menu-product form and return `nothing`.
+function flatten_menus(t::DecompNode)
+    t.kind === :menu && return Vector{Int}[copy(t.facts)]
+    if t.kind === :or
+        all(c -> c.kind === :menu && length(c.facts) == 1, t.children) ||
+            return nothing
+        return Vector{Int}[sort!(Int[c.facts[1] for c in t.children])]
+    end
+    if t.kind === :and
+        menus = Vector{Int}[]
+        for c in t.children
+            sub = flatten_menus(c)
+            sub === nothing && return nothing
+            append!(menus, sub)
+        end
+        return sort!(menus; by = first)
+    end
+    return nothing
+end
+
+# A readable one-line shape of a tree, for tests: mirrors the prototype's
+# `shape`, e.g. `AND(OR(menu[1], menu[2]), T2of[3, 4, 5])`.
+function tree_shape(t::DecompNode)
+    t.kind === :menu && return "menu$(t.facts)"
+    t.kind === :and && return "AND(" * join(map(tree_shape, t.children), ", ") * ")"
+    t.kind === :or && return "OR(" * join(map(tree_shape, t.children), ", ") * ")"
+    t.kind === :threshold && return "T$(t.k)of$(t.facts)"
+    return "PRIME$(t.facts)"
+end
+
+## the product cover
+
+# A **generalized rectangle** inside a family of cheapest repairs: disjoint
+# groups of facts, each group holding a menu of options — fact sets of one
+# size, compound where the family couples the facts it groups — such that every
+# selection (one option per menu, unioned) is a member of the family. It is
+# *exact* by construction: everything it offers is a cheapest repair, and never
+# a combination the family does not hold. One menu whose options are whole
+# members is the degenerate rectangle, always available, and is the flat list
+# of those members.
+#
+# Facts are bits in the search below — a member, an option and a selection are
+# all masks over the block's own facts — so a selection is an `|` and
+# membership a lookup.
+
+# a menu: the options it offers, each a set of facts
+const Menu = Vector{Vector{Int}}
+# a layer: the menus whose product it is, a generalized rectangle
+const Layer = Vector{Menu}
+
+# The members a layer's selections reach, and what it costs to read, priced
+# the way it prints: the menus of one entry are said together as one line, a
+# phrase per action; a menu with a choice is a line and then a line per entry,
+# each a phrase per action — so a compound entry is paid for by the actions it
+# names, which is what keeps a cover from collapsing into the flat list.
+lreach(w) = prod(length, w; init = 1)
+function lcost(w)
+    choice = 0; single = 0
+    for m in w
+        length(m) == 1 ? (single += olen(m[1])) :
+            (choice += 1 + sum(o -> 1 + olen(o), m; init = 0))
+    end
+    return choice + (single > 0 ? 1 + single : 0)
+end
+olen(o::Vector{Int}) = length(o)
+olen(o::UInt64) = count_ones(o)
+
+# Is `a` the better layer? More members per printed option first — that is what
+# a cover is for — then more menus, since a finer split says more about the
+# family than a coarser one, and then the facts themselves, so that a tie never
+# turns on the order the search happened to run in.
+function richer(a, b)
+    ka, kb = lreach(a) * lcost(b), lreach(b) * lcost(a)
+    ka != kb && return ka > kb
+    length(a) != length(b) && return length(a) > length(b)
+    return a < b
+end
+
+# every selection of a layer, as masks
+function layer_selections(menus::Vector{Vector{UInt64}})
+    sels = UInt64[0]
+    for m in menus
+        sels = UInt64[s | o for s in sels for o in m]
+    end
+    return sels
+end
+
+# what the menus other than `skip` offer: their selections, and the facts they
+# hold between them
+function menu_context(menus::Vector{Vector{UInt64}}, skip)
+    rest = Vector{UInt64}[menus[l] for l in eachindex(menus) if l ∉ skip]
+    omask = UInt64(0)
+    for m in rest, o in m
+        omask |= o
+    end
+    return layer_selections(rest), omask
+end
+
+# The options one menu may hold, given what the others offer. A member that
+# agrees with the others on their facts contributes what it has left over, and
+# such an option is admissible exactly when every one of the others' selections
+# completes it to a member — which is exactness, taken one option at a time,
+# since a selection takes one option per menu and no more.
+function menu_options(members::Vector{UInt64}, memset::Set{UInt64},
+                      others::Vector{UInt64}, omask::UInt64, size::Int)
+    seen = Set{UInt64}(others)
+    out = UInt64[]
+    for M in members
+        (M & omask) in seen || continue
+        o = M & ~omask
+        count_ones(o) == size || continue
+        o in out && continue
+        all(s -> (s | o) in memset, others) || continue
+        push!(out, o)
+    end
+    return sort!(out)
+end
+
+# The rectangles grown from one member: start with each of its facts a menu of
+# its own — a rectangle covering that member alone — then extend every menu as
+# far as exactness allows, and merge the pair of menus whose coupling buys the
+# most members, until no merge buys one. Every state along the way is
+# returned, since a merge covers more members and a split reads better, and
+# which of the two wins is `richer`'s to decide and not this function's. A
+# merge that buys no member is never made: two menus whose product is already
+# exact are two choices the reader makes separately, and coupling them would
+# print each entry of one beside every entry of the other — "relax A and relax
+# H, or relax H and drop A" — which is a product written out, not a factor.
+# Where a coupling does buy a member the split is not exact, and the compound
+# entries are the family's own shape.
+function grow_layers(members::Vector{UInt64}, memset::Set{UInt64}, seed::UInt64)
+    menus = Vector{UInt64}[UInt64[UInt64(1) << b]
+                           for b = 0:63 if !iszero((seed >> b) & 1)]
+    out = Vector{Vector{UInt64}}[]
+    isempty(menus) && return out
+    while true
+        grew = true
+        while grew
+            grew = false
+            for i in eachindex(menus)
+                others, omask = menu_context(menus, (i,))
+                opts = menu_options(members, memset, others, omask,
+                                    count_ones(menus[i][1]))
+                length(opts) > length(menus[i]) || continue
+                menus[i] = opts
+                grew = true
+            end
+        end
+        push!(out, Vector{UInt64}[copy(m) for m in menus])
+        length(menus) > 1 || break
+        best = nothing
+        for i = 1:length(menus)-1, j = i+1:length(menus)
+            others, omask = menu_context(menus, (i, j))
+            sz = count_ones(menus[i][1]) + count_ones(menus[j][1])
+            opts = menu_options(members, memset, others, omask, sz)
+            gain = length(opts) - length(menus[i]) * length(menus[j])
+            gain > 0 || continue
+            (best === nothing || gain > best[1]) && (best = (gain, i, j, opts))
+        end
+        best === nothing && break
+        menus[best[2]] = best[4]
+        deleteat!(menus, best[3])
+    end
+    return out
+end
+
+# the flat list as a layer: one menu whose options are whole members
+flat_layer(F::Vector{Vector{Int}}) =
+    Menu[sort!(Vector{Int}[sort(m) for m in F])]
+
+# The cover of a family by exact generalized rectangles: take the best
+# rectangle there is, emit it as a layer, drop the members its selections
+# reach, and go on until nothing is left. Since a single member is a rectangle,
+# the cover always finishes and always presents the whole family.
+#
+# The first layer is the one the section's proofs answer for, so where any
+# rectangle of two or more menus exists the first layer is one: a fact it
+# offers is then a fact one of its menus holds, and the reason that menu owns
+# names it. The layers after it repartition repairs and not reasons
+# (Corollary 25), and may be flat.
+function product_cover(F::Vector{Vector{Int}}, U::Vector{Int})
+    layers = Layer[]
+    isempty(F) && return layers
+    n = length(U)
+    # more facts than a mask holds: the flat list is all that can be said here,
+    # and it does say all of it
+    n > 64 && return Layer[flat_layer(F)]
+    at = Dict{Int,Int}(u => i for (i, u) in enumerate(U))
+    mask(m) = reduce(|, (UInt64(1) << (at[x] - 1) for x in m); init = UInt64(0))
+    unmask(o) = Int[U[i] for i = 1:n if !iszero((o >> (i - 1)) & 1)]
+    left = sort!(unique!(UInt64[mask(m) for m in F]))
+    while !isempty(left)
+        memset = Set{UInt64}(left)
+        best = nothing
+        for seed in left, cand in grow_layers(left, memset, seed)
+            isempty(layers) && length(cand) < 2 && continue
+            (best === nothing || richer(cand, best)) && (best = cand)
+        end
+        flat = Vector{UInt64}[copy(left)]
+        (best === nothing || (!isempty(layers) && richer(flat, best))) &&
+            (best = flat)
+        layer = Menu[sort!(Vector{Int}[unmask(o) for o in m]) for m in best]
+        sort!(layer; by = m -> first(first(m)))
+        push!(layers, layer)
+        reached = Set{UInt64}(layer_selections(best))
+        filter!(m -> m ∉ reached, left)
+    end
+    return layers
+end
+
+## sections
+
+# One independent block of the cheapest repairs, as the analysis settles it:
+# the facts it is about, and the layers that present its share of them. The
+# menus of the leading layer are the conflicts the page prints, and every layer
+# after it an alternative to all of them at once.
+struct Section
+    facts  :: Vector{Int}
+    layers :: Vector{Layer}
+end
+
+# the facts a node is about, gathered from its children where it has them
+node_facts(t::DecompNode) =
+    t.kind === :and || t.kind === :or ?
+    sort!(unique!(reduce(vcat, Vector{Int}[node_facts(c) for c in t.children];
+                         init = Int[]))) : sort(t.facts)
+
+# choose-one menus, as the layer they are
+singleton_layer(menus::Vector{Vector{Int}}) =
+    Menu[Vector{Int}[Int[f] for f in m] for m in menus]
+
+# The presentation of one node of the tree, over the family it is about. A node
+# that is a product of choose-one menus is that product and nothing else, so
+# every clean family reads as it always has; a genuine OR is its children, each
+# a way of settling the whole of it; anything else — a prime block, or a
+# threshold, which no registry query has yet produced — is covered by products.
+function section_of(t::DecompNode, F::Vector{Vector{Int}})
+    B = node_facts(t)
+    ms = flatten_menus(t)
+    ms === nothing || return Section(B, Layer[singleton_layer(ms)])
+    if t.kind === :or
+        ways = Layer[]
+        for c in t.children
+            Bc = node_facts(c)
+            sub = flatten_menus(c)
+            sub === nothing ? append!(ways, product_cover(within(F, Bc), Bc)) :
+                push!(ways, singleton_layer(sub))
+        end
+        sort!(ways; lt = richer)
+        return Section(B, ways)
+    end
+    return Section(B, product_cover(F, B))
+end
+
+# The sections of a family: the children of its decomposition where it factors,
+# and the whole of it where it does not. The order is the tree's, which is the
+# fact order, so the page numbers its conflicts the same way every time.
+function plan_sections(fmin::Vector{Vector{Int}}, used::Vector{Int})
+    F = Vector{Int}[sort(m) for m in fmin]
+    # A family that counts right is a product (Theorem 6), and that check is a
+    # component computation with no search at all. Where it answers, the
+    # sections are its factors and nothing further need be decomposed.
+    factors = product_menus(F, used)
+    factors === nothing ||
+        return Section[Section(f, Layer[singleton_layer([f])]) for f in factors]
+    t = decompose(F, used)
+    t.kind === :and &&
+        return Section[section_of(c, proj(F, node_facts(c))) for c in t.children]
+    return Section[section_of(t, F)]
+end
+
+# every repair a list of layers presents: one option from each menu of one of
+# them, unioned
+function cover_selections(layers::Vector{Layer})
+    out = Vector{Int}[]
+    for L in layers
+        sels = Vector{Int}[Int[]]
+        for m in L
+            sels = Vector{Int}[[s; o] for s in sels for o in m]
+        end
+        append!(out, Vector{Int}[sort!(s) for s in sels])
+    end
+    return out
 end
 
 ## reasons
@@ -1174,11 +1671,15 @@ end
 
 ## putting it together
 
-# what the analysis settles, on the instance, before anything is resolved
+# What the analysis settles, on the instance, before anything is resolved. The
+# conflicts are the menus of every section's leading layer, in section order:
+# each owns a reason of its own (Theorem 9), and the layers after the leading
+# one own none (Corollary 25), so they are alternatives to a whole section's
+# conflicts rather than conflicts themselves. `owner` says which section each
+# conflict's menu came from.
 struct Plan{P}
-    menus     :: Vector{Vector{Int}}
-    # the cheapest repairs no combination of the menus reaches, as fact sets
-    residue   :: Vector{Vector{Int}}
+    sections  :: Vector{Section}
+    owner     :: Vector{Int}
     reqs      :: Vector{Vector{P}}
     lines     :: Vector{Vector{Line{P}}}
     # per conflict: a tempting fact, and the rest of the cheapest repair that
@@ -1186,6 +1687,72 @@ struct Plan{P}
     blocks    :: Vector{Vector{Tuple{Vector{Int},Vector{Int}}}}
     others    :: Symbol
     truncated :: Bool
+end
+
+# Does this reason own that menu? Every reason meets every option of some menu
+# (Theorem 9), and the section whose menu it is answers for it. Where the
+# options are single facts — every clean family, and the primary layer of every
+# product — that is the menu lying inside the reason.
+owns(r::Vector{Int}, m::Menu) = all(o -> any(x -> x in r, o), m)
+
+# the facts a menu names, whatever its options group them into
+menu_facts(m::Menu) = sort!(unique!(reduce(vcat, m; init = Int[])))
+
+# Do the sections present the family exactly, and all of it? A section's own
+# offer is one entry from each menu of its leading layer — the conflicts it
+# becomes — together with every selection of each layer after that, which the
+# page prints as alternatives to those conflicts; `cover_selections` is
+# precisely that union. The sections are independent blocks, so what the page
+# offers is one of each in every combination — and that has to be the family
+# itself: nothing offered that is not a cheapest repair, and no cheapest repair
+# left unsaid.
+function covers_family(secs::Vector{Section}, fmin::Vector{Vector{Int}})
+    want = Set{Vector{Int}}(sort(m) for m in fmin)
+    # no sections is one empty selection: a query already satisfiable on its
+    # facts is repaired by doing nothing, and that is the whole of the family
+    isempty(want) && return isempty(secs)
+    out = Vector{Int}[Int[]]
+    for s in secs
+        sels = cover_selections(s.layers)
+        allunique(sels) || return false
+        out = Vector{Int}[sort!([a; b]) for a in out for b in sels]
+        length(out) ≤ length(want) || return false
+    end
+    return Set(out) == want && length(out) == length(want)
+end
+
+# One reason, as the lines that argue it: the query's own facts it holds, and
+# then the meet its supports close at — or, where no meet can be printed, the
+# core itself. `n` numbers the argument, since a section that offers several
+# menus answers for one reason per menu.
+function reason_lines(sat::SAT{P,V}, satx::SAT{P,V}, facts::Vector{Fact{P}},
+                      fcl::Dict{Int,Clause{P}}, selectors::Vector{Int},
+                      r::Vector{Int}, menu::Vector{Int}, n::Int) where {P,V}
+    ls = Line{P}[Line{P}(fcl[j], P[], true, n, nothing)
+                 for j in r if haskey(fcl, j)]
+    core = reason_core(satx, r, facts, selectors)
+    meet = length(r) ≤ MASK_WIDTH ?
+        best_meet(sat, r, facts, fcl, core, menu) : nothing
+    if meet === nothing && !isempty(core)
+        # the projection drowned — usually in a lockstep family whose
+        # thresholds the proof never needed. Coarsen by licensed joins
+        # and try once more; failing that, the coarsened core is still
+        # the better fallback, since every join it prints is true and
+        # the set still contradicts
+        held = Clause{P}[fcl[j] for j in r if haskey(fcl, j)]
+        core = coarsen_core(sat, core, held)
+        meet = length(r) ≤ MASK_WIDTH ?
+            best_meet(sat, r, facts, fcl, core, menu) : nothing
+    end
+    derived = meet === nothing ?
+        Line{P}[Line{P}(it.clause, P[], false, n, nothing)
+                for it in factor_items(
+                    Item{P}[Item{P}(c, P[], UInt64(0)) for c in core])] :
+        Line{P}[Line{P}(cl, trim_route(sat, core, cl, route),
+                        false, n, meet.pivot)
+                for (cl, route) in meet.sides]
+    append!(ls, drop_covered(derived))
+    return ls
 end
 
 function analyse(
@@ -1197,29 +1764,17 @@ function analyse(
     lits = Int[f.lit for f in facts]
     k, fmin, more = min_repairs(sat, lits)
     used = sort!(unique!(reduce(vcat, fmin; init = Int[])))
-    menus = Vector{Int}[]
-    if !isempty(used)
-        factors = product_menus(fmin, used)
-        menus = factors === nothing ? first(rectangle_menus(fmin, used)) : factors
-    end
-    # What the menus reach, and what is left over: the residue, which is the
-    # cheapest repairs of the instance those selections block (Lemma 24) and
-    # is laid out after the conflicts as the fixes it is. A selection takes
-    # one entry of every menu there is — where there are none, the one empty
-    # selection, since a query already satisfiable on its facts is repaired by
-    # doing nothing — and in the product case the selections are the whole
-    # family, so nothing is left.
-    members = Set{Vector{Int}}(sort(m) for m in fmin)
-    reached = Set{Vector{Int}}()
-    for sel in Iterators.product(menus...)
-        s = sort!(collect(Int, sel))
-        s in members && push!(reached, s)
-    end
-    residue = sort!(Vector{Int}[m for m in members if m ∉ reached])
-    # With the family covered, what is outside the page is what the bounded
-    # enumeration itself missed — the cap stopping and a further solve finding
-    # a repair beyond what it found — and, failing that, Theorem 5's one
-    # question about repairs that give up more
+    # The cheapest repairs, decomposed and then covered by products: the tree
+    # says which things are independently wrong, and each of them is presented
+    # by exact rectangles of its own share of the family. Nothing is left over
+    # by construction — the cover of a block always finishes on the block —
+    # so there is no residue to lay out and no cross-product to enumerate.
+    secs = isempty(used) ? Section[] : plan_sections(fmin, used)
+    @assert covers_family(secs, fmin)
+    # What is outside the page is then what the bounded enumeration itself
+    # missed — the cap stopping and a further solve finding a repair beyond
+    # what it found — and, failing that, Theorem 5's one question about
+    # repairs that give up more
     others = more ? :some : (larger_repairs(sat, lits, fmin) ? :larger : :none)
 
     fcl = Dict{Int,Clause{P}}()
@@ -1227,78 +1782,82 @@ function analyse(
         c = fact_clause(sat, prob, facts[i])
         c === nothing || (fcl[i] = c)
     end
-    # Every fact the page's own fixes take: the menus of every conflict, and
-    # the residue's entries. An action the page offers is not a road not taken,
-    # so no fact here is tempting — and a fact *is* one action of the page's
-    # vocabulary, since the two facts a package can have differ in kind, one
-    # asking that the requirement be dropped and the other that the query's
-    # own limits be lifted.
-    cover = Set{Int}(j for menu in menus for j in menu)
-    for m in residue, j in m
-        push!(cover, j)
-    end
+    # Every fact the page's own fixes take, on any layer of any section. An
+    # action the page offers is not a road not taken, so no fact here is
+    # tempting — and a fact *is* one action of the page's vocabulary, since the
+    # two facts a package can have differ in kind, one asking that the
+    # requirement be dropped and the other that the query's limits be lifted.
+    cover = Set{Int}(x for s in secs for L in s.layers for m in L
+                       for o in m for x in o)
 
     selectors = sort!(collect(keys(satx.why)))
+    owner = Int[]
     reqs = Vector{P}[]
     lines = Vector{Line{P}}[]
     blocks = Vector{Tuple{Vector{Int},Vector{Int}}}[]
     truncated = false
-    # one walk, over the whole fact set: a reason can hold this conflict's menu
-    # *and* facts another menu offers, and a pool with those held out cannot
-    # contain it. Ownership is then a filter, and a reason two conflicts own is
-    # set out under both — redundant, never wrong.
+    # one walk, over the whole fact set: a reason can hold this menu *and*
+    # facts another menu offers, and a pool with those held out cannot contain
+    # it. Ownership is then a filter, and a reason two conflicts own is set out
+    # under both — redundant, never wrong.
     found = Vector{Vector{Int}}()
-    if !isempty(menus)
+    if !isempty(secs)
         found, ok = reason_walk(sat, collect(eachindex(facts)), lits)
         ok || (truncated = true)
     end
-    for (i, menu) in enumerate(menus)
-        reasons = Vector{Int}[r for r in found if menu ⊆ r]
-        sort!(reasons; by = r -> (length(r), r))
-        if isempty(reasons)
-            # every conflict owns a reason of its very own, whatever the walk
-            # got to: with the other menus settled one way, what is left is
-            # still unsatisfiable and every reason in it is this one's
-            held = Set{Int}(first(menus[j]) for j in eachindex(menus) if j != i)
-            pool = Int[lits[x] for x in eachindex(facts) if x ∉ held]
-            at = Dict{Int,Int}(l => j for (j, l) in enumerate(lits))
-            r = sort!(Int[at[l] for l in sat_mus(sat, pool)])
-            isempty(r) || push!(reasons, r)
-            isempty(reasons) && push!(reasons, sort!(unique!(copy(menu))))
-            truncated = true
-        end
-        # One reason per conflict: the shortest it owns. A second owned reason
-        # proves the same conflict a second way, which the page has no room to
-        # spend and the reader no use for; what it wanted the second reason
+    # The conflicts are the menus of every section's leading layer — the layers
+    # after it repartition repairs and not reasons (Corollary 25) — so these
+    # are the menus a reason is owned by and settled at, one conflict each.
+    prim = Tuple{Int,Menu}[(i, m) for (i, s) in enumerate(secs)
+                           for m in first(s.layers)]
+    at = Dict{Int,Int}(l => j for (j, l) in enumerate(lits))
+    for (pi, (si, m)) in enumerate(prim)
+        told = Vector{Vector{Int}}()
+        ls = Line{P}[]
+        # One reason per conflict: the shortest its menu owns. A second owned
+        # reason proves the same thing a second way, which the page has no room
+        # to spend and the reader no use for; what it wanted the second reason
         # for — why an action it can see is not offered — is a question about
         # repairs, and the blocked entries below answer it from the cover and
         # one bounded search apiece.
-        r = first(reasons)
-        ls = Line{P}[Line{P}(fcl[j], P[], true, 1, nothing)
-                     for j in r if haskey(fcl, j)]
-        core = reason_core(satx, r, facts, selectors)
-        meet = length(r) ≤ MASK_WIDTH ?
-            best_meet(sat, r, facts, fcl, core, menu) : nothing
-        if meet === nothing && !isempty(core)
-            # the projection drowned — usually in a lockstep family whose
-            # thresholds the proof never needed. Coarsen by licensed joins
-            # and try once more; failing that, the coarsened core is still
-            # the better fallback, since every join it prints is true and
-            # the set still contradicts
-            held = Clause{P}[fcl[j] for j in r if haskey(fcl, j)]
-            core = coarsen_core(sat, core, held)
-            meet = length(r) ≤ MASK_WIDTH ?
-                best_meet(sat, r, facts, fcl, core, menu) : nothing
+        function explain(r::Vector{Int}, menu::Vector{Int})
+            r in told && return
+            push!(told, r)
+            append!(ls, reason_lines(sat, satx, facts, fcl, selectors, r, menu,
+                                     length(told)))
         end
-        derived = meet === nothing ?
-            Line{P}[Line{P}(it.clause, P[], false, 1, nothing)
-                    for it in factor_items(
-                        Item{P}[Item{P}(c, P[], UInt64(0)) for c in core])] :
-            Line{P}[Line{P}(cl, trim_route(sat, core, cl, route),
-                            false, 1, meet.pivot)
-                    for (cl, route) in meet.sides]
-        append!(ls, drop_covered(derived))
-        rs = sort!(unique!(P[facts[j].pkg for j in r if facts[j].req]))
+        rs = Vector{Int}[r for r in found if owns(r, m)]
+        sort!(rs; by = r -> (length(r), r))
+        if isempty(rs)
+            # every conflict owns a reason of its very own, whatever the walk
+            # got to: with the other menus settled one way, what is left is
+            # still unsatisfiable and every reason in it is this one's
+            held = Set{Int}()
+            for (qi, (_, mq)) in enumerate(prim)
+                qi == pi || union!(held, first(mq))
+            end
+            pool = Int[lits[x] for x in eachindex(facts) if x ∉ held]
+            r = sort!(Int[at[l] for l in sat_mus(sat, pool)])
+            isempty(r) && (r = menu_facts(m))
+            truncated = true
+            explain(r, menu_facts(m))
+        else
+            explain(first(rs), menu_facts(m))
+        end
+        # ... and then whatever more it takes to name every package this menu
+        # offers. A menu of compound options is owned by reasons that need not
+        # hold all of its facts, and a fix the page makes while no line speaks
+        # of its package would be talking past the reader.
+        for o in m, x in o
+            named = Set{P}(p for l in ls for p in packages(l.clause))
+            facts[x].pkg in named && continue
+            rs = Vector{Int}[r for r in found if x in r && r ∉ told]
+            isempty(rs) && continue
+            sort!(rs; by = r -> (length(r), r))
+            explain(first(rs), Int[x])
+        end
+        rs = sort!(unique!(P[facts[j].pkg for r in told for j in r
+                            if facts[j].req]))
         # What this page makes tempting, and what the solver says of each: a
         # package its lines or its heading name, an action on that package the
         # cover never offers, and the cheapest repair carrying that action.
@@ -1326,11 +1885,12 @@ function analyse(
         for (W, xs) in sort!(collect(exhibits))
             push!(blks, (sort!(xs), Int[j for j in W if j ∉ xs]))
         end
+        push!(owner, si)
         push!(lines, ls)
         push!(blocks, blks)
         push!(reqs, rs)
     end
-    return Plan{P}(menus, residue, reqs, lines, blocks, others, truncated)
+    return Plan{P}(secs, owner, reqs, lines, blocks, others, truncated)
 end
 
 # The kinds to lift so that a package this query emptied is choosable again.
@@ -1462,41 +2022,86 @@ function diagnose(
         Resolver.finalize(satx)
     end
 
-    # the menus, as the actions they ask for: the missing requirements first,
-    # each its own forced choice, then the factors of the cheapest repairs
-    menus = Vector{Vector{Action{P}}}[]
-    for p in gone
-        push!(menus, Vector{Action{P}}[Action{P}[Action(:drop, p)]])
+    # The sections, as the actions they ask for: the missing requirements
+    # first, each its own forced choice, then the cover of the cheapest
+    # repairs, layer by layer and menu by menu — the leading layer's menus as
+    # the conflicts they are, and every layer after it as an alternative to
+    # them all.
+    function option_actions(o::Vector{Int})
+        as = Action{P}[]
+        for x in o, a in fix_actions(prob, sat, univ, facts[x])
+            a in as || push!(as, a)
+        end
+        return as
     end
-    for menu in plan.menus
-        push!(menus, Vector{Action{P}}[fix_actions(prob, sat, univ, facts[i])
-                                       for i in menu])
+    alayers = Vector{Vector{Vector{Vector{Action{P}}}}}[
+        Vector{Vector{Vector{Action{P}}}}[
+            Vector{Vector{Action{P}}}[Vector{Action{P}}[option_actions(o)
+                                                        for o in m]
+                                      for m in L]
+            for L in s.layers]
+        for s in plan.sections]
+    # How the page settles a section while it shows what one fix elsewhere
+    # gets you: the first option of every menu of its primary layer.
+    defaults = Vector{Action{P}}[]
+    for L in alayers
+        as = Action{P}[]
+        for m in first(L), a in first(m)
+            a in as || push!(as, a)
+        end
+        push!(defaults, as)
     end
 
     conflicts = Conflict{P,V}[]
-    for (i, entries) in enumerate(menus)
-        fixes = Fix{P,V}[]
-        for e in entries
-            acts = copy(e)
-            for j in eachindex(menus)
-                j == i || append!(acts, first(menus[j]))
-            end
-            unique!(acts)
-            push!(fixes, Fix{P,V}(e, witness(sat, univ, prob, acts; by, order)))
+    # what the rest of the page asks for, with section `si` (or none) left out
+    function elsewhere(si::Int, skip_gone::Int)
+        as = Action{P}[Action(:drop, gone[j]) for j in eachindex(gone)
+                       if j != skip_gone]
+        for j in eachindex(defaults), a in (j == si ? Action{P}[] : defaults[j])
+            a in as || push!(as, a)
         end
-        if i ≤ length(gone)
-            push!(conflicts, Conflict{P,V}(P[gone[i]], Line{P}[],
-                Dict{P,Vector{V}}(), Dict{P,Vector{Vector{Symbol}}}(), fixes))
-            continue
-        end
-        n = i - length(gone)
+        return as
+    end
+    for (i, p) in enumerate(gone)
+        acts = Action{P}[Action(:drop, p)]
+        f = Fix{P,V}(copy(acts),
+                     witness(sat, univ, prob, unique!([acts; elsewhere(0, i)]);
+                             by, order))
+        push!(conflicts, Conflict{P,V}(P[p], Line{P}[], Dict{P,Vector{V}}(),
+            Dict{P,Vector{Vector{Symbol}}}(), Fix{P,V}[f],
+            Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}[]))
+    end
+    # one menu of a layer, as the fixes it offers: each option withdrawn with
+    # the layer's other menus settled the first way they offer, which is how
+    # every menu on the page reads
+    function menu_fixes(L::Vector{Vector{Vector{Action{P}}}}, mi::Int,
+                        rest::Vector{Action{P}})
+        mates = Action{P}[a for (mj, mq) in enumerate(L) if mj != mi
+                            for a in first(mq)]
+        return Fix{P,V}[Fix{P,V}(copy(o),
+                                 witness(sat, univ, prob,
+                                         unique!(Action{P}[o; mates; rest]);
+                                         by, order))
+                        for o in L[mi]]
+    end
+    # which conflicts came from which section, so that a later layer can name
+    # the ones it is an alternative to
+    mine = Vector{Int}[Int[] for _ in plan.sections]
+    for i in eachindex(plan.owner)
+        push!(mine[plan.owner[i]], length(gone) + i)
+    end
+    for i in eachindex(plan.owner)
+        n = plan.owner[i]
+        L = first(alayers[n])
+        mi = findfirst(==(length(gone) + i), mine[n])
+        fixes = menu_fixes(L, mi, elsewhere(n, 0))
         blocks = Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}[
             (Vector{Action{P}}[fix_actions(prob, sat, univ, facts[x])
                                for x in xs],
-             Action{P}[a for j in rest
+             Action{P}[a for j in rst
                        for a in fix_actions(prob, sat, univ, facts[j])])
-            for (xs, rest) in plan.blocks[n]]
-        lines = plan.lines[n]
+            for (xs, rst) in plan.blocks[i]]
+        lines = plan.lines[i]
         pkgs = P[]
         for l in lines, p in packages(l.clause)
             p in pkgs || push!(pkgs, p)
@@ -1507,27 +2112,29 @@ function diagnose(
             ks = Vector{Symbol}[exclusion_kinds(prob, p, v) for v in versions[p]]
             any(!isempty, ks) && (excluded[p] = ks)
         end
-        push!(conflicts, Conflict{P,V}(plan.reqs[n], lines, versions, excluded,
+        push!(conflicts, Conflict{P,V}(plan.reqs[i], lines, versions, excluded,
                                        fixes, blocks))
     end
-
-    # The residue: the cheapest repairs no combination of the menus reaches.
-    # Each is a whole repair by itself, so it becomes one fix with all of its
-    # facts' actions and a witness of its own — nothing of another conflict's
-    # menu is mixed in, because there is no other conflict left to settle. A
-    # requirement the universe holds nothing of can be settled only one way,
-    # so the entry names that too: what it asks for is the whole of what it
-    # asks for.
-    forced = Action{P}[Action(:drop, p) for p in gone]
-    residue = Fix{P,V}[]
-    for m in plan.residue
-        acts = copy(forced)
-        for j in m, a in fix_actions(prob, sat, univ, facts[j])
-            a in acts || push!(acts, a)
+    # Every layer after the leading one is an alternative to the whole of its
+    # section's conflicts. Which of them it declines is read off the facts: a
+    # leading menu the layer shares no fact with is one every selection of the
+    # layer misses entirely, and those are what the label says it is instead of.
+    alternatives = Alternative{P,V}[]
+    for (n, s) in enumerate(plan.sections)
+        rest = elsewhere(n, 0)
+        lead = first(s.layers)
+        for li = 2:length(s.layers)
+            here = Set{Int}(x for m in s.layers[li] for o in m for x in o)
+            avoided = Int[mine[n][mi] for mi in eachindex(lead)
+                          if isdisjoint(menu_facts(lead[mi]), here)]
+            L = alayers[n][li]
+            menus = Vector{Fix{P,V}}[menu_fixes(L, mi, rest)
+                                     for mi in eachindex(L)]
+            push!(alternatives,
+                  Alternative{P,V}(copy(mine[n]), avoided, menus))
         end
-        push!(residue, Fix{P,V}(acts, witness(sat, univ, prob, acts; by, order)))
     end
-    return Diagnosis{P,V}(conflicts, residue, plan.others, plan.truncated)
+    return Diagnosis{P,V}(conflicts, alternatives, plan.others, plan.truncated)
 end
 
 ## the report
@@ -2021,26 +2628,26 @@ end
 
 # What the fix gets you, of the packages the page speaks of: the reader sees the
 # witness land where the opened meet says it can, which is what the versions are
-# on the page for. A conflict's own fix is shown of that conflict's packages; a
-# residue entry settles every conflict at once, so it is shown of all of them.
-function print_allows(io::IO, pkgs, f::Fix{P,V}, indent::String) where {P,V}
+# on the page for. Where the entry is one of several under a bullet, the line
+# says which entry it is for; where the bullet has only the one, it does not.
+function print_allows(io::IO, pkgs, f::Fix{P,V}, indent::String;
+                      prefix::String = "allows: ") where {P,V}
     ps = sort!(P[p for p in pkgs if haskey(f.solution, p)])
     isempty(ps) && return
-    print_wrapped(io, join(String["$p $(f.solution[p])" for p in ps], ", "),
-                  indent * "→ allows: ", indent * "  ")
+    print_wrapped(io, prefix * join(String["$p $(f.solution[p])" for p in ps],
+                                    ", "), indent * "→ ", indent * "  ")
 end
 
 # A menu of one has exactly three honest wordings, and which one is the whole of
 # what the reader learns about the gap. Never derived from the length of a
-# vector; derived from the two decided questions — whether anything larger
-# exists, and whether the menus reach every repair as cheap as theirs.
+# vector; derived from the one decided question — whether anything larger
+# exists — since the conflicts do reach every repair as cheap as theirs.
 function print_menu(io::IO, c::Conflict{P,V}, others::Symbol,
                     alone::Bool) where {P,V}
     isempty(c.fixes) && return
     if length(c.fixes) == 1
-        # "only" is a claim about the world, and the world includes the
-        # residue on the same page: an entry above minimal fixes that do not
-        # take it is one fix, not the only one
+        # "only" is a claim about the world, and it is made only where the
+        # page has settled what the world holds beside this entry
         word = !alone ? "One fix" :
                others === :none ? "The only fix" :
                others === :larger ? "The only minimal fix" : "One fix"
@@ -2055,16 +2662,101 @@ function print_menu(io::IO, c::Conflict{P,V}, others::Symbol,
     end
 end
 
+# The entries of one menu, as the choice they are. The reader has to see where
+# one thing to do ends and the next begins, and an entry may ask for several
+# actions at once — so where any of them does, the entries are parted by
+# semicolons, which the "and" inside an entry cannot be mistaken for. Where
+# every entry is a single action, commas read better and cannot mislead.
+function menu_phrase(menu::Vector{<:Fix})
+    ps = String[fix_phrase(f) for f in menu]
+    any(f -> length(f.actions) > 1, menu) ?
+        join(ps, "; ", "; or ") : join(ps, ", ", ", or ")
+end
+
+# One layer of a cover, as the choices it leaves: one bullet per menu, and
+# under each entry what taking it gets you with the layer's other menus settled
+# the first way they offer. A menu of one entry has nothing to distinguish, so
+# its witness is said plainly; where there is a choice, each witness names the
+# entry it is for.
+function print_layer(io::IO, pkgs, layer::Vector{Vector{Fix{P,V}}},
+                     indent::String) where {P,V}
+    for menu in layer
+        print_wrapped(io, menu_phrase(menu), indent * "• ", indent * "  ")
+        for f in menu
+            prefix = length(menu) == 1 ? "allows: " :
+                join_and(String[action_gerund(a) for a in f.actions]) *
+                " allows: "
+            print_allows(io, pkgs, f, indent * "  "; prefix)
+        end
+    end
+end
+
+# What one alternative declines. Every selection of a later layer misses some
+# leading menu of its block entirely (the theory page's Lemma 31), so there is
+# something to name: where each of those menus offers a single fix, the label
+# says that fix as the thing it is doing without, and where one of them offers
+# a choice there is no single thing to name and the label points at the
+# conflicts instead. Either way the alternative replaces the menus of its own
+# block only — the rest of the report stands as printed.
+function alternative_label(d::Diagnosis{P,V}, a::Alternative{P,V}) where {P,V}
+    isempty(a.avoided) && return "Or, to fix another way:"
+    if all(i -> length(d.conflicts[i].fixes) == 1, a.avoided)
+        gs = String[action_gerund(x) for i in a.avoided
+                    for x in only(d.conflicts[i].fixes).actions]
+        # "without A or B" is neither, where "without A and B" leaves the
+        # reader to decide whether the "and" is inside the "without"
+        return "Or, to fix without " * join_or(gs) * ":"
+    end
+    ns = String[string(i) for i in a.avoided]
+    return "Or, to fix without any of the fixes for " *
+        (length(ns) == 1 ? "Conflict " : "Conflicts ") * join_and(ns) * ":"
+end
+
+# One alternative: what it declines, and then what it offers instead. Its
+# menus of one entry are all to be done, so they are said as one thing, joined
+# by "and"; a menu with a choice is numbered like a conflict's, one witness
+# under each entry, since an entry there completes the whole alternative and
+# the witness is for that completion. Where the layer leaves no choice at all
+# it is one line and one witness. Several menus with a choice — rare — print
+# as bullets to settle, each its entries joined by "or". The versions an
+# alternative speaks of are the block's, since what it is measured against is
+# what the conflicts it replaces put on the page.
+function print_alternative(io::IO, d::Diagnosis{P,V},
+                           a::Alternative{P,V}) where {P,V}
+    print_wrapped(io, alternative_label(d, a), "", "")
+    pkgs = Set{P}(p for i in a.conflicts for p in keys(d.conflicts[i].versions))
+    singles = Vector{Fix{P,V}}[m for m in a.menus if length(m) == 1]
+    choices = Vector{Fix{P,V}}[m for m in a.menus if length(m) > 1]
+    acts = unique!(Action{P}[x for m in singles for x in only(m).actions])
+    joint = join_and(String[action_phrase(x) for x in acts])
+    if isempty(choices)
+        print_wrapped(io, joint, "  ", "  ")
+        print_allows(io, pkgs, only(first(a.menus)), "  ")
+    elseif length(choices) == 1
+        print_wrapped(io, isempty(singles) ? "any one of:" : joint * ", and one of:",
+                      "  ", "  ")
+        for (i, f) in enumerate(only(choices))
+            println(io, "    ", i, ". ", fix_phrase(f))
+            print_allows(io, pkgs, f, "       ")
+        end
+    else
+        print_wrapped(io, isempty(singles) ? "settle each of these:" :
+                          joint * ", and settle each of these:", "  ", "  ")
+        print_layer(io, pkgs, choices, "  ")
+    end
+end
+
 """
     print_conflict(io, c, index = nothing; others = :some)
 
 One conflict's page: its heading (where it is numbered), the lines that prove
-it, the menu that settles it, and the verdict on each action the page makes
-tempting and no fix takes. `others` is what the whole diagnosis knows about
-the repairs its menus do not reach, which is what a menu of one is entitled to
-say about itself. `also` is a package to name in the heading beside the
-requirements, which a page whose heading would otherwise repeat another's is
-given (`heading_extras`).
+it, what settles it, and the verdict on each action the page makes tempting and
+no fix takes. `others` is what the whole diagnosis knows about the repairs that
+cost more than the ones it offers, which is what a menu of one is entitled to
+say about itself; `alone` says whether this conflict's menu is the whole of
+what settles its block, which an alternative to that block denies. `also` is a
+package to name in the heading beside the requirements, which a page whose
+heading would otherwise repeat another's is given (`heading_extras`).
 """
 function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
                         others::Symbol = :some, alone::Bool = true,
@@ -2073,8 +2765,19 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
         println(io, "Conflict ", index, ": ", conflict_heading(c, also))
     vers(p) = c.versions[p]
     names(p) = string(p)
-    print_chain(io, c, Line{P}[l for l in c.lines if l.given],
-                Line{P}[l for l in c.lines if !l.given], vers, names)
+    # One chain per reason. A conflict owns one reason and prints one chain
+    # for it; a further chain appears only where its menu couples actions and
+    # the first reason left a package it offers unspoken of. Each is an
+    # argument of its own: run together they would read as one chain that is
+    # none, and a statement two of them rest on would be said twice on the way.
+    # Restated inside its own chain, it is a premise; repeated in one pooled
+    # walk, it is a stutter.
+    for (i, n) in enumerate(unique!(Int[l.proof for l in c.lines]))
+        i == 1 || println(io, "  and also:")
+        print_chain(io, c, Line{P}[l for l in c.lines if l.given && l.proof == n],
+                    Line{P}[l for l in c.lines if !l.given && l.proof == n],
+                    vers, names)
+    end
     print_menu(io, c, others, alone)
     print_blocked(io, c)
 end
@@ -2090,6 +2793,9 @@ end
 # Printed after the menu: the reader meets the offer first and the roads not
 # taken second. No proof prints here — why a fix is not offered is a
 # second-order question, and the verdict has already answered it.
+# how many further actions an unless-sentence names before it counts them
+const UNLESS_NAMED = 4
+
 function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
     isempty(c.blocks) && return
     println(io, "  Blocked fixes:")
@@ -2100,15 +2806,23 @@ function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
         # would take for this road to go somewhere; several tempting actions
         # exhibiting one repair are said once, as the choice they are not --
         # each is a road, and it is only the two together that go anywhere
+        # the price is named in full while it is short enough to act on, and
+        # counted beyond that: a dozen further edits is a verdict on the road,
+        # not a list anyone will follow, and the exhibit behind it is checked
+        # whether or not it prints
+        long = length(unless) > UNLESS_NAMED
         lead = if length(bundles) > 1
             roads = join_or(String[action_gerund(a) for a in acts])
             quantity = length(acts) == 2 ? "both" : "all of them"
             also = isempty(unless) ? "" :
+                long ? " and $(length(unless)) other changes" :
                 " and also " * join_and(String[action_past(a) for a in unless])
             "$roads would only help if you do $quantity$also."
         elseif isempty(unless)
             help = length(acts) > 1 ? "do not help" : "does not help"
             "$tried $help."
+        elseif long
+            "$tried would not help without $(length(unless)) other changes."
         else
             also = join_and(String[action_past(a) for a in unless])
             "$tried would not help unless you also $also."
@@ -2117,116 +2831,22 @@ function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
     end
 end
 
-## the residue on the page
-#
-# The residue's entries are whole repairs, so the plainest layout is the list
-# of them, one compound entry each. Where the family has structure that list
-# repeats itself — the same actions over and over, with one choice varying —
-# and a layer of the cover says the same thing in fewer lines: the actions all
-# of its repairs share, then the menus one entry of each completes them with.
-# Both forms are complete and neither claims structure the family does not
-# have (Section 4), so which one prints is decided by what it costs to read.
-#
-# A group is one layer of that cover: the actions every repair in it takes, and
-# the choices left. A group with no choices left is a single repair — which is
-# what every group of the flat list is — so one printer says both forms, and
-# the flat list is just the cover that gives each repair a layer of its own.
-const Group{P} = Tuple{Vector{Action{P}},Vector{Vector{Action{P}}}}
-
-# The cover of Section 4 over the actions the entries name: the family's
-# product where it has one, its best rectangle where it does not, and recurse
-# on what is left. Every selection of every layer is checked to be one of the
-# entries, so what is built from this claims nothing the flat list does not;
-# where the check fails there is no cover to print and the caller lists them.
-function residue_cover(fixes::Vector{Fix{P,V}}) where {P,V}
-    acts = Action{P}[]
-    for f in fixes, a in f.actions
-        a in acts || push!(acts, a)
+# how many repairs one block offers: one entry from each of its conflicts'
+# menus in every combination, and each alternative's own product besides
+function nselections(d::Diagnosis, g::Vector{Int})
+    n = prod(length(d.conflicts[i].fixes) for i in g; init = 1)
+    for a in d.alternatives
+        a.conflicts == g || continue
+        n += prod(length(m) for m in a.menus; init = 1)
     end
-    code = Dict{Action{P},Int}(a => i for (i, a) in enumerate(acts))
-    members = Vector{Int}[sort!(Int[code[a] for a in f.actions]) for f in fixes]
-    allunique(members) || return nothing
-    left = copy(members)
-    groups = Group{P}[]
-    while !isempty(left)
-        pool = Set{Vector{Int}}(left)
-        used = sort!(unique!(reduce(vcat, left; init = Int[])))
-        menus = product_menus(left, used)
-        menus === nothing && (menus = first(rectangle_menus(left, used)))
-        isempty(menus) && return nothing
-        prod(length, menus) ≤ length(left) || return nothing
-        sels = Set{Vector{Int}}()
-        for sel in Iterators.product(menus...)
-            m = sort!(collect(Int, sel))
-            m in pool || return nothing
-            push!(sels, m)
-        end
-        push!(groups, (Action{P}[acts[only(m)] for m in menus if length(m) == 1],
-                       Vector{Action{P}}[Action{P}[acts[x] for x in m]
-                                         for m in menus if length(m) > 1]))
-        filter!(m -> m ∉ sels, left)
-    end
-    return groups
-end
-
-# what a layout costs the reader: the lines it prints, before wrapping. A
-# repair standing on its own is its actions and its witness; a layer is what
-# its repairs share, and then each choice with the witness of taking it
-group_lines(g::Group) = isempty(g[2]) ? 2 :
-    (isempty(g[1]) ? 0 : 1) + sum(m -> 1 + 2 * length(m), g[2])
-
-layout_lines(gs::Vector{<:Group}) = sum(group_lines, gs; init = 0)
-
-# The fixes no combination of the menus reaches, after the last conflict and
-# never as a conflict of its own: reasons do not layer (Corollary 25), the
-# conflicts above have already explained every one, and what is left to say is
-# the repairs themselves and what each of them allows. No proofs print here.
-function print_residue(io::IO, d::Diagnosis{P,V}) where {P,V}
-    isempty(d.residue) && return
-    pkgs = Set{P}(p for c in d.conflicts for p in keys(c.versions))
-    at = Dict{Set{Action{P}},Fix{P,V}}(Set(f.actions) => f for f in d.residue)
-    flat = Group{P}[(f.actions, Vector{Action{P}}[]) for f in d.residue]
-    cover = residue_cover(d.residue)
-    groups = cover !== nothing && layout_lines(cover) < layout_lines(flat) ?
-        cover : flat
-    println(io, "If none of the fixes above suits, ",
-            "the remaining minimal fixes are:")
-    phrases(as) = join_and(String[action_phrase(a) for a in as])
-    for (i, (core, menus)) in enumerate(groups)
-        opened = false
-        if !isempty(core)
-            print_wrapped(io, isempty(menus) ? phrases(core) :
-                          "all of: " * phrases(core), "  $i. ", "     ")
-            opened = true
-        end
-        if isempty(menus)
-            f = get(at, Set(core), nothing)
-            f === nothing || print_allows(io, pkgs, f, "     ")
-            continue
-        end
-        for (j, menu) in enumerate(menus)
-            println(io, opened ? "     and any one of:" : "  $i. any one of:")
-            opened = true
-            for a in menu
-                print_wrapped(io, action_phrase(a), "       • ", "         ")
-                # the witness of taking this entry with the layer's other
-                # choices settled the first way they offer, which is how every
-                # menu on the page reads
-                key = Set{Action{P}}([core; a;
-                    Action{P}[first(m) for (l, m) in enumerate(menus) if l != j]])
-                f = get(at, key, nothing)
-                f === nothing || print_allows(io, pkgs, f, "         ")
-            end
-        end
-    end
+    return n
 end
 
 function Base.show(io::IO, d::Diagnosis)
     n = length(d.conflicts)
-    # the ways of repairing the whole query: one entry from each menu, in
-    # every combination, and then the residue's own entries, each of which is
-    # a repair of the whole query by itself
-    f = prod(length(c.fixes) for c in d.conflicts; init = 1) + length(d.residue)
+    # the ways of repairing the whole query: one of each block's own, in every
+    # combination
+    f = prod(nselections(d, g) for g in conflict_blocks(d); init = 1)
     print(io, "Diagnosis: ", n, n == 1 ? " conflict, " : " conflicts, ",
           f, f == 1 ? " fix" : " fixes")
 end
@@ -2234,25 +2854,30 @@ end
 function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
     n = length(d.conflicts)
     print(io, "Unsatisfiable — ", n, n == 1 ? " conflict" : " conflicts")
-    # "each of which must be fixed" is not false on its own — by hitting-set
-    # duality every solution resolves every conflict, so every fix does fix
-    # each one. What misleads is the clause *together with* the per-conflict
-    # menus: it implies the solutions are exactly one-fix-from-each-menu, the
-    # product of the menus. That exhaustiveness is just what a residue denies —
-    # the residue IS the cheapest fixes that are not one-from-each-menu — so the
-    # clause is honest only when the presentation is a genuine product, i.e. the
-    # residue is empty.
-    n > 1 && isempty(d.residue) && print(io, ", each of which must be fixed")
+    # "pick a fix for each" is what the page asks of the reader: every
+    # solution resolves every conflict (Theorem 9), and one entry from each
+    # menu, in every combination, is a cheapest repair. It is an instruction
+    # and not a claim that those are the only ones — where a block's cover
+    # has more than one layer, the alternatives after the conflicts say the
+    # other ways in their own words, each opening with "Or,". The one gap
+    # left, an enumeration cut short, the footer below says outright.
+    n > 1 && print(io, ", pick a fix for each")
     println(io, ":")
     extras = heading_extras(d.conflicts)
+    # a conflict whose block has an alternative is not the whole of what
+    # settles that block, so its menu of one may not say "only"
+    replaced = Set{Int}(i for a in d.alternatives for i in a.conflicts)
     for (i, c) in enumerate(d.conflicts)
         println(io)
-        print_conflict(io, c, i; others = d.others, alone = isempty(d.residue),
+        print_conflict(io, c, i; others = d.others, alone = i ∉ replaced,
                        also = get(extras, i, nothing))
     end
-    if !isempty(d.residue)
+    # ... and then what a block's conflicts do not reach between them, after
+    # the last of them: an alternative replaces the menus of its own block and
+    # nothing else, which is what its label says.
+    for a in d.alternatives
         println(io)
-        print_residue(io, d)
+        print_alternative(io, d, a)
     end
     # An *unless* entry exhibits a costlier fix, named — and never merely one
     # the page has printed already (Lemma 28) — so where one printed, the
@@ -2269,10 +2894,11 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
         println(io)
         println(io, "There are more minimal fixes than are shown.")
     end
-    if d.truncated
-        println(io)
-        println(io, "There may be more to say about some of these.")
-    end
+    # A reason walk cut short is recorded and not announced: every conflict
+    # still has a reason of its very own (Theorem 10), every fix on the page
+    # is checked, and the fixes' completeness is the enumeration's question
+    # above, not the walk's — so there is nothing a reader could do with the
+    # sentence, and the page owes only what it can be acted on.
 end
 
 ## verification
@@ -2304,13 +2930,18 @@ Everything Section 8's checker can decide without asking the solver:
     so the contradiction is on the page rather than behind it. What the page
     claims is its heading's requirements together with its lines, and that is
     what closes;
-  * **(V3) source coverage** — every package the menu asks the reader to act
-    on is named by a line, and every requirement the report answers for is
-    named by its heading;
-  * **(V5) witness coherence** — each fix's witness lands inside every line the
-    fix's own withdrawal leaves standing, the menus' fixes and the residue's
-    alike. Silent breakage here is invisible to every other check, which is
-    exactly why this one exists;
+  * **(V3) source coverage** — every package a conflict's menu asks the reader
+    to act on is named by a line, and every requirement the report answers for
+    is named by its heading. An alternative repartitions repairs and not
+    reasons (Corollary 25), and owes menus and witnesses only;
+  * **(V5) witness coherence** — each entry's witness lands inside every line
+    its own withdrawal leaves standing, in the conflicts' menus and the
+    alternatives alike. Silent breakage here is invisible to every other
+    check, which is exactly why this one exists;
+  * **(Theorem 29) an exact, once-only cover** — a block's conflicts and its
+    alternatives present that block's share of the cheapest repairs and
+    nothing else, so no two of its selections ask for the same thing and none
+    of them is inside another;
   * **(Lemma 28) blocked completions** — no *unless* entry's completion holds
     a whole repair the page has already printed. Were one inside it, taking
     the completion alone would repair and the action it excuses would be idle,
@@ -2320,10 +2951,9 @@ Empty when the report is sound. The remaining obligation — that each printed
 line is true of the universe this query left (V1) — is one entailment query per
 line and belongs to whoever holds the instance. The disclosures (V6) are read
 off the decided questions when the page is printed and have no second place to
-disagree: the menu wording off Section 4's table, the residue block off whether
-the cover has a layer the menus do not reach, the enumeration-cut sentence off
-the cap's own deciding solve, and the costlier-fixes footer off Theorem 5 and
-whether an *unless* entry has already named a costlier fix concretely.
+disagree: the menu wording off Section 4's table, the enumeration-cut sentence
+off the cap's own deciding solve, and the costlier-fixes footer off Theorem 5
+and whether an *unless* entry has already named a costlier fix concretely.
 
 Every check is per explanation, never against a union: where two explanations'
 lines are `S₁ ∪ S₂` and `S₂` alone contradicts, the union stays contradictory
@@ -2334,9 +2964,9 @@ function report_problems(d::Diagnosis{P,V}) where {P,V}
     bad = String[]
     # V5 is stated against the *full* withdrawal, never the single entry: an
     # owned reason can hold other conflicts' facts, and the witness respects
-    # only the sides whose supports survive everything withdrawn. So each fix
+    # only the sides whose supports survive everything withdrawn. So each entry
     # is judged with every other conflict settled the way its own witness was
-    # taken — the first entry of its menu.
+    # taken — the first entry of each conflict's menu.
     firsts = Vector{Action{P}}[isempty(c.fixes) ? Action{P}[] :
                                first(c.fixes).actions for c in d.conflicts]
     for (n, c) in enumerate(d.conflicts)
@@ -2346,25 +2976,53 @@ function report_problems(d::Diagnosis{P,V}) where {P,V}
             push!(bad, "conflict $n: $s")
         end
     end
-    # ... and the residue's entries against every conflict's lines. Nothing is
-    # held out beside such a fix: it repairs the query by itself, so what it
-    # answers for is every line its own withdrawal does not touch.
-    for (n, f) in enumerate(d.residue), c in d.conflicts
-        for s in witness_problems(f, c, Set{P}())
-            push!(bad, "residue $n: $s")
+    # (V5 again) an alternative's entries are withdrawn beside its own layer's
+    # other menus and the rest of the page, and its block's lines are what they
+    # answer to — the conflicts it replaces are the ones whose story it is a
+    # different ending to.
+    for (n, a) in enumerate(d.alternatives)
+        outside = Set{P}(x.pkg for j in eachindex(firsts) if j ∉ a.conflicts
+                                for x in firsts[j])
+        for (i, m) in enumerate(a.menus), f in m
+            mates = Set{P}(x.pkg for (j, q) in enumerate(a.menus) if j != i
+                                  for x in first(q).actions)
+            gone = union(outside, mates)
+            for ci in a.conflicts, s in witness_problems(f, d.conflicts[ci], gone)
+                push!(bad, "alternative $n: $s")
+            end
+        end
+    end
+    # (Theorem 29) the cover is exact and says each repair once: a block's
+    # conflicts and its alternatives partition that block's share of the
+    # family, so no selection repeats and none is inside another — a repair
+    # that was would not be as cheap as the cheapest, since every member of the
+    # family has the one size.
+    for g in conflict_blocks(d)
+        tag = length(g) == 1 ? "conflict $(only(g))" :
+              "conflicts $(join_and(String[string(i) for i in g]))"
+        sels = Set{Action{P}}[Set(s) for s in block_selections(d, g)]
+        for i in eachindex(sels), j in eachindex(sels)
+            i == j && continue
+            if sels[i] == sels[j]
+                i < j && push!(bad, "$tag: offers " *
+                    join_and(String[action_phrase(a) for a in sort!(
+                        collect(sels[i]); by = a -> (string(a.pkg), a.kind))]) *
+                    " twice")
+            elseif sels[i] ⊆ sels[j]
+                push!(bad, "$tag: one of the fixes offered is inside another")
+            end
         end
     end
     # (Lemma 28) a completion never restates the page's own fixes: a repair
     # inside it would repair on its own, and the action it is the price of
     # would be idle instead. One containment test per printed repair — a
-    # residue entry, or a selection of one entry from every menu — and no
-    # solver: a completion holding an entry of every menu holds a selection.
+    # selection of every block at once — and no solver.
+    groups = conflict_blocks(d)
     for (n, c) in enumerate(d.conflicts), (_, unless) in c.blocks
         isempty(unless) && continue
         u = Set{Action{P}}(unless)
-        holds(f::Fix) = Set{Action{P}}(f.actions) ⊆ u
-        (any(holds, d.residue) ||
-         all(x -> any(holds, x.fixes), d.conflicts)) || continue
+        all(g -> any(s -> Set{Action{P}}(s) ⊆ u, block_selections(d, g)),
+            groups) || continue
         push!(bad, "conflict $n: the completion " *
               join_and(String[action_phrase(a) for a in unless]) *
               " repairs on its own")
@@ -2405,7 +3063,8 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
 
     # (V3) the report names what it asks to be changed, and every requirement
     # it answers for — the heading names those, and a conflict's requirements
-    # are its own reason's, so what is left to check is the menu
+    # are its own reasons', so what is left to check is what its menu offers.
+    # An alternative owes no proof (Corollary 25).
     named = Set{P}(p for l in c.lines for p in packages(l.clause))
     if !isempty(c.lines)
         for f in c.fixes, a in f.actions
@@ -2413,7 +3072,9 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
         end
     end
 
-    # (V5) the witness lands where the opened meet says it can
+    # (V5) the witness lands where the opened meet says it can. What is held
+    # out beside an entry is the rest of the page, which is the withdrawal its
+    # witness was taken for.
     for f in c.fixes
         append!(bad, witness_problems(f, c, rest))
     end

@@ -137,10 +137,13 @@ function resolve_versions(
     julia = Base.julia_cmd()[1]
     cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions $flags`
     if !success(pipeline(cmd; stdout = out, stderr = err))
-        # tell "no solution" apart from "the script broke", putting the message
-        # back so a caller that passed `err` in can read it too
-        msg = String(take!(err))
-        print(err, msg)
+        # tell "no solution" apart from "the script broke", leaving the message
+        # in place so a caller that passed `err` in can read it too. Read rather
+        # than take-and-put-back: through Julia 1.10 a buffer that has been a
+        # subprocess's stderr comes back non-writeable, so printing into it
+        # throws where 1.11 and later are fine.
+        seekstart(err)
+        msg = read(err, String)
         # when it broke, say what it said -- the command alone explains nothing
         occursin("Unsatisfiable", msg) || error("failed: $cmd\n$msg")
         return nothing

@@ -137,10 +137,13 @@ function resolve_versions(
     julia = Base.julia_cmd()[1]
     cmd = `$julia --project=$BIN_PROJECT $RESOLVE_JL $dir --print-versions $flags`
     if !success(pipeline(cmd; stdout = out, stderr = err))
-        # tell "no solution" apart from "the script broke", putting the message
-        # back so a caller that passed `err` in can read it too
-        msg = String(take!(err))
-        print(err, msg)
+        # tell "no solution" apart from "the script broke", leaving the message
+        # in place so a caller that passed `err` in can read it too. Read rather
+        # than take-and-put-back: through Julia 1.10 a buffer that has been a
+        # subprocess's stderr comes back non-writeable, so printing into it
+        # throws where 1.11 and later are fine.
+        seekstart(err)
+        msg = read(err, String)
         # when it broke, say what it said -- the command alone explains nothing
         occursin("Unsatisfiable", msg) || error("failed: $cmd\n$msg")
         return nothing
@@ -535,6 +538,57 @@ end
         @test haskey(bundled, STATISTICS)
         @test v"1.10.0" in bundled[STATISTICS]
         @test !haskey(bundled, JSON) # not a stdlib
+    end
+
+    # `bundled_versions` is only as good as the snapshot behind it, and that
+    # snapshot is a pinned dependency of bin/ -- so it goes stale on its own,
+    # without anything here changing. The failure is silent: a Julia release
+    # newer than the pin is not missing from the data, it is *described by an
+    # older stanza*, so the resolver answers confidently about a Julia that
+    # never existed. Issue #103: the pin sat at 2.0.2, which predates 1.12, so
+    # 1.12.x was credited with 1.11's OpenSSL_jll 3.0.15 instead of the 3.5.x
+    # it really ships, and no version of OpenSSL_CLI_jll would resolve on it.
+    #
+    # The running Julia carries the answer in its own stdlib directory, so
+    # check the snapshot against it. Note what this does *not* test: it says
+    # nothing about whether a newer HistoricalStdlibVersions exists, so it
+    # cannot fail merely because time passed -- only because the pin actually
+    # misdescribes a Julia we support. Its coverage is whatever Julia the suite
+    # runs under; .github/workflows/stdlibs.yml sweeps the rest of the range
+    # the bin/ manifests support.
+    #
+    # The upgradable stdlibs are excluded on both sides: Julia bundles them
+    # without pinning them, and the snapshot leaves them out for that reason
+    # (see UPGRADABLE_STDLIBS_UUIDS), so they are absent here by design rather
+    # than by staleness.
+    @testset "the stdlib snapshot describes the running Julia" begin
+        bundled = host_stdlibs()
+        @test length(bundled) > 20 # a plausible stdlib directory at all
+        snapshot = stdlib_snapshot(VERSION)
+        pinned = Dict(uuid => info.version
+                      for (uuid, info) in snapshot
+                      if info.version !== nothing &&
+                         uuid ∉ UPGRADABLE_STDLIBS_UUIDS)
+        # Report by name throughout: a bare uuid says nothing about which
+        # stdlib drifted, and this test's whole job is to name the drift.
+        names = Dict(uuid => info.name for (uuid, info) in snapshot)
+        # every stdlib the snapshot pins here is really bundled here ...
+        absent = sort!([names[uuid] for uuid in setdiff(keys(pinned), keys(bundled))])
+        # ... at the version it claims
+        drifted = sort!(["$(names[uuid]): snapshot $(version), bundled $(bundled[uuid])"
+                         for (uuid, version) in pinned
+                         if haskey(bundled, uuid) && bundled[uuid] != version])
+        # Only on a released Julia. A development build is a moving target --
+        # `1.14.0-DEV.2617` is master at one commit, the snapshot's 1.14.0
+        # stanza is master at another -- so the two disagree over something
+        # nobody could fix, and CI runs this suite on nightly.
+        if isempty(VERSION.prerelease)
+            @test absent == String[]
+            @test drifted == String[]
+        else
+            @test_skip absent == String[]
+            @test_skip drifted == String[]
+        end
     end
 
     # The Julia universe is not a query parameter either: the provider offers

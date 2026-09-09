@@ -1,0 +1,75 @@
+# Check bin/'s pinned stdlib snapshot against every Julia it claims to support.
+#
+# bin/ pins HistoricalStdlibVersions, whose data is a snapshot of what each
+# Julia release bundles. A pin left behind by new Julia releases keeps
+# resolving -- it just resolves against a Julia that never existed, and the
+# wrong answer is shaped exactly like a real conflict (issue #103). The suite in
+# ci.yml runs this same check, but only under the Julia it runs on, so the older
+# manifests would go unchecked. This job covers the rest of the range.
+#
+# It also instantiates each manifest before checking it, so a manifest that no
+# longer resolves on its own Julia fails here too.
+#
+# Only released Julias: bin/check_stdlibs.jl skips prereleases, since a
+# development build and the snapshot's stanza for it are two different points on
+# a moving branch and disagree for no reason anyone could fix.
+name: stdlibs
+on:
+  pull_request:
+    paths:
+      - 'bin/**'
+      - '.github/workflows/stdlibs.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'bin/**'
+      - '.github/workflows/stdlibs.yml'
+  # the pin can go stale with nothing here changing, so also check on a timer
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+jobs:
+  snapshot:
+    name: Julia ${{ matrix.version }} stdlib snapshot
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every minor bin/Project.toml's `julia` compat admits. Spelled out
+        # rather than derived: it changes about once a year, and the
+        # `manifests` job below fails when a released Julia is missing from
+        # bin/, which is the same moment this list needs a new entry.
+        version: ['1.9', '1.10', '1.11', '1.12']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - name: Instantiate bin/
+        run: julia --project=bin -e 'using Pkg; Pkg.instantiate()'
+      - name: Check the stdlib snapshot
+        run: julia --project=bin bin/check_stdlibs.jl
+
+  # A Julia minor with no manifest of its own does not fail -- it falls back to
+  # another Julia's pins -- so nothing above would notice a new release going
+  # unsupported. This is the only check here that depends on what Julia has
+  # shipped rather than on what is installed, so it runs once, on latest.
+  manifests:
+    name: A manifest per released Julia
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - name: Instantiate bin/
+        run: julia --project=bin -e 'using Pkg; Pkg.instantiate()'
+      # bin/julia_versions.json is a committed cache refreshed when it is over
+      # an hour old, and a fresh checkout looks new -- so the committed copy
+      # would be used however stale it is, which is exactly what this job must
+      # not trust. Age it to force the refetch.
+      - name: Force a fresh Julia release list
+        run: touch -d '@0' bin/julia_versions.json
+      - name: Check for missing manifests
+        run: julia --project=bin bin/update_manifests.jl --check

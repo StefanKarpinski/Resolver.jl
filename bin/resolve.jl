@@ -47,6 +47,10 @@ Wherever <pkgs> appears you can specify a comma-separated list of:
   * @deps for packages in the [deps] section of Project.toml
   * @weakdeps for packages in the [weakdeps] section of Project.toml
   * @alldeps for packages in both the [deps] and [weakdeps] sections
+
+Weak dependencies are not required by default, so a selector naming one
+only triggers on a resolve that pulls it in through --extra-deps, or
+through some other package that depends on it.
 """
 
 parse_opts!(ARGS, split("""
@@ -287,12 +291,10 @@ project_compat[JULIA_UUID] = julia_versions
 function parse_packages(str::AbstractString)
     pkgs = UUID[]
     for item in split(str, ',')
-        if item in ("@deps", "@alldeps")
-            union!(pkgs, project_deps)
-            continue
-        end
-        if item in ("@weakdeps", "@alldeps")
-            union!(pkgs, project_weakdeps)
+        # @alldeps is both halves, so neither branch may return early on it
+        if item in ("@deps", "@weakdeps", "@alldeps")
+            item in ("@deps", "@alldeps") && union!(pkgs, project_deps)
+            item in ("@weakdeps", "@alldeps") && union!(pkgs, project_weakdeps)
             continue
         end
         uuid = tryparse(UUID, item)
@@ -305,7 +307,8 @@ function parse_packages(str::AbstractString)
                 uuid = only(uuids)
             end
         end
-        uuid isa UUID || usage("Invalid value for --prioritize: $item")
+        # any option taking <pkgs> lands here, so do not name one of them
+        uuid isa UUID || usage("Invalid package selector: $item")
         uuid ∉ pkgs && push!(pkgs, uuid)
     end
     return pkgs

@@ -603,8 +603,8 @@ hypothesis. ∎
 The walk is exponential in the worst case and must be run with a budget.
 Truncation is sound — nothing below depends on the enumeration having
 finished; a conflict simply explains fewer of the reasons it owns — but it is
-**never silent**: when the budget stops the walk, the report says the account
-may be incomplete (Section 11).
+**recorded**: when the budget stops the walk the diagnosis says so, though
+the page does not (Section 11).
 
 ## 6. The explanation of a reason
 
@@ -929,7 +929,10 @@ favours `x`: take a repair `W ∋ x` within the bound, shrink its *other*
 members while it still repairs, and ask whether `x` too can go. If it
 cannot, the shrunk `W` is a minimal repair carrying `x` and `x` is
 load-bearing; the sentence names its price, *"«x» would not help unless you
-also «W ∖ {x}»."* If `x` can go, that witnesses a smaller repair without it —
+also «W ∖ {x}»."* — in full while the price is a few actions, and as a count,
+*"without «n» other changes"*, beyond that: a long completion is a verdict on
+the road and not a list anyone will follow, and the exhibit behind it is
+checked either way (Section 8). If `x` can go, that witnesses a smaller repair without it —
 block `W` and try again, a few rounds, before concluding **idle** and
 printing the flat *"«x» does not help."* Because the cover holds every
 cheapest repair, a tempting `x` is in none of them, so a load-bearing `x`'s
@@ -999,8 +1002,9 @@ What a checker checks, and what it need not.
   exactly when there is more than one conflict; the enumeration-cut
   sentence appears exactly when the repair enumeration was truncated and the
   deciding solve found more; the costlier-fixes footer appears exactly when
-  Theorem 5 answered yes and no unless-entry printed; the reason-walk
-  truncation sentence appears whenever that walk was cut short.
+  Theorem 5 answered yes and no unless-entry printed. A reason walk cut
+  short is recorded on the diagnosis and not announced on the page (Section
+  11).
 
 **Every check is per-explanation, never against a union.** Where two
 explanations' line-sets are `S₁ ∪ S₂` and `S₂` alone is contradictory, the
@@ -1077,10 +1081,11 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   tempting action — named by the conflict's lines or heading, in no fix of
   the cover — the section prints its solve-decided verdict (Section 7): an
   idle action gets *"«x» does not help."*, a load-bearing one gets
-  *"«x» would not help unless you also «W ∖ {x}»."* Action-indexed, so
-  nothing is said twice; solver-licensed, so nothing is judged; and no
-  proof prints — why a fix is not offered is second-order, and the verdict
-  has already said it.
+  *"«x» would not help unless you also «W ∖ {x}»."*, or *"«x» would not help
+  without «n» other changes."* once the completion is more than a few
+  actions long. Action-indexed, so nothing is said twice; solver-licensed,
+  so nothing is judged; and no proof prints — why a fix is not offered is
+  second-order, and the verdict has already said it.
 * **The headline tells the reader what to do.** With more than one conflict
   it reads *"Unsatisfiable — N conflicts, pick a fix for each:"*. That is an
   instruction, and a true one: by hitting-set duality every solution resolves
@@ -1218,12 +1223,17 @@ constrains how.
 
 ## 11. Boundaries and honesty
 
-Three enumerations in this design can be cut short, and each has a required
-disclosure; nothing else in the design is allowed to be incomplete.
+Three enumerations in this design can be cut short, and each is accounted
+for — two by a sentence on the page, one by a record on the diagnosis;
+nothing else in the design is allowed to be incomplete.
 
 1. **The reason walk** (Theorem 13) is exponential. Truncation costs
-   completeness of each conflict's account, never soundness — and the report
-   must say the account may be incomplete when it happens.
+   completeness of each conflict's account, never soundness: every conflict
+   still has a reason of its very own (Theorem 10), and every fix and every
+   verdict on the page is decided by a solve and not by the walk. So the
+   diagnosis records it, and the page does not announce it — a sentence
+   saying "there may be more to say" gives the reader nothing to do, and the
+   page owes only what can be acted on.
 2. **Rectangle coverage** can be below `|F_min|`; the report says other
    equally cheap solutions exist (C3), and a one-entry menu then says "One
    fix:", never "The only".

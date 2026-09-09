@@ -1466,6 +1466,22 @@ end
                    "also dropped requirement B.",
                    replace(outu, r"\n\s+" => " "))
 
+    # ... named in full while it is short enough to act on, and counted once
+    # it is a verdict rather than a list: past four further actions the
+    # sentence says how many, not which
+    long = [Action(:drop, p) for p in ("B", "C", "D", "E", "F")]
+    outl = page(entries(([[Action(:compat, "A")]], long)))
+    @test occursin("relaxing your compat on A would not help without 5 " *
+                   "other changes.", replace(outl, r"\n\s+" => " "))
+    @test !occursin("dropped requirement B", outl)
+    outf = page(entries(([[Action(:compat, "A")]], long[1:4])))
+    @test occursin("would not help unless you also dropped requirement B, " *
+                   "dropped requirement C, dropped requirement D and dropped " *
+                   "requirement E.", replace(outf, r"\n\s+" => " "))
+    outgl = page(entries(([[Action(:compat, "A")], [Action(:drop, "G")]], long)))
+    @test occursin("would only help if you do both and 5 other changes.",
+                   replace(outgl, r"\n\s+" => " "))
+
     # two tempting actions that exhibit one repair are one entry: each is
     # insufficient alone and the repair carries them both, so the page says
     # the repair once from both its ends

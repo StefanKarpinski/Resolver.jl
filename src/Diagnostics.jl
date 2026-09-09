@@ -200,8 +200,9 @@ cheapest — see [`selections`](@ref). So `others` is about what costs more:
 `:none` when nothing outside them exists at all, `:larger` when what is outside
 gives up more, and `:some` when the enumeration of the cheapest repairs was cut
 short and one further solve found one it never reached. `truncated` records
-that the search for reasons was cut short, so the account of some conflict may
-be incomplete.
+that the search for reasons was cut short — a conflict may then argue from a
+reason that is not the shortest it owns — which the report does not announce,
+since nothing on the page is false or missing for the reader on that account.
 
 `show`ing one prints the report.
 """
@@ -2792,6 +2793,9 @@ end
 # Printed after the menu: the reader meets the offer first and the roads not
 # taken second. No proof prints here — why a fix is not offered is a
 # second-order question, and the verdict has already answered it.
+# how many further actions an unless-sentence names before it counts them
+const UNLESS_NAMED = 4
+
 function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
     isempty(c.blocks) && return
     println(io, "  Blocked fixes:")
@@ -2802,15 +2806,23 @@ function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
         # would take for this road to go somewhere; several tempting actions
         # exhibiting one repair are said once, as the choice they are not --
         # each is a road, and it is only the two together that go anywhere
+        # the price is named in full while it is short enough to act on, and
+        # counted beyond that: a dozen further edits is a verdict on the road,
+        # not a list anyone will follow, and the exhibit behind it is checked
+        # whether or not it prints
+        long = length(unless) > UNLESS_NAMED
         lead = if length(bundles) > 1
             roads = join_or(String[action_gerund(a) for a in acts])
             quantity = length(acts) == 2 ? "both" : "all of them"
             also = isempty(unless) ? "" :
+                long ? " and $(length(unless)) other changes" :
                 " and also " * join_and(String[action_past(a) for a in unless])
             "$roads would only help if you do $quantity$also."
         elseif isempty(unless)
             help = length(acts) > 1 ? "do not help" : "does not help"
             "$tried $help."
+        elseif long
+            "$tried would not help without $(length(unless)) other changes."
         else
             also = join_and(String[action_past(a) for a in unless])
             "$tried would not help unless you also $also."
@@ -2882,10 +2894,11 @@ function Base.show(io::IO, ::MIME"text/plain", d::Diagnosis)
         println(io)
         println(io, "There are more minimal fixes than are shown.")
     end
-    if d.truncated
-        println(io)
-        println(io, "There may be more to say about some of these.")
-    end
+    # A reason walk cut short is recorded and not announced: every conflict
+    # still has a reason of its very own (Theorem 10), every fix on the page
+    # is checked, and the fixes' completeness is the enumeration's question
+    # above, not the walk's — so there is nothing a reader could do with the
+    # sentence, and the page owes only what it can be acted on.
 end
 
 ## verification

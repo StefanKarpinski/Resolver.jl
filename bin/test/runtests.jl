@@ -118,16 +118,23 @@ const RESOLVE_JL = normpath(joinpath(@__DIR__, "..", "resolve.jl"))
 const BIN_PROJECT = normpath(joinpath(@__DIR__, ".."))
 
 function resolve_versions(
-    compat :: AbstractString,
-    flags  :: Vector{String} = String[];
-    deps   :: Vector{Pair{String,UUID}} = ["JSON" => JSON],
-    err    :: IOBuffer = IOBuffer(), # the script's stderr, for tests that read it
+    compat   :: AbstractString,
+    flags    :: Vector{String} = String[];
+    deps     :: Vector{Pair{String,UUID}} = ["JSON" => JSON],
+    weakdeps :: Vector{Pair{String,UUID}} = Pair{String,UUID}[],
+    err      :: IOBuffer = IOBuffer(), # the script's stderr, for tests that read it
 )
     dir = mktempdir()
     open(joinpath(dir, "Project.toml"), "w") do io
         println(io, "[deps]")
         for (name, uuid) in deps
             println(io, "$name = \"$uuid\"")
+        end
+        if !isempty(weakdeps)
+            println(io, "\n[weakdeps]")
+            for (name, uuid) in weakdeps
+                println(io, "$name = \"$uuid\"")
+            end
         end
         isempty(compat) && return
         println(io, "\n[compat]")
@@ -314,6 +321,33 @@ end
         @test Resolver.resolve(info, prob; order) == Resolver.resolve(baked, prob)
         @test Resolver.resolve(info, prob; order)[JULIA_UUID] <
               Resolver.resolve(info, prob)[JULIA_UUID]
+    end
+
+    # `@alldeps` is the union of [deps] and [weakdeps], in every option that
+    # takes a package selector and not only the ordering ones.
+    #
+    # Stated as an identity against naming both halves, rather than against
+    # version numbers the registry will move. The identity holds just as well
+    # when the selector ignores the weak dependencies altogether, so the
+    # inequality has to say that they moved.
+    @testset "@alldeps covers the weak dependencies" begin
+        deps = ["JSON" => JSON]
+        weakdeps = ["Compat" => COMPAT]
+        resolve(flags) = resolve_versions("", flags; deps, weakdeps)
+        pull_in = "--extra-deps=@weakdeps"
+        via_alldeps = resolve(["--min=@alldeps", pull_in])
+        via_halves = resolve(["--min=@deps", "--min=@weakdeps", pull_in])
+        via_deps = resolve(["--min=@deps", pull_in])
+        @test !isnothing(via_alldeps)
+        @test via_alldeps == via_halves
+        # the weak dep is in the graph either way, and only the union moves it
+        @test haskey(via_deps, COMPAT)
+        @test via_alldeps[COMPAT] < via_deps[COMPAT]
+        # ... while the strong deps are minimized either way
+        @test via_alldeps[JSON] == via_deps[JSON]
+        # as a requirement set too, where the difference is whether the weak
+        # dependency is resolved at all rather than at which version
+        @test haskey(resolve(["--extra-deps=@alldeps"]), COMPAT)
     end
 
     # Prerelease admission is a query constraint, not a property of the package

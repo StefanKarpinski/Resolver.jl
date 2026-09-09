@@ -18,10 +18,12 @@ Resolver.Diagnostics.Conflict
 Resolver.Diagnostics.Alternative
 Resolver.Diagnostics.selections
 Resolver.Diagnostics.Fix
+Resolver.Diagnostics.Upstream
 Resolver.Diagnostics.Action
 Resolver.Diagnostics.action_phrase
 Resolver.Diagnostics.Line
 Resolver.Diagnostics.diagnose
+Resolver.Diagnostics.upstream_fixes
 ```
 
 ### The statements a report is made of

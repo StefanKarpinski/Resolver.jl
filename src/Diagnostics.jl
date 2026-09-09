@@ -2335,7 +2335,7 @@ qualify. Everything else about `d` is unchanged, and a diagnosis whose
 conflicts have no qualifying pair comes back as it went in.
 
 `deps` is the package data the releases are tried against, as a `DepsProvider`
-or a dict of [`PkgData`](@ref Resolver.PkgData); `prob` is the query `d`
+or a dict of `PkgData`; `prob` is the query `d`
 diagnoses; `by` and `order` are the orderings the witnesses are resolved with,
 as `resolve` takes them. Each candidate costs one resolve on modified data,
 under a budget per report; what the budget leaves untried sets `upstream_cut`
@@ -3245,7 +3245,7 @@ Everything Section 8's checker can decide without asking the solver:
     package is one the query narrows and one of this conflict's own lines says
     so about. Given `prob`, the query, and `data`, the package data the release
     was tried against — a `DepsProvider` or a dict of
-    [`PkgData`](@ref Resolver.PkgData) — the rest of Section 8's check is
+    `PkgData` — the rest of Section 8's check is
     decidable too: the version is really the latest, the bound the sentence
     quotes is really that version's, the witness's version of the bounded
     package really lies outside it (Lemma 32, checked rather than trusted), and

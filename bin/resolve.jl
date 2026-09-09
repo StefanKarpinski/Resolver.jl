@@ -553,7 +553,8 @@ function named(d::Resolver.Diagnosis, name::Function)
                 ([[Diagnostics.Action(a.kind, name(a.pkg)) for a in b]
                   for b in bs],
                  [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
-                for (bs, us) in c.blocks])
+                for (bs, us) in c.blocks],
+            named(c.upstream, name))
          for c in d.conflicts],
         [Diagnostics.Alternative{String,VersionNumber}(
             a.conflicts, a.avoided,
@@ -561,6 +562,13 @@ function named(d::Resolver.Diagnosis, name::Function)
          for a in d.alternatives],
         d.others)
 end
+
+# an upstream fix is two packages, their versions, and a solution
+named(ups::Vector{<:Diagnostics.Upstream}, name::Function) =
+    [Diagnostics.Upstream{String,VersionNumber}(
+        name(u.pkg), u.latest, name(u.dep), u.supports, u.supported,
+        Dict{String,VersionNumber}(name(p) => v for (p, v) in u.solution))
+     for u in ups]
 
 # a fix is actions and a solution, both keyed by package
 named(fixes::Vector{<:Diagnostics.Fix}, name::Function) =
@@ -588,6 +596,11 @@ function package_name(uuid::UUID)
 end
 
 if sol isa Resolver.Diagnosis
+    # ... and what a maintainer could do instead, which is a question about the
+    # registry rather than about this universe: one resolve per candidate, under
+    # the budget the diagnosis keeps for it
+    sol = Diagnostics.upstream_fixes(reg, problem, sol;
+        by = sort_packages_by, order = version_order)
     show(stderr, MIME("text/plain"), named(sol, package_name))
     for note in yanked_notes()
         println(stderr, note)

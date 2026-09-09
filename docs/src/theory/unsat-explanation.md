@@ -968,6 +968,73 @@ repairs, and the completed cover plus one bounded search per tempting
 action decides them. The walk's remaining duty is the conflicts' own
 stories.
 
+### Upstream fixes
+
+Everything above is what the *user* could change. A conflict's chain ends
+where a registry statement meets one of the user's own facts —
+*BytePairEncoding 0.5.2 requires DataStructures 0.18.0–0.18.22* against
+*your compat leaves DataStructures 0.19.6* — and the registry side is
+something a maintainer could change. The page may say so, under a bar high
+enough that what it says is a single, sendable request: the sentence a user
+would put in an issue, and the page has verified would work.
+
+**A hypothetical release.** For packages `P ≠ Q`, let `P⁺` be `P`'s latest
+version with its compatibility bound on `Q` removed and nothing else changed
+— the same dependencies, the same bounds on every other package, the same
+version number — and write `ℛ[P⁺]` for the registry so modified. This is the
+model of *a release of `P` supporting `Q`*: a maintainer who cut such a
+release would change that one declaration, and a hypothetical that changed
+more would blame more than it can name.
+
+It is modelled in place rather than as a new version number on purpose. A
+new number would carry every other package's bound on `P` along with it, and
+whether some third package admits `0.5.3` where it admitted `0.5.2` is a
+question about version arithmetic the page has no business raising. In
+place, `P⁺` behaves as `P`'s latest in every clause but one.
+
+**Lemma 32 (a repairing release repairs through the bound it drops).**
+Suppose `ℛ ∪ Q` is unsatisfiable and `ℛ[P⁺] ∪ Q` has a model `ι` with `ι(P)`
+the latest version of `P`. Then `ι(Q)` lies outside `P`'s latest bound on `Q`.
+
+*Proof.* The clauses of `ℛ[P⁺] ∪ Q` are those of `ℛ ∪ Q` with the one bound
+removed. If `ι(Q)` satisfied that bound, `ι` would satisfy every clause of
+`ℛ ∪ Q`, the removed one included, and be a model of it. ∎
+
+So a model taking the release is evidence for exactly the sentence the page
+prints: the release helps by admitting a version of `Q` its latest refuses,
+and the witness names that version.
+
+**What qualifies.** A conflict offers an upstream fix for the pair `(P, Q)`
+when all of the following hold.
+
+1. **The bound meets the user's own fact.** `Q` is a package the query
+   narrows — a *your compat leaves Q …* line of this conflict — and `P` is a
+   package the conflict's lines speak of whose latest version carries a
+   bound on `Q` excluding what the user's constraint leaves. A bound
+   contradicted only by *another registry package's* bound is not offered:
+   a sentence that blamed two maintainers would judge which is at fault,
+   and the page judges nothing. One release, one bound, one addressee.
+2. **The blame is current.** The user's constraint on `P`, if any, admits
+   `P`'s latest version. Otherwise a release already exists that the user
+   has excluded, and what helps is on the menu already — *relax your compat
+   on `P`* — not a request upstream.
+3. **It works.** `ℛ[P⁺] ∪ Q′` is satisfiable with `P` at its latest, where
+   `Q′` is the query with every other conflict settled the first way its
+   menu offers — the convention every witness on the page uses. One solve
+   per candidate, and Lemma 32 then says what the solve proved.
+
+Two releases needed at once offer nothing: the bar is a single request, and
+a conflict that needs two is one the page explains and leaves at that. Nor
+does the page suggest a backport — a release in an old series the user is
+held to — since the model is the latest version, and a user held to an old
+series by their own constraint has the menu's fix.
+
+**Budget.** Candidates are few per conflict — pairs of a narrowed package
+and a page package bounding it — and each costs one solve on a modified
+registry. They are tried in an order that puts the pair closing the chain
+first, under a cap on solves per report; what the cap leaves untried is
+recorded on the diagnosis and not announced (Section 11).
+
 ## 8. Verification
 
 What a checker checks, and what it need not.
@@ -1005,6 +1072,12 @@ What a checker checks, and what it need not.
   Theorem 5 answered yes and no unless-entry printed. A reason walk cut
   short is recorded on the diagnosis and not announced on the page (Section
   11).
+* **(V7) Upstream fixes.** For each printed upstream fix `(P, Q)`: its
+  witness has `P` at its latest version and `Q` at a version outside `P`'s
+  latest bound on `Q` (Lemma 32, checked directly rather than trusted); `Q`
+  is narrowed by the query and named by one of the conflict's given lines;
+  the user's constraint on `P`, if any, admits `P`'s latest. Membership
+  tests against the registry's own data; no solver.
 
 **Every check is per-explanation, never against a union.** Where two
 explanations' line-sets are `S₁ ∪ S₂` and `S₂` alone is contradictory, the
@@ -1077,6 +1150,18 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   the chain closes — which leaves the heading a true bare list and stops it
   reading as a duplicate. The checkers still premise every requirement the
   conflict answers for: what shrinks is the sentence, not the claim set.
+* **An upstream fix is one request, verified.** After the blocked fixes,
+  and only where Section 7's three conditions hold, a conflict prints
+  *"Upstream fix: a release of «P» supporting «Q» «q» would fix this; «v»,
+  its latest, supports only «range»."* — `q` the version the witness took,
+  `v` the latest of `P`, and the range what `v`'s bound on `Q` admits,
+  printed as any range on the page is. Under it, *"→ would allow: …"* names
+  the witness on the page's packages other than `P`, whose version is the
+  hypothetical one. Where more than one pair qualifies, at most two print,
+  the pair closing the chain first, as *"Upstream fixes:"* with bullets.
+  Nothing prints for a conflict that fails the bar: the sentence is a
+  request the user can send as it stands, and a page that offered vaguer
+  ones would be training its readers to ignore them.
 * **Blocked fixes answer for actions, one sentence each.** For every
   tempting action — named by the conflict's lines or heading, in no fix of
   the cover — the section prints its solve-decided verdict (Section 7): an
@@ -1223,8 +1308,8 @@ constrains how.
 
 ## 11. Boundaries and honesty
 
-Three enumerations in this design can be cut short, and each is accounted
-for — two by a sentence on the page, one by a record on the diagnosis;
+Four enumerations in this design can be cut short, and each is accounted
+for — two by a sentence on the page, two by a record on the diagnosis;
 nothing else in the design is allowed to be incomplete.
 
 1. **The reason walk** (Theorem 13) is exponential. Truncation costs
@@ -1241,6 +1326,11 @@ nothing else in the design is allowed to be incomplete.
    oracle query (Theorem 5) and its answer sets the wording; *exploring*
    those larger repairs is out of scope by design, and the report says they
    exist without pretending to enumerate them.
+4. **Upstream probes** (Section 7) are one solve each on a modified
+   registry, under a cap per report. A candidate the cap left untried is a
+   sentence the page did not print, never a false one; the diagnosis
+   records that the cap was hit, and the page says nothing, for the reason
+   the reason walk's cut says nothing.
 
 Costs worth knowing, none load-bearing: finding `k` is a handful of
 bounded solves (`k` is small in practice); enumerating `F_min` is one solve

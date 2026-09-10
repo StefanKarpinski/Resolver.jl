@@ -28,13 +28,15 @@ module Diagnostics
 using ..Resolver: Resolver, SAT, Problem, PkgInfo, Universe, PicoSAT, Relation,
     nclasses, installed_lit, forbidden_lit, sat_assume_var, sat_solve,
     sat_new_variable, sat_add_var, sat_add, with_classes_relaxed,
-    with_temp_clauses, exclusion_kinds, relax, resolve
+    with_temp_clauses, exclusion_kinds, relax, resolve, DepsProvider, PkgData,
+    is_excluded
 using ..Resolver.Clauses: Clauses, Clause, Lit, literal, clause, packages,
     isbottom, subsumes, absent, present, resolve_raw, resolve_on, clause_phrase,
     range_phrase, selected, unselected, nversions
 using ..Resolver.UnsatCores: sat_mus
 
-export Diagnosis, Conflict, Alternative, Fix, Action, Line, action_phrase
+export Diagnosis, Conflict, Alternative, Fix, Action, Line, Upstream,
+    action_phrase
 
 ## what a report is made of
 
@@ -96,12 +98,46 @@ struct Fix{P,V}
 end
 
 """
-    Conflict(reqs, lines, versions, excluded, fixes, blocks = [])
+    Upstream(pkg, latest, dep, supports, supported, solution)
+
+A release someone else could cut that would settle a conflict: `pkg`'s latest
+version, `latest`, with its compatibility bound on `dep` dropped and nothing
+else changed — the same dependencies, the same bounds on every other package,
+the same version number. `supports` is the version of `dep` that release would
+let the user have, `supported` the versions of `dep` that `latest` does support
+— what the page names as the range the request is about — and `solution` the
+whole of what the resolver answers on that registry, `pkg` at `latest`.
+
+Modelled in place rather than as a new version number: a new number would carry
+every other package's bound on `pkg` along with it, and whether some third
+package admits the next version where it admitted this one is a question about
+version arithmetic no report has any business raising.
+
+One request, and verified. A conflict names such a release only where the bound
+it drops meets one of the user's *own* facts — never another registry package's,
+which would blame two maintainers and judge between them — where the user's own
+constraint admits `latest`, since otherwise a release that helps exists already
+and *relax your compat on «pkg»* is on the menu, and where a resolve on the
+modified registry succeeded, which is `solution`. Nothing prints where any of
+that fails: the sentence is one the reader can send upstream as it stands.
+"""
+struct Upstream{P,V}
+    pkg       :: P          # the package a release of would fix it
+    latest    :: V          # its latest version, what that release is like
+    dep       :: P          # the package the release would support
+    supports  :: V          # the version of it the witness took
+    supported :: Vector{V}  # the versions of it `latest` does support
+    solution  :: Dict{P,V}  # the witness, `pkg` at `latest`
+end
+
+"""
+    Conflict(reqs, lines, versions, excluded, fixes, blocks = [], upstream = [])
 
 One independent thing that is wrong: the requirements it answers for, the lines
 that prove it, the version list each named package is spoken of in, which of
 the query's constraint kinds exclude which of those versions, the menu of fixes
-that settles it, and the verdict on each action the page makes tempting.
+that settles it, the verdict on each action the page makes tempting, and the
+releases someone else could cut instead.
 
 A conflict is one **menu**: choose one entry of `fixes` and this conflict is
 settled. An entry may ask for several actions at once, where the family couples
@@ -124,6 +160,13 @@ page says the repair once rather than mirroring it from every end. Every verdict
 solver's: a bounded search for a minimal repair through the action, shrunk
 in the action's favour so a tie between equal repairs cannot call the same
 action idle in one sentence and a rescue in the next.
+
+Everything above is what the *user* could change. `upstream` is what a
+maintainer could: each entry an [`Upstream`](@ref) — a release of a package
+this conflict speaks of, its bound on a package the query narrowed dropped —
+that a resolve says would settle this conflict. Empty where no pair meets the
+bar, and empty where the diagnosis was made without the package data such a
+release has to be tried against.
 """
 struct Conflict{P,V}
     reqs     :: Vector{P}
@@ -132,11 +175,15 @@ struct Conflict{P,V}
     excluded :: Dict{P,Vector{Vector{Symbol}}}
     fixes    :: Vector{Fix{P,V}}
     blocks   :: Vector{Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}}
+    upstream :: Vector{Upstream{P,V}}
 end
 
 Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
     Conflict{P,V}(reqs, lines, versions, excluded, fixes,
                   Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}[])
+Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks) where {P,V} =
+    Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks,
+                  Upstream{P,V}[])
 
 """
     selections(c) :: Vector{Vector{Action{P}}}
@@ -203,6 +250,9 @@ short and one further solve found one it never reached. `truncated` records
 that the search for reasons was cut short — a conflict may then argue from a
 reason that is not the shortest it owns — which the report does not announce,
 since nothing on the page is false or missing for the reader on that account.
+`upstream_cut` records the same about the probes behind the conflicts' upstream
+fixes: the budget stopped a candidate being tried, which is a sentence the page
+did not print rather than a false one, and so is not announced either.
 
 `show`ing one prints the report.
 """
@@ -211,6 +261,7 @@ struct Diagnosis{P,V}
     alternatives :: Vector{Alternative{P,V}}
     others       :: Symbol # :none, :larger, :some
     truncated    :: Bool
+    upstream_cut :: Bool
 end
 
 # a diagnosis rebuilt by a caller — renamed, filtered, whatever — is not one
@@ -218,6 +269,8 @@ end
 Diagnosis(conflicts::Vector{Conflict{P,V}},
           alternatives::Vector{Alternative{P,V}}, others::Symbol) where {P,V} =
     Diagnosis{P,V}(conflicts, alternatives, others, false)
+Diagnosis{P,V}(conflicts, alternatives, others, truncated) where {P,V} =
+    Diagnosis{P,V}(conflicts, alternatives, others, truncated, false)
 Diagnosis(conflicts::Vector{Conflict{P,V}}, others::Symbol) where {P,V} =
     Diagnosis(conflicts, Alternative{P,V}[], others)
 
@@ -1961,14 +2014,23 @@ fix_actions(prob::Problem{P}, sat::SAT{P,V}, univ::Universe{P,V},
 # in for it.
 function witness(sat::SAT{P,V}, univ::Universe{P,V}, prob::Problem{P},
                  actions::Vector{Action{P}}; by, order) where {P,V}
+    drop_reqs, drop_constraints = withdrawal(actions)
+    sol = resolve(sat, relax(univ, prob, drop_reqs, drop_constraints; order); by)
+    return sol === nothing ? Dict{P,V}() : sol
+end
+
+# The withdrawal a set of actions asks for: the requirements to stop requiring,
+# and per constraint kind the packages to lift it for. An action names a kind
+# of the query's own, so this is a reading of the actions and not a decision
+# about them.
+function withdrawal(actions::Vector{Action{P}}) where {P}
     drop_reqs = P[a.pkg for a in actions if a.kind === :drop]
     drop_constraints = Dict{Symbol,Set{P}}()
     for a in actions
         a.kind === :drop && continue
         push!(get!(Set{P}, drop_constraints, a.kind), a.pkg)
     end
-    sol = resolve(sat, relax(univ, prob, drop_reqs, drop_constraints; order); by)
-    return sol === nothing ? Dict{P,V}() : sol
+    return drop_reqs, drop_constraints
 end
 
 """
@@ -2136,6 +2198,195 @@ function diagnose(
     end
     return Diagnosis{P,V}(conflicts, alternatives, plan.others, plan.truncated)
 end
+
+## upstream fixes
+#
+# Everything a menu offers is what the user could change. A conflict's chain
+# ends where a registry statement meets one of the user's own facts, and the
+# registry side is something a maintainer could change instead — so the page
+# may say so, under a bar high enough that what it says is a single, sendable
+# request: the sentence a user would put in an issue, and one this has resolved
+# and found would work.
+#
+# The hypothetical is the package's latest version with its bound on the other
+# package dropped and nothing else changed, modelled in place: same version
+# number, same dependencies, same bounds on everything else, so that it behaves
+# as the latest in every clause but one and no third package's bound on it comes
+# into question. What a solve on that registry proves is exactly the sentence
+# printed (Lemma 32 of the theory page): a model taking the release takes the
+# bounded package outside the dropped bound, and the witness names the version.
+#
+# This needs the package data — a release is a different registry, not a
+# different query — so it runs out here rather than inside `diagnose`, which
+# has only the universe the failed resolve was run against.
+
+# how many qualifying releases one conflict may name, and how many solves the
+# whole report may spend looking for them. A candidate the budget leaves untried
+# is a sentence the page did not print, never a false one: it is recorded on the
+# diagnosis and not announced (Section 11 of the theory page).
+const UPSTREAM_PER_CONFLICT = 2
+const UPSTREAM_SOLVES = 8
+
+# The pairs this conflict could ask a release for, in the order it would name
+# them, each with the version a release would be of and the versions of the
+# other package that version supports as it stands. `q` runs over the packages
+# the page states a constraint of the user's own about, in the order it states
+# them — only such a package counts, since a bound contradicted by another
+# registry package's bound would blame two maintainers and judge between them.
+# `p` runs over the packages this conflict's lines speak of, the pair closing
+# the chain first, since that is the bound the reader has just read.
+#
+# Two of the three conditions are decided here, off the data and the query
+# alone: the bound must exclude every version of `q` the user's own constraint
+# leaves — one it admits is not what stops the user — and the query must admit
+# `p`'s latest, since otherwise a release that helps exists already and the menu
+# says so. The third is a solve.
+function upstream_candidates(base, prob::Problem{P}, c::Conflict{P,V}) where {P,V}
+    out = Tuple{P,V,P,Vector{V}}[]
+    isempty(c.lines) && return out
+    _, con, _, _ = given_facts(c, Line{P}[l for l in c.lines if l.given])
+    isempty(con) && return out
+    pkgs = line_packages(c)
+    for q in chain_closers(c)
+        haskey(con, q) || continue
+        ps = P[]
+        for l in c.lines
+            l.given && continue
+            l.pivot == q || continue
+            for p in packages(l.clause)
+                p == q || p in ps || push!(ps, p)
+            end
+        end
+        for p in pkgs
+            p == q || p in ps || push!(ps, p)
+        end
+        qd = base(q)
+        for p in ps
+            pd = base(p)
+            isempty(pd.versions) && continue
+            v = maximum(pd.versions)
+            haskey(pd.compat, v) || continue
+            comp = pd.compat[v]
+            haskey(comp, q) || continue
+            s = comp[q]
+            any(w -> !is_excluded(prob, q, w) && w in s, qd.versions) && continue
+            is_excluded(prob, p, v) && continue
+            # ... and there has to be a range to name. The sentence says what
+            # the bound does support, of the versions the page speaks of `q`
+            # in, so a bound that admits none of them or all of them is one the
+            # page cannot state — and a candidate it cannot state is one it
+            # does not try
+            sel = Bool[w in s for w in c.versions[q]]
+            (any(sel) && !all(sel)) || continue
+            push!(out, (p, v, q, V[w for w in c.versions[q] if w in s]))
+        end
+    end
+    return out
+end
+
+# `p`'s data with its latest version's bound on `q` removed, in place: same
+# version numbers, same dependencies, same bounds on every other package and
+# for every other version. The compat map is rebuilt rather than edited, since
+# a provider's own may be shared between versions and is not ours to change —
+# and rebuilt entry by entry, so that versions that shared one before share one
+# still, which is what keeps the artifact behind the probe the size it was.
+function without_bound(pd::PkgData{P,V,S}, v::V, q::P) where {P,V,S}
+    comp = Dict{V,Dict{P,S}}()
+    seen = IdDict{Any,Dict{P,S}}()
+    for (w, e) in pd.compat
+        comp[w] = w == v ? Dict{P,S}(r => s for (r, s) in e if r != q) :
+                           get!(() -> Dict{P,S}(e), seen, e)
+    end
+    return PkgData(pd.versions, pd.depends, comp)
+end
+
+# One candidate, tried (condition 3): the query with every other conflict
+# settled the first way its menu offers — the convention every witness on the
+# page uses — resolved against the registry that release would make. `nothing`
+# where it does not answer with `p` at its latest and `q` installed, which is
+# what the sentence would have claimed.
+function upstream_probe(deps::DepsProvider{P,D}, base, prob::Problem{P},
+                        p::P, v::V, q::P, supported::Vector{V},
+                        settle::Vector{Action{P}}; by, order) where {P,D,V}
+    over = without_bound(base(p), v, q)
+    release(r::P) = r == p ? over : base(r)
+    # the release's own data is a `PkgData` of its own type — same versions,
+    # same dependencies, a compat map rebuilt — so the provider answers in
+    # whatever both it and the rest of the registry are
+    prov = DepsProvider{P,typejoin(D, typeof(over)),typeof(release)}(
+        deps.packages, release)
+    drop_reqs, drop_constraints = withdrawal(settle)
+    sol = resolve(prov, relax(prob, drop_reqs, drop_constraints);
+                  by, order, diagnose = false, upstream = false)
+    sol === nothing && return nothing
+    get(sol, p, nothing) == v || return nothing
+    w = get(sol, q, nothing)
+    w === nothing && return nothing
+    return Upstream{P,V}(p, v, q, w, supported, sol)
+end
+
+"""
+    upstream_fixes(deps, prob, d; by, order) :: Diagnosis
+
+`d` with each conflict's upstream fixes filled in: for every conflict, up to
+two releases someone else could cut that a resolve says would settle it — see
+[`Upstream`](@ref) for what a release is taken to be and what it takes to
+qualify. Everything else about `d` is unchanged, and a diagnosis whose
+conflicts have no qualifying pair comes back as it went in.
+
+`deps` is the package data the releases are tried against, as a `DepsProvider`
+or a dict of `PkgData`; `prob` is the query `d`
+diagnoses; `by` and `order` are the orderings the witnesses are resolved with,
+as `resolve` takes them. Each candidate costs one resolve on modified data,
+under a budget per report; what the budget leaves untried sets `upstream_cut`
+on the answer and is not otherwise announced.
+"""
+function upstream_fixes(deps::DepsProvider{P,D}, prob::Problem{P},
+                        d::Diagnosis{P,V}; by::Function = identity,
+                        order = nothing) where {P,D,V}
+    isempty(d.conflicts) && return d
+    # one call per package for the whole report, however many releases are
+    # tried: the data is the same for every candidate but the one package each
+    # of them edits
+    cache = Dict{P,D}()
+    base(r::P) = get!(() -> deps.provider(r)::D, cache, r)
+    firsts = Vector{Action{P}}[isempty(c.fixes) ? Action{P}[] :
+                               first(c.fixes).actions for c in d.conflicts]
+    ups = Vector{Upstream{P,V}}[Upstream{P,V}[] for _ in d.conflicts]
+    solves = 0
+    cut = false
+    for (i, c) in enumerate(d.conflicts)
+        cands = upstream_candidates(base, prob, c)
+        isempty(cands) && continue
+        settle = Action{P}[]
+        for j in eachindex(firsts), a in (j == i ? Action{P}[] : firsts[j])
+            a in settle || push!(settle, a)
+        end
+        for (p, v, q, supported) in cands
+            length(ups[i]) < UPSTREAM_PER_CONFLICT || break
+            if solves ≥ UPSTREAM_SOLVES
+                cut = true
+                break
+            end
+            solves += 1
+            u = upstream_probe(deps, base, prob, p, v, q, supported, settle;
+                               by, order)
+            u === nothing && continue
+            push!(ups[i], u)
+        end
+    end
+    (cut || any(!isempty, ups)) || return d
+    conflicts = Conflict{P,V}[
+        Conflict{P,V}(c.reqs, c.lines, c.versions, c.excluded, c.fixes,
+                      c.blocks, ups[i]) for (i, c) in enumerate(d.conflicts)]
+    return Diagnosis{P,V}(conflicts, d.alternatives, d.others, d.truncated,
+                          d.upstream_cut | cut)
+end
+
+upstream_fixes(data::AbstractDict{P,<:PkgData{P}}, prob::Problem{P},
+               d::Diagnosis{P,V}; by::Function = identity,
+               order = nothing) where {P,V} =
+    upstream_fixes(DepsProvider(p -> data[p], keys(data)), prob, d; by, order)
 
 ## the report
 #
@@ -2630,13 +2881,17 @@ end
 # witness land where the opened meet says it can, which is what the versions are
 # on the page for. Where the entry is one of several under a bullet, the line
 # says which entry it is for; where the bullet has only the one, it does not.
-function print_allows(io::IO, pkgs, f::Fix{P,V}, indent::String;
+function print_allows(io::IO, pkgs, sol::Dict{P,V}, indent::String;
                       prefix::String = "allows: ") where {P,V}
-    ps = sort!(P[p for p in pkgs if haskey(f.solution, p)])
+    ps = sort!(P[p for p in pkgs if haskey(sol, p)])
     isempty(ps) && return
-    print_wrapped(io, prefix * join(String["$p $(f.solution[p])" for p in ps],
-                                    ", "), indent * "→ ", indent * "  ")
+    print_wrapped(io, prefix * join(String["$p $(sol[p])" for p in ps], ", "),
+                  indent * "→ ", indent * "  ")
 end
+
+print_allows(io::IO, pkgs, f::Fix{P,V}, indent::String;
+             prefix::String = "allows: ") where {P,V} =
+    print_allows(io, pkgs, f.solution, indent; prefix)
 
 # A menu of one has exactly three honest wordings, and which one is the whole of
 # what the reader learns about the gap. Never derived from the length of a
@@ -2750,12 +3005,13 @@ end
     print_conflict(io, c, index = nothing; others = :some)
 
 One conflict's page: its heading (where it is numbered), the lines that prove
-it, what settles it, and the verdict on each action the page makes tempting and
-no fix takes. `others` is what the whole diagnosis knows about the repairs that
-cost more than the ones it offers, which is what a menu of one is entitled to
-say about itself; `alone` says whether this conflict's menu is the whole of
-what settles its block, which an alternative to that block denies. `also` is a
-package to name in the heading beside the requirements, which a page whose
+it, what settles it, the verdict on each action the page makes tempting and no
+fix takes, and the releases someone else could cut instead. `others` is what the
+whole diagnosis knows about the repairs that cost more than the ones it offers,
+which is what a menu of one is entitled to say about itself; `alone` says
+whether this conflict's menu is the whole of what settles its block, which an
+alternative to that block denies. `also` is a package to name in the heading
+beside the requirements, which a page whose
 heading would otherwise repeat another's is given (`heading_extras`).
 """
 function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
@@ -2780,6 +3036,7 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
     end
     print_menu(io, c, others, alone)
     print_blocked(io, c)
+    print_upstream(io, c)
 end
 
 # The actions this page makes tempting and leaves out, one sentence each. The
@@ -2828,6 +3085,42 @@ function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
             "$tried would not help unless you also $also."
         end
         print_wrapped(io, lead, "    • ", "      ")
+    end
+end
+
+# One request, said as the reader would send it: what release would fix this,
+# what the latest supports instead, and what the release would get them. The
+# range is the versions of the bounded package that latest does support, printed
+# as any range on the page is, and the versions under it are the witness on the
+# packages this conflict speaks of — the release's own package aside, since the
+# sentence has just said which version of it this is about.
+#
+# Printed after the blocked fixes: the menu first, the roads not taken second,
+# and last the road that is not the reader's to take. Nothing prints for a
+# conflict with no qualifying pair, and nothing prints for a candidate the probe
+# budget left untried — a sentence the page did not print, and one it would have
+# had to verify before printing.
+function upstream_phrase(c::Conflict{P,V}, u::Upstream{P,V}) where {P,V}
+    vs = c.versions[u.dep]
+    r = range_phrase(vs, Bool[w in u.supported for w in vs])
+    return "a release of $(u.pkg) supporting $(u.dep) $(u.supports) would fix " *
+           "this; $(u.latest), its latest, supports only $r."
+end
+
+function print_upstream(io::IO, c::Conflict{P,V}) where {P,V}
+    isempty(c.upstream) && return
+    pkgs(u) = P[p for p in keys(c.versions) if p != u.pkg]
+    if length(c.upstream) == 1
+        u = only(c.upstream)
+        print_wrapped(io, "Upstream fix: " * upstream_phrase(c, u), "  ", "    ")
+        print_allows(io, pkgs(u), u.solution, "    "; prefix = "would allow: ")
+    else
+        println(io, "  Upstream fixes:")
+        for u in c.upstream
+            print_wrapped(io, upstream_phrase(c, u), "    • ", "      ")
+            print_allows(io, pkgs(u), u.solution, "      ";
+                         prefix = "would allow: ")
+        end
     end
 end
 
@@ -2922,7 +3215,7 @@ end
 touched(f::Fix{P,V}) where {P,V} = Set{P}(a.pkg for a in f.actions)
 
 """
-    report_problems(d) :: Vector{String}
+    report_problems(d; prob = nothing, data = nothing) :: Vector{String}
 
 Everything Section 8's checker can decide without asking the solver:
 
@@ -2946,6 +3239,18 @@ Everything Section 8's checker can decide without asking the solver:
     a whole repair the page has already printed. Were one inside it, taking
     the completion alone would repair and the action it excuses would be idle,
     so the entry would be exhibiting a costlier fix that is not one.
+  * **(V7) upstream fixes** — each one's witness takes the package it asks a
+    release of at the version the sentence calls its latest, and the package
+    that release would support at the version the sentence names; and that
+    package is one the query narrows and one of this conflict's own lines says
+    so about. Given `prob`, the query, and `data`, the package data the release
+    was tried against — a `DepsProvider` or a dict of
+    `PkgData` — the rest of Section 8's check is
+    decidable too: the version is really the latest, the bound the sentence
+    quotes is really that version's, the witness's version of the bounded
+    package really lies outside it (Lemma 32, checked rather than trusted), and
+    the user's own constraint really admits the latest. Without them those four
+    are left unasked, since nothing on the page can answer them.
 
 Empty when the report is sound. The remaining obligation — that each printed
 line is true of the universe this query left (V1) — is one entailment query per
@@ -2960,7 +3265,8 @@ lines are `S₁ ∪ S₂` and `S₂` alone contradicts, the union stays contradi
 whatever is deleted from `S₁`, so a union-level check would pass a page that
 silently destroyed the whole account of `S₁`.
 """
-function report_problems(d::Diagnosis{P,V}) where {P,V}
+function report_problems(d::Diagnosis{P,V}; prob = nothing,
+                         data = nothing) where {P,V}
     bad = String[]
     # V5 is stated against the *full* withdrawal, never the single entry: an
     # owned reason can hold other conflicts' facts, and the witness respects
@@ -3027,8 +3333,65 @@ function report_problems(d::Diagnosis{P,V}) where {P,V}
               join_and(String[action_phrase(a) for a in unless]) *
               " repairs on its own")
     end
+    # (V7) each printed request is one the page has verified: its witness takes
+    # the release at the version the sentence is about and the bounded package
+    # at the version it names, and the bound it drops is one of the user's own
+    # facts' opposite numbers. What the registry has to answer for — that the
+    # version is the latest, that the bound is what the sentence quotes, and
+    # that the witness lands outside it — is asked where the data is given.
+    for (n, c) in enumerate(d.conflicts)
+        for s in upstream_problems(c, prob, data)
+            push!(bad, "conflict $n: $s")
+        end
+    end
     return bad
 end
+
+# the package data for one package, from whichever shape of it the checker was
+# handed — the same two `resolve` itself takes
+pkg_data_of(data::DepsProvider{P}, p::P) where {P} = data.provider(p)
+pkg_data_of(data::AbstractDict{P,<:PkgData{P}}, p::P) where {P} = data[p]
+
+# (V7), of one conflict's upstream fixes
+function upstream_problems(c::Conflict{P,V}, prob, data) where {P,V}
+    bad = String[]
+    isempty(c.upstream) && return bad
+    _, con, _, _ = given_facts(c, Line{P}[l for l in c.lines if l.given])
+    for u in c.upstream
+        said = "the upstream fix naming $(u.pkg) $(u.latest)"
+        # the witness is what the sentence claims it is
+        get(u.solution, u.pkg, nothing) == u.latest ||
+            push!(bad, "$said: its witness does not take $(u.pkg) $(u.latest)")
+        get(u.solution, u.dep, nothing) == u.supports ||
+            push!(bad, "$said: its witness does not take $(u.dep) $(u.supports)")
+        # the bound it drops meets one of the user's own facts, said by a line
+        # of this conflict — never another registry package's bound
+        haskey(con, u.dep) ||
+            push!(bad, "$said: no line of it says the query narrows $(u.dep)")
+        data === nothing && continue
+        pd = pkg_data_of(data, u.pkg)
+        u.latest == maximum(pd.versions) ||
+            push!(bad, "$said: $(u.latest) is not the latest $(u.pkg)")
+        if !haskey(pd.compat, u.latest) || !haskey(pd.compat[u.latest], u.dep)
+            push!(bad, "$said: $(u.pkg) $(u.latest) has no bound on $(u.dep)")
+        else
+            s = pd.compat[u.latest][u.dep]
+            # (Lemma 32) the release helps by exactly what the sentence says
+            u.supports in s &&
+                push!(bad, "$said: $(u.dep) $(u.supports) is inside the bound " *
+                           "the release drops")
+            u.supported == V[w for w in get(c.versions, u.dep, V[]) if w in s] ||
+                push!(bad, "$said: the range it names is not what " *
+                           "$(u.pkg) $(u.latest) supports")
+        end
+        prob === nothing && continue
+        # the blame is current: a release the user has excluded already exists
+        is_excluded(prob, u.pkg, u.latest) &&
+            push!(bad, "$said: the query does not admit $(u.pkg) $(u.latest)")
+    end
+    return bad
+end
+
 
 function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V}
     bad = String[]

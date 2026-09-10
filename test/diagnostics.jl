@@ -34,8 +34,9 @@ using Resolver: Problem, PkgData, PkgInfo, SAT, Diagnosis, pkg_info, relax,
     prepare_pkg_info, finalize, sat_solve, installed_lit, forbidden_lit,
     with_classes_relaxed, class_exclusions, exclusion_kinds, nclasses,
     sat_assume_var
-using Resolver.Diagnostics: Diagnostics, Conflict, Fix, Action, Line,
-    clause_versions, clauses_satisfiable, clause_of, project, action_phrase
+using Resolver.Diagnostics: Diagnostics, Conflict, Fix, Action, Line, Upstream,
+    clause_versions, clauses_satisfiable, clause_of, project, action_phrase,
+    report_problems
 using Resolver.Clauses: Clauses, Clause, packages, isbottom, clause_phrase,
     literal, resolve_on, subsumes
 using Resolver.UnsatCores: sat_mcses
@@ -650,6 +651,9 @@ end
             1. relax your compat on P
                → allows: P p2, R r1
             2. drop requirement R
+          Upstream fix: a release of R supporting P p1 would fix this; r1, its latest,
+            supports only p2.
+            → would allow: P p1
         """
 end
 
@@ -674,6 +678,9 @@ end
             1. relax your compat on C
                → allows: A a3, C c3
             2. drop requirement A
+          Upstream fix: a release of A supporting C c1 would fix this; a3, its latest,
+            supports only c3.
+            → would allow: C c1
         """
 end
 
@@ -695,6 +702,9 @@ end
             1. relax your compat on C
                → allows: A a1, C c2
             2. drop requirement A
+          Upstream fix: a release of A supporting C c1 would fix this; a1, its latest,
+            supports only c2.
+            → would allow: C c1
         """
 end
 
@@ -1791,4 +1801,210 @@ end
     for r in (:A, :B, :C)
         @test any(l -> l.clause[r] !== nothing, said)
     end
+end
+
+
+# An upstream fix is the one thing on the page the reader cannot do themselves:
+# a release of some package, supporting a package the query narrowed, that this
+# has resolved and found would settle the conflict. The bar is three conditions
+# (Section 7 of the theory page) and every one of them is checked here on data
+# small enough to read: the bound has to meet one of the user's *own* facts, the
+# query has to admit the releasing package's latest, and the solve has to
+# succeed with that latest taken.
+#
+# `report_problems` is the checker, and it is given the query and the data, so
+# the four questions only the registry can answer -- is that the latest, is that
+# its bound, does the witness land outside it, does the query admit it -- are
+# asked here too.
+
+# :A's only version wants the older :B, and the user wants the newer one: the
+# bound is :A's and lifting it is not the user's to do
+const upstream_pair = Dict(
+    :A => PkgData([:a1], Dict(:a1 => [:B]), Dict(:a1 => Dict(:B => [:b1]))),
+    :B => PkgData([:b2, :b1], DEPS_NONE, COMP_NONE),
+)
+
+@testset "diagnosis: a release someone else could cut" begin
+    prob = Problem([:A, :B]; compat = Dict(:B => [:b2]))
+    d = check_diagnosis(upstream_pair, prob)
+    c = only(d.conflicts)
+    u = only(c.upstream)
+    @test (u.pkg, u.latest, u.dep, u.supports) == (:A, :a1, :B, :b2)
+    @test u.supported == [:b1]
+    # the versions are a resolve's, like every other witness on the page
+    @test u.solution == Dict(:A => :a1, :B => :b2)
+    # ... and the sentence is one the reader could send as it stands (read
+    # here with the wrapping undone, which is the terminal's business)
+    report = sprint(show, MIME("text/plain"), d)
+    unwrapped = replace(report, r"\n\s+" => " ")
+    @test occursin("Upstream fix: a release of A supporting B b2 would fix " *
+                   "this; a1, its latest, supports only b1.", unwrapped)
+    @test occursin("→ would allow: B b2", report)
+    # (V7) everything Section 8 asks of it, the registry's part included
+    @test isempty(report_problems(d; prob, data = upstream_pair))
+    @test isempty(report_problems(d))
+    # ... and the probes are the resolve's to run, so a caller can say no
+    d2 = resolve(upstream_pair, prob; upstream = false)
+    @test all(c -> isempty(c.upstream), d2.conflicts)
+    @test !occursin("Upstream", sprint(show, MIME("text/plain"), d2))
+end
+
+@testset "diagnosis: a checker that reads the registry" begin
+    # V7 is a check and not a formality: a sentence the data does not bear out
+    # is caught, whichever half of it is wrong
+    prob = Problem([:A, :B]; compat = Dict(:B => [:b2]))
+    d = check_diagnosis(upstream_pair, prob)
+    c = only(d.conflicts)
+    u = only(c.upstream)
+    function retold(v::Upstream{Symbol,Symbol})
+        c2 = Conflict{Symbol,Symbol}(c.reqs, c.lines, c.versions, c.excluded,
+                                     c.fixes, c.blocks, [v])
+        return report_problems(Diagnosis([c2], d.others); prob,
+                               data = upstream_pair)
+    end
+    @test isempty(retold(u))
+    # a witness that does not take the release
+    @test !isempty(retold(Upstream(:A, :a1, :B, :b2, [:b1],
+                                   Dict(:B => :b2))))
+    # a version that is not the latest
+    @test !isempty(retold(Upstream(:B, :b1, :A, :a1, Symbol[],
+                                   Dict(:A => :a1, :B => :b1))))
+    # a version of the bounded package the bound admits after all: then the
+    # release drops a bound that was not in the way (Lemma 32)
+    @test !isempty(retold(Upstream(:A, :a1, :B, :b1, [:b1],
+                                   Dict(:A => :a1, :B => :b1))))
+    # a package no line of the conflict says the query narrowed
+    @test !isempty(retold(Upstream(:B, :b2, :A, :a1, Symbol[],
+                                   Dict(:A => :a1, :B => :b2))))
+end
+
+@testset "diagnosis: a bound the user's own facts do not meet" begin
+    # :A wants the old :C, :B wants the new one, and the query says nothing
+    # about :C at all. Two maintainers could each fix this and the page will
+    # not judge between them, so it asks neither
+    data = Dict(
+        :A => PkgData([:a1], Dict(:a1 => [:C]), Dict(:a1 => Dict(:C => [:c1]))),
+        :B => PkgData([:b1], Dict(:b1 => [:C]), Dict(:b1 => Dict(:C => [:c2]))),
+        :C => PkgData([:c2, :c1], DEPS_NONE, COMP_NONE),
+    )
+    d = check_diagnosis(data, Problem([:A, :B]))
+    @test all(c -> isempty(c.upstream), d.conflicts)
+    @test !occursin("Upstream", sprint(show, MIME("text/plain"), d))
+    @test isempty(report_problems(d; prob = Problem([:A, :B]), data))
+end
+
+@testset "diagnosis: a release that exists already is on the menu" begin
+    # :a2 already supports the :B the user wants; what stands in the way is
+    # the user's own compat on :A, and *relax your compat on A* is the fix.
+    # Asking upstream for what has shipped would be asking for nothing
+    data = Dict(
+        :A => PkgData([:a2, :a1], Dict(:a2 => [:B], :a1 => [:B]),
+                      Dict(:a2 => Dict(:B => [:b1, :b2]),
+                           :a1 => Dict(:B => [:b1]))),
+        :B => PkgData([:b2, :b1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:A]; compat = Dict(:A => [:a1], :B => [:b2]))
+    d = check_diagnosis(data, prob)
+    c = only(d.conflicts)
+    @test Set([Action(:compat, :A)]) in Set(Set(f.actions) for f in c.fixes)
+    @test isempty(c.upstream)
+    @test !occursin("Upstream", sprint(show, MIME("text/plain"), d))
+    @test isempty(report_problems(d; prob, data))
+end
+
+@testset "diagnosis: an upstream witness settles the rest of the page" begin
+    # two conflicts that share nothing: the release asked for is one conflict's
+    # own, and its witness settles the other the first way that menu offers,
+    # which is the convention every witness on the page follows
+    data = Dict(
+        :A => PkgData([:a1], Dict(:a1 => [:C]), Dict(:a1 => Dict(:C => [:c1]))),
+        :C => PkgData([:c2, :c1], DEPS_NONE, COMP_NONE),
+        :E => PkgData([:e1], Dict(:e1 => [:G]), Dict(:e1 => Dict(:G => [:g1]))),
+        :G => PkgData([:g2, :g1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:A, :E]; compat = Dict(:C => [:c2], :G => [:g2]))
+    d = check_diagnosis(data, prob)
+    @test length(d.conflicts) == 2
+    for (i, c) in enumerate(d.conflicts)
+        u = only(c.upstream)
+        other = d.conflicts[3-i]
+        # the release is this conflict's own ...
+        @test u.pkg in keys(c.versions) && u.dep in keys(c.versions)
+        @test u.solution[u.pkg] == u.latest
+        @test u.solution[u.dep] == u.supports
+        # ... and its witness is what a resolve of that registry answers with
+        # the other conflict settled the first way its menu offers -- read off
+        # here rather than taken from the diagnosis, and resolved from scratch
+        released = Diagnostics.without_bound(data[u.pkg], u.latest, u.dep)
+        mod = merge(data, Dict(u.pkg => released))
+        @test u.solution == fix_resolve(mod, prob, first(other.fixes).actions)
+        @test haskey(u.solution, only(other.reqs))
+    end
+    # ... and what prints under one is the page's own packages, not the other's
+    report = sprint(show, MIME("text/plain"), d)
+    @test occursin("→ would allow: C c2\n", report)
+    @test occursin("→ would allow: G g2\n", report)
+    @test isempty(report_problems(d; prob, data))
+end
+
+@testset "diagnosis: the probe budget is recorded and not announced" begin
+    # nine conflicts of the same shape, each with one candidate: the budget
+    # stops the ninth from being tried, and what the page does not print it
+    # does not talk about either
+    n = Diagnostics.UPSTREAM_SOLVES + 1
+    data = Dict{Symbol,PkgData{Symbol,Symbol,Vector{Symbol},Vector{Symbol},
+                               Dict{Symbol,Vector{Symbol}},
+                               Dict{Symbol,Dict{Symbol,Vector{Symbol}}}}}()
+    reqs = Symbol[]
+    compat = Dict{Symbol,Vector{Symbol}}()
+    for i = 1:n
+        a, b = Symbol("A", i), Symbol("B", i)
+        b1, b2 = Symbol("b", i, "1"), Symbol("b", i, "2")
+        data[a] = PkgData([Symbol("a", i)], Dict(Symbol("a", i) => [b]),
+                          Dict(Symbol("a", i) => Dict(b => [b1])))
+        data[b] = PkgData([b2, b1], DEPS_NONE, COMP_NONE)
+        push!(reqs, a)
+        compat[b] = [b2]
+    end
+    prob = Problem(reqs; compat)
+    d = resolve(data, prob)
+    @test length(d.conflicts) == n
+    @test count(c -> !isempty(c.upstream), d.conflicts) ==
+          Diagnostics.UPSTREAM_SOLVES
+    @test d.upstream_cut
+    report = sprint(show, MIME("text/plain"), d)
+    @test !occursin("cut", report) && !occursin("budget", report)
+    @test count("Upstream fix:", report) == Diagnostics.UPSTREAM_SOLVES
+    @test isempty(report_problems(d; prob, data))
+end
+
+# Two qualifying pairs print as the choice they are: a bulleted list under one
+# heading, each bullet the same sentence and its own witness. Built by hand,
+# since a conflict that one release fixes in two different ways is rare enough
+# that neither corpus holds one -- what is being checked here is the shape of
+# the page, which is this file's business either way.
+@testset "diagnosis: two releases print as two bullets" begin
+    P, V = String, Int
+    VS = Dict("X" => [1], "Q" => [1, 2, 3], "R" => [1, 2])
+    lines = Line{P}[Line{P}(Clauses.clause(["X" => literal(1, [1])]), P[], true)]
+    up(p, v, q, s, sup, sol) = Upstream{P,V}(p, v, q, s, V[sup...], sol)
+    c = Conflict{P,V}(P["X"], lines, VS, Dict{P,Vector{Vector{Symbol}}}(),
+        Fix{P,V}[Fix{P,V}(Action{P}[Action(:drop, "X")], Dict("X" => 1))],
+        Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}[],
+        Upstream{P,V}[up("A", 5, "Q", 3, [1, 2],
+                         Dict("A" => 5, "Q" => 3, "X" => 1)),
+                      up("B", 2, "R", 2, [1],
+                         Dict("B" => 2, "R" => 2, "X" => 1))])
+    report = sprint(show, MIME("text/plain"), Diagnosis([c], :none))
+    flat = replace(report, r"\n\s+" => " ")
+    @test occursin("  Upstream fixes:\n", report)
+    @test !occursin("Upstream fix:", report)
+    @test occursin("• a release of A supporting Q 3 would fix this; 5, its " *
+                   "latest, supports only ≤2.", flat)
+    @test occursin("• a release of B supporting R 2 would fix this; 2, its " *
+                   "latest, supports only 1.", flat)
+    # each bullet's witness is its own, and says nothing about the package the
+    # sentence above it has just named a version of
+    @test occursin("→ would allow: Q 3, X 1", flat)
+    @test occursin("→ would allow: R 2, X 1", flat)
 end

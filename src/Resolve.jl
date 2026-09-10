@@ -94,9 +94,9 @@ function resolve_core(
 end
 
 """
-    resolve(data, prob::Problem; by = identity, diagnose = true)
+    resolve(data, prob::Problem; by = identity, diagnose = true, upstream = true)
         -> Union{Dict{P,V}, Diagnosis{P,V}, Nothing}
-    resolve(data, reqs; by = identity, diagnose = true)
+    resolve(data, reqs; by = identity, diagnose = true, upstream = true)
 
 Resolve the requirements `reqs` against the package universe described by
 `data`, returning the optimal solution as a dict mapping each needed package
@@ -109,6 +109,13 @@ user could change to make them; `show`ing it prints the report. Pass
 `diagnose = false` for the bare `nothing` instead, which is what a caller that
 only wants the verdict should do — the diagnosis costs several more solves and
 one resolve per fix on the menus it offers.
+
+Where `data` is a `DepsProvider` or a dict of `PkgData`, a diagnosis also says
+what someone *else* could change: a release of a package on the page, supporting
+a package the query narrowed, that a resolve on the data so modified says would
+settle a conflict — see [`Upstream`](@ref Resolver.Diagnostics.Upstream).
+`upstream = false` skips the search, which costs one such resolve per candidate
+under a budget per report.
 
 A [`Problem`](@ref) additionally constrains the admissible versions with user
 constraints; the answer is the one the same universe with those versions
@@ -129,7 +136,8 @@ constraints to attribute a failure to: it answers `nothing`, and accepts
 are restored before returning so the instance can be reused, and
 `restore = false` is faster for single-use instances.
 
-The other methods accept one more keyword:
+The other methods accept `order` as well, and the `DepsProvider` and `PkgData`
+ones `upstream` besides:
 
   * `order`: the *version* preference ordering, as a callable mapping a package
     to a `lt` comparator over its versions ("is preferred to"). The default,
@@ -317,10 +325,12 @@ function resolve(
     by   :: Function = identity, # package ordering
     order = nothing, # version ordering
     diagnose :: Bool = true,
+    upstream :: Bool = true, # look for releases that would fix each conflict
 ) where {P}
     info = pkg_info(deps, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob;
+    ans = resolve_prepared(prepare_pkg_info(info, prob, info; order), prob;
         by, order, diagnose)
+    return with_upstream(deps, prob, ans, upstream; by, order)
 end
 
 function resolve(
@@ -329,11 +339,22 @@ function resolve(
     by   :: Function = identity, # package ordering
     order = nothing, # version ordering
     diagnose :: Bool = true,
+    upstream :: Bool = true, # look for releases that would fix each conflict
 ) where {P}
     info = pkg_info(data, prob)
-    resolve_prepared(prepare_pkg_info(info, prob, info; order), prob;
+    ans = resolve_prepared(prepare_pkg_info(info, prob, info; order), prob;
         by, order, diagnose)
+    return with_upstream(data, prob, ans, upstream; by, order)
 end
+
+# What the package data adds to a diagnosis, and only it can: for each
+# conflict, whether a release of some package on the page would settle it (see
+# `Diagnostics.upstream_fixes`). A release is a different registry rather than a
+# different query, so this is the resolve's to ask and not the diagnosis's, and
+# `upstream = false` is how a caller that does not want the probes says so.
+with_upstream(data, prob::Problem, ans, upstream::Bool; by, order) =
+    upstream && ans isa Diagnostics.Diagnosis ?
+        Diagnostics.upstream_fixes(data, prob, ans; by, order) : ans
 
 # a caller-supplied info may be a reusable (or cached) T1 artifact, so this
 # method prepares into a dict of its own and leaves the argument alone
@@ -357,7 +378,8 @@ resolve(
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
     diagnose :: Bool = true,
-) where {P} = resolve(deps, Problem(reqs); by, order, diagnose)
+    upstream :: Bool = true,
+) where {P} = resolve(deps, Problem(reqs); by, order, diagnose, upstream)
 
 resolve(
     data :: AbstractDict{P,<:PkgData{P}},
@@ -365,7 +387,8 @@ resolve(
     by     :: Function = identity, # package ordering
     order  = nothing, # version ordering
     diagnose :: Bool = true,
-) where {P} = resolve(data, Problem(reqs); by, order, diagnose)
+    upstream :: Bool = true,
+) where {P} = resolve(data, Problem(reqs); by, order, diagnose, upstream)
 
 resolve(
     info :: AbstractDict{P,PkgInfo{P,V}},

@@ -34,16 +34,27 @@ Conflict 2: Plots
     2. drop requirement Plots
 ```
 
+Where a conflict turns on a bound only a maintainer can lift, the report says
+that too, as one sendable request:
+
+```
+  Upstream fix: a release of TextEncodeBase supporting DataStructures 0.19.6
+    would fix this; 0.8.3, its latest, supports only 0.18.0–0.18.22.
+    → would allow: DataStructures 0.19.6
+```
+
 Every fix is *verified*: the version list after each one is what a resolve of
-the fixed query actually returns, not a guess. Between them the conflicts
-reach every fix as cheap as the cheapest, so nothing is left over: where a
-group of conflicts that stand or fall together has cheapest fixes that taking
-one entry from each of their menus does not reach, those print after the last
-conflict as the alternatives they are — "Or, to fix without dropping
-requirement Knet:", and then what to do instead. Whatever is outside the page even so is
-confessed: "Costlier fixes also exist." when what was left out gives up more,
-"There are more minimal fixes than are shown." when the search for them was
-cut short. When the menus are the whole of it, the report says nothing at all.
+the fixed query actually returns, not a guess — an upstream one included, whose
+versions come from a resolve against the registry that release would make.
+Between them the conflicts reach every fix as cheap as the cheapest, so nothing
+is left over: where a group of conflicts that stand or fall together has
+cheapest fixes that taking one entry from each of their menus does not reach,
+those print after the last conflict as the alternatives they are — "Or, to fix
+without dropping requirement Knet:", and then what to do instead. Whatever is
+outside the page even so is confessed: "Costlier fixes also exist." when what
+was left out gives up more, "There are more minimal fixes than are shown." when
+the search for them was cut short. When the menus are the whole of it, the
+report says nothing at all.
 
 What "optimal" means, precisely, and why the resolver's aggressive problem
 filtering provably does not change the answer, is worked out in the Theory

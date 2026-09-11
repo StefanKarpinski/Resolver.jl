@@ -42,6 +42,11 @@ mutable struct SAT{P,V}
     # with `sat_pop`, which retracts whatever was pushed last, and getting that
     # wrong retracts someone else's clauses instead of the query's
     depth :: Int
+    # how many times picosat has been asked to solve, over the instance's whole
+    # life. An instrument, and the right one: what a descent costs is a number
+    # of solves, and a wall time can't say which of two changes to it made a
+    # solve go away and which merely made it faster
+    solves :: Int
     # per selector variable, the registry statement it switches on. Empty
     # unless the instance was built to be explained: a selector occurs only
     # negatively, so assuming them all gives back exactly the instance without
@@ -336,7 +341,7 @@ function SAT(
         PicoSAT.reset(pico)
         rethrow()
     end
-    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[], 0, why))
+    sat = finalizer(finalize, SAT(info, univ.reps, pico, vars, Int[], 0, 0, why))
     try deactivate_classes!(sat)
     catch
         finalize(sat)
@@ -493,8 +498,10 @@ forbidden_lit(sat::SAT{P}, p::P, c::Integer) where {P} = -(sat.vars[p] + c)
 # so a caller asking about *requirements* wants `is_satisfiable(sat, reqs)`:
 # requirements are assumed, not asserted, and an unstaged solve reports them
 # satisfiable however unsatisfiable they are.
-sat_solve(sat::SAT) =
-    PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
+function sat_solve(sat::SAT)
+    sat.solves += 1
+    return PicoSAT.sat(sat.pico) == PicoSAT.SATISFIABLE
+end
 
 # Are `reqs` jointly installable? The complete question, staged and answered.
 function is_satisfiable(sat::SAT{P}, reqs::Union{P,SetOrVec{P}}) where {P}

@@ -625,19 +625,25 @@ function rehint_classes!(
     return sat
 end
 
-# improve package p to its best feasible class: repeatedly demand some
-# strictly better class until that becomes unsatisfiable, keeping the last
-# good model in sol
+# improve package p to its best admissible feasible class: repeatedly demand
+# some strictly better class until that becomes unsatisfiable, keeping the last
+# good model in sol. `reps` says which classes are admissible — a class the
+# query emptied is forbidden by a unit clause, so probing one would be a solve
+# spent learning what the instance already states
 function optimize_version!(
-    sat :: SAT{P},
-    sol :: Dict{P,Int},
-    p   :: P,
-    ord :: O = nothing,
+    sat  :: SAT{P},
+    sol  :: Dict{P,Int},
+    p    :: P,
+    ord  :: O = nothing,
+    reps :: Dict{P,Vector{Int}} = sat.reps, # the classes the query admits
 ) where {P, O}
     ord_p = ranking(ord, p, nclasses(sat.info[p]))
-    best = @inbounds ord_p[1]
-    # cheap first try: after filtering, the best class is feasible more
-    # often than not, and probing it by assumption needs no temp clauses
+    best = hinted_class(reps[p], ord_p)
+    @assert best != 0 """
+        $p admits no class, yet the model installs it: `reps` has to be the
+        representatives whose deactivations are in force."""
+    # cheap first try: after filtering, the best admissible class is feasible
+    # more often than not, and probing it by assumption needs no temp clauses
     # at all — one solve replaces the whole improvement loop
     if sol[p] != best
         sat_assume(sat, p, best)
@@ -651,7 +657,10 @@ function optimize_version!(
     while sol[p] != best
         improved = with_temp_clauses(sat) do
             # some class ranking strictly above the one it has — the ranks the
-            # scan passes on its way to the one it has, which is where it stops
+            # scan passes on its way to the one it has, which is where it stops.
+            # an emptied class among them stays in: its literal is false at
+            # level 0 and costs nothing, and `best` being admissible means the
+            # clause is never made of such literals alone
             for r in eachindex(ord_p)
                 c = @inbounds ord_p[r]
                 c == sol[p] && break

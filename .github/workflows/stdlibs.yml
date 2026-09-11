@@ -40,7 +40,7 @@ jobs:
         # rather than derived: it changes about once a year, and the
         # `manifests` job below fails when a released Julia is missing from
         # bin/, which is the same moment this list needs a new entry.
-        version: ['1.9', '1.10', '1.11', '1.12']
+        version: ['1.9', '1.10', '1.11', '1.12', '1.13']
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3

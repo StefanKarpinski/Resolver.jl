@@ -20,7 +20,7 @@
 using Resolver: PkgData, PkgInfo, Problem, SAT, PicoSAT, pkg_info, nclasses,
     rank_pkg_info, prepare_pkg_info, filter_pkg_info!, deactivations,
     mark_installable!, mark_necessary!, drop_unmarked!, class_ranking,
-    finalize, sat_assume, sat_pop, is_satisfiable, sat_solve
+    finalize, sat_assume, sat_pop, is_satisfiable, sat_solve, relax, relaxations
 
 const NODEPS = Dict{Symbol,Vector{Symbol}}()
 const NOCOMP = Dict{Symbol,Dict{Symbol,Vector{Symbol}}}()
@@ -367,6 +367,77 @@ end
     finally
         finalize(sat)
     end
+end
+
+@testset "fitness: the descent never probes an emptied class" begin
+    # An emptied class is forbidden by a unit clause, so a probe of it can only
+    # come back unsatisfiable, and every such solve is spent learning what the
+    # instance already states. The descent has to work from the best class the
+    # query *admits*: `sat.solves` is what says whether it does.
+    #
+    # :A and :D each have three classes, one per dependency pattern, and the
+    # query below empties the two best of each. Unconstrained, the feasibility
+    # solve lands both at their best class and nothing more is asked — one
+    # solve. Constrained, the phase hint lands both at the best class the query
+    # admits, so the same one solve is the whole of it; a descent that reached
+    # for the emptied classes would pay one solve for the layer's joint probe
+    # and two more per package, six in all.
+    data = Dict(
+        :A => PkgData([:v3, :v2, :v1], Dict(:v3 => [:B], :v2 => [:C]), NOCOMP),
+        :D => PkgData([:v3, :v2, :v1], Dict(:v3 => [:B], :v2 => [:C]), NOCOMP),
+        :B => PkgData([:w1], NODEPS, NOCOMP),
+        :C => PkgData([:w1], NODEPS, NOCOMP),
+    )
+    info = pkg_info(data, [:A, :D])
+    function solves(info, prob)
+        sat = SAT(prepare_pkg_info(info, prob))
+        try
+            sol = resolve(sat, prob.reqs)
+            return sol, sat.solves
+        finally
+            finalize(sat)
+        end
+    end
+    @test solves(info, Problem([:A, :D])) ==
+        (Dict(:A => :v3, :D => :v3, :B => :w1), 1)
+    Q = Problem([:A, :D]; compat = Dict(:A => [:v1], :D => [:v1]))
+    univ = prepare_pkg_info(info, Q)
+    @test univ.reps[:A] == univ.reps[:D] == [0, 0, 3]
+    @test solves(info, Q) == (Dict(:A => :v1, :D => :v1), 1)
+
+    # what is admissible is the relaxation's to say, not the query's: lifting
+    # the bound revives the best classes, and the descent has to reach them —
+    # again in one solve, since the hint moves with the relaxation
+    rp = relax(univ, Q, Symbol[], relaxations(Q))
+    sat = SAT(univ)
+    try
+        n = sat.solves
+        @test resolve(sat, rp) == Dict(:A => :v3, :D => :v3, :B => :w1)
+        @test sat.solves - n == 1
+    finally
+        finalize(sat)
+    end
+
+    # the improvement clause keeps an emptied class in: its literal is false at
+    # level 0 and costs nothing. Here the admissible best class conflicts with
+    # a requirement, so the model lands below it and the loop runs — probe the
+    # best (unsatisfiable), then demand something better than what it has
+    # (unsatisfiable), three solves with the feasibility one — and the universe
+    # with the forbidden version deleted outright takes exactly the same three
+    bounded = Dict(
+        :A => PkgData([:v3, :v2, :v1], Dict(:v3 => [:B]),
+            Dict(:v2 => Dict(:E => Symbol[]))),
+        :B => PkgData([:w1], NODEPS, NOCOMP),
+        :E => PkgData([:e1], NODEPS, NOCOMP),
+    )
+    deleted = Dict(
+        :A => PkgData([:v2, :v1], NODEPS, Dict(:v2 => Dict(:E => Symbol[]))),
+        :E => PkgData([:e1], NODEPS, NOCOMP),
+    )
+    want = (Dict(:A => :v1, :E => :e1), 3)
+    @test solves(pkg_info(bounded, [:A, :E]),
+        Problem([:A, :E]; compat = Dict(:A => [:v2, :v1]))) == want
+    @test solves(pkg_info(deleted, [:A, :E]), Problem([:A, :E])) == want
 end
 
 # the versions a universe can still name but no longer offers

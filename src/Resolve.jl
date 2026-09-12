@@ -6,6 +6,7 @@ function resolve_core(
     reqs :: SetOrVec{P} = keys(sat.info);
     by   :: Function = identity, # priority ordering
     ord  :: O = nothing, # class ranking (the universe's own layout by default)
+    reps :: Dict{P,Vector{Int}} = sat.reps, # the classes the query admits
     restore :: Bool = true, # restore the SAT instance's state before returning
 ) where {P, O}
     # a requirement the instance doesn't know has no installable version —
@@ -19,30 +20,39 @@ function resolve_core(
     # clauses added by the descent invalidate the solver's assignment
     extract_solution!(sat, sol)
 
+    # the best class of `p` the query admits: the first in its ranking that
+    # `reps` gives a member, the emptied ones being forbidden already
+    best_class(p::P) =
+        hinted_class(reps[p], ranking(ord, p, nclasses(sat.info[p])))
+
     # optimize each package in `opts` to its best feasible version wrt quality,
     # pinning each as it goes (in priority order); return the newly-reachable
     # dependencies of the chosen versions that still need optimizing
     function optimize!(opts::Set{P}, seen::Set{P})
         layer = sort!(collect(opts); by)
-        # optimistic joint probe: assume the best class of every
-        # package in the layer that the current model doesn't already
-        # have at its best. when jointly feasible — the common case —
-        # one solve pins the whole layer, and joint feasibility of the
-        # best classes witnesses each of the sequential optimizations
-        # below, so the layered answer is unchanged. a failed probe
-        # tells us nothing and the sequential path proceeds as usual
-        # (skipped for a single package, whose own probe covers it)
-        todo = [p for p in layer
-                if sol[p] != @inbounds ranking(ord, p, nclasses(sat.info[p]))[1]]
+        # optimistic joint probe: assume the best admissible class of every
+        # package in the layer that the current model doesn't already have
+        # there. when jointly feasible — the common case — one solve pins the
+        # whole layer, and joint feasibility of those classes witnesses each
+        # of the sequential optimizations below, so the layered answer is
+        # unchanged. a failed probe tells us nothing and the sequential path
+        # proceeds as usual (skipped for a single package, whose own probe
+        # covers it). a class the query emptied is never assumed: it is
+        # forbidden at level 0, and one such assumption would fail the probe
+        # for the whole layer
+        todo = Pair{P,Int}[]
+        for p in layer
+            c = best_class(p)
+            sol[p] == c || push!(todo, p => c)
+        end
         if length(todo) > 1
-            for p in todo
-                sat_assume(sat, p,
-                    @inbounds ranking(ord, p, nclasses(sat.info[p]))[1])
+            for (p, c) in todo
+                sat_assume(sat, p, c)
             end
             sat_solve(sat) && extract_solution!(sat, sol)
         end
         for p in layer
-            optimize_version!(sat, sol, p, ord)
+            optimize_version!(sat, sol, p, ord, reps)
             # fix optimized class
             sat_add(sat, p, sol[p])
             sat_add(sat)
@@ -272,11 +282,14 @@ function relax(
 end
 
 # Answer a relaxation on the instance built for the query it relaxes: the
-# descent again, in the order `rp` ranks the classes, with `rp`'s deactivations
-# in place of the query's for the duration and the query's put back after. The
-# instance is left exactly as it was found — same clauses, same forbidden
-# classes, same decision phases — so one universe answers as many relaxations as
-# it is asked, in any order.
+# descent again, in the order `rp` ranks the classes and over the classes `rp`
+# admits, with `rp`'s deactivations in place of the query's for the duration
+# and the query's put back after. What is admissible the descent learns from
+# the representatives the frame was built from, not from `sat.reps`, which
+# still names the query's: a class the query emptied may well be admissible
+# here. The instance is left exactly as it was found — same clauses, same
+# forbidden classes, same decision phases — so one universe answers as many
+# relaxations as it is asked, in any order.
 function resolve(
     sat :: SAT{P,V},
     rp  :: RelaxedProblem{P};
@@ -287,7 +300,7 @@ function resolve(
     sol = with_deactivations(sat, deactivated_lits(sat, reps)) do
         rehint_classes!(sat, sat.reps, nothing, reps, ord)
         try
-            resolve_core(sat, rp.prob.reqs; by, ord)
+            resolve_core(sat, rp.prob.reqs; by, ord, reps)
         finally
             rehint_classes!(sat, reps, ord, sat.reps, nothing)
         end

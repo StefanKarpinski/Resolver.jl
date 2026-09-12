@@ -47,6 +47,13 @@ const LIBMPDEC_JLL = UUID("7106de7a-f406-5ef1-84f7-3345f7341bd2")
 # MbedTLS_jll is a stdlib of Julia 1.10 but not of 1.11 and later, so it tells
 # the target Julia's stdlib set apart from the host's.
 const MBEDTLS_JLL = UUID("c8ffd9c3-330d-5841-b78e-0817d7145fa1")
+# Julia 1.13.0 bundles Downloads 1.7.0 beside a LibCURL 1.0.0 that is not
+# registered, while General's Downloads 1.7.0 bounds LibCURL at 0.6 -- the copy
+# Julia ships moved on without its registered version moving. Pkg depends on
+# Downloads, so this is what decides whether Pkg resolves on 1.13.
+const DOWNLOADS = UUID("f43a241f-c20a-4ad4-852c-f6b1247861c6")
+const LIBCURL = UUID("b27032c2-a3e7-50c8-80cd-2d36dbcbfd21")
+const PKG = UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
 
 # Load packages from the installed registries (mirrors bin/resolve.jl).
 const packages = Dict{UUID,Vector{PkgEntry}}()
@@ -217,6 +224,33 @@ end
         @test resolves([COMPILER_SUPPORT_LIBRARIES_JLL, JULIA_UUID]; julia = VersionSpec("1.10"))
         # Realistic reproducer: LinearAlgebra pulls in the same stack transitively.
         @test resolves([LINEAR_ALGEBRA, JULIA_UUID]; julia = VersionSpec("1.10.8"))
+    end
+
+    # The same disagreement, in a registered version's bound on *another*
+    # stdlib: Julia 1.13.0 bundles Downloads 1.7.0 with `LibCURL = "0.6, 1"` in
+    # its Project.toml, next to the LibCURL 1.0.0 it pins, but General's
+    # Downloads 1.7.0 still says `LibCURL = "0.6"` -- and LibCURL 1.0.0 is not
+    # registered at all. Taken from the registry, that bound makes Downloads,
+    # and Pkg through it, unresolvable on the Julia that ships them. The
+    # provider must widen the bound by the version the bundling Julia ships,
+    # and only by that: the registry bound still governs everything else. Julia
+    # 1.13.0 is a frozen release, so what it bundles never changes; the registry
+    # entry may yet be corrected, which only makes the widening a no-op.
+    @testset "stdlib compat on other stdlibs is widened, not cleared" begin
+        pd = Resolver.pkg_data(reg, [DOWNLOADS])[DOWNLOADS]
+        spec = pd.compat[v"1.7.0"][LIBCURL]
+        @test v"1.0.0" ∈ spec # what 1.13.0 ships (this is the fix)
+        @test v"0.6.4" ∈ spec # the registry bound is kept ...
+        @test v"0.5.2" ∉ spec # ... and still excludes what it excluded
+        # a version nothing ships beside LibCURL 1.0.0 keeps the registry bound
+        # as is: Downloads 1.6.0 ships with 1.11 and early 1.12, LibCURL 0.6.x
+        @test v"1.0.0" ∉ pd.compat[v"1.6.0"][LIBCURL]
+    end
+
+    # End-to-end: Pkg, and so anything at all, must resolve on Julia 1.13.
+    @testset "Pkg resolves on Julia 1.13" begin
+        @test resolves([PKG, JULIA_UUID]; julia = VersionSpec("1.13.0"))
+        @test resolves([PKG, JULIA_UUID]; julia = VersionSpec("1.13"))
     end
 
     # Issue #54: a registry compat entry may name a package that is not a
@@ -633,11 +667,23 @@ end
     # that Julia bundles.
     @testset "the julia universe is the whole universe" begin
         pd = Resolver.pkg_data(reg, [JULIA_UUID])[JULIA_UUID]
-        # every Julia there is, 0.x and the prerelease included -- the admission
-        # kinds and the bound are what narrow it
+        # every Julia there is, 0.x included -- the admission kinds and the
+        # bound are what narrow it
         @test length(pd.versions) == length(Registries.JULIA_VERSIONS)
         @test any(v -> v.major == 0, pd.versions)
-        @test any(v -> !isempty(v.prerelease), pd.versions)
+        # ... prereleases too, under the one rule Registries.jl applies to the
+        # release list: a prerelease is kept only while its release is still
+        # unreleased, and then only the newest prerelease of that patch. Stated
+        # against the raw release list rather than as "some prerelease
+        # survives", since that depends on where the release cycle stands on
+        # the day -- 1.13.0 shipping retired 1.13.0-rc4.
+        raw = VersionNumber.(keys(Registries.julia_versions_data))
+        released = Set(v for v in raw if isempty(v.prerelease))
+        newest_of(v) = maximum(w for w in raw if Base.thispatch(w) == Base.thispatch(v))
+        expected_pre = Set(v for v in raw if !isempty(v.prerelease) &&
+                           Base.thispatch(v) ∉ released && v == newest_of(v))
+        @test Set(v for v in pd.versions if !isempty(v.prerelease)) == expected_pre
+        @test all(v -> v ∈ pd.versions, released)
 
         # ... and each of them still pins the stdlibs it bundles, so the pins are
         # per candidate Julia as before (LinearAlgebra is versioned with Julia)

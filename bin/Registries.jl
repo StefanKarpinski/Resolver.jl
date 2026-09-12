@@ -543,6 +543,24 @@ function registry_provider(
         # The upgradable stdlibs get the same treatment even though no pin makes
         # them conflict: a bundled version must be installable on the Julia that
         # bundles it whether or not that Julia insists on it.
+        #
+        # The same disagreement arises in a registry version's bounds on the
+        # *other* stdlibs. A stdlib's copy in Julia can move on without its
+        # registered version moving, so the registry's entry for a version
+        # number and the copy a Julia ships under that number need not agree:
+        # Julia 1.13.0 bundles Downloads 1.7.0 with `LibCURL = "0.6, 1"` in its
+        # Project.toml, beside the LibCURL 1.0.0 it pins, while General's
+        # Downloads 1.7.0 still says `LibCURL = "0.6"` -- and LibCURL 1.0.0 is
+        # not registered at all. Taken from the registry, that bound makes
+        # Downloads, and Pkg through it, unresolvable on the Julia that ships
+        # them. So a registry version is widened on those bounds too, by the
+        # version of the bounded stdlib that each bundling Julia ships: the
+        # bundled set is installed together by construction, so every pair in
+        # it is compatible whatever the registry says. As with `julia`, this is
+        # widening rather than replacement -- the registry bound still governs
+        # on the Julias that bundle neither. What it admits is a pair of
+        # versions, wherever both are available; for a version that exists only
+        # because a Julia bundles it, that is exactly the Julias that bundle it.
         if uuid in keys(bundlers)
             bundlers_u = bundlers[uuid]
             by_patch_u = by_patch[uuid]
@@ -565,6 +583,21 @@ function registry_provider(
                     comp_v = get!(()->valtype(comp)(), comp, v)
                     comp_v[JULIA_UUID] =
                         get(comp_v, JULIA_UUID, VersionSpec("*")) ∪ julias
+                    # ... and its bounds on the stdlibs those Julias ship by the
+                    # versions they ship (only the bounded ones: a dependency
+                    # with no bound is already unbounded)
+                    bounded = [d for d in keys(comp_v) if d != JULIA_UUID]
+                    isempty(bounded) && continue
+                    for julia_ver in JULIA_VERSIONS
+                        julia_ver in julias || continue
+                        shipped = stdlib_snapshot(julia_ver)
+                        for d in bounded
+                            info = get(shipped, d, nothing)
+                            info === nothing && continue
+                            shipped_ver = something(info.version, julia_ver)
+                            comp_v[d] = comp_v[d] ∪ VersionSpec(shipped_ver)
+                        end
+                    end
                 end
             end
         end

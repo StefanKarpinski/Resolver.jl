@@ -15,9 +15,9 @@ query:
 Unsatisfiable — 2 conflicts, pick a fix for each:
 
 Conflict 1: DataFrames
-  • your compat leaves DataFrames ≥1.0.0
+  • your compat allows only DataFrames ≥1.0.0
   • DataFrames 1.0.0–1.8.2 requires PrettyTables
-  • your compat leaves no version of PrettyTables
+  • your compat allows no version of PrettyTables
   Fix it by any one of:
     1. relax your compat on DataFrames
        → allows: DataFrames 0.21.8
@@ -27,7 +27,7 @@ Conflict 1: DataFrames
 
 Conflict 2: Plots
   • Plots requires RecipesBase
-  • your compat leaves no version of RecipesBase
+  • your compat allows no version of RecipesBase
   Fix it by any one of:
     1. relax your compat on RecipesBase
        → allows: Plots 1.41.0, RecipesBase 1.3.4

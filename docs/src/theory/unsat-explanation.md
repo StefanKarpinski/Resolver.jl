@@ -84,11 +84,11 @@ Six readings of one shape cover everything a report says:
 | clause | reads as |
 |---|---|
 | `⟨A : V(A)⟩` | A is installed |
-| `⟨A : L ∪ {⊥}⟩` | the query (or the registry) leaves only `L` of A |
+| `⟨A : L ∪ {⊥}⟩` | the query (or the registry) allows only `L` of A |
 | `⟨A : (V(A)∖R) ∪ {⊥}⟩` | A cannot be any of `R` |
 | `⟨A : (V(A)∖R) ∪ {⊥}, B : S⟩` | `A@R` **requires** `B@S` |
 | `⟨A : (V(A)∖R) ∪ {⊥}, B : S ∪ {⊥}⟩` | `A@R` **constrains** `B@S` |
-| `⟨A : (V(A)∖R) ∪ {⊥}, B : {⊥}⟩` | `A@R` **leaves no version of** `B` |
+| `⟨A : (V(A)∖R) ∪ {⊥}, B : {⊥}⟩` | `A@R` **allows no version of** `B` |
 
 The difference between the verbs is only what the consequent admits:
 *requires* brings the package in, *constrains* permits its absence, and a
@@ -913,7 +913,7 @@ what is chosen.
 ### Blocked fixes: which, and how
 
 The page's own lines make some actions tempting: the reader sees "your
-compat leaves QuantumLattices 0.15.4" and asks why relaxing it is not
+compat allows only QuantumLattices 0.15.4" and asks why relaxing it is not
 offered. A **tempting action** is an action on a package a conflict's lines
 or heading name that appears nowhere in the cover. The blocked-fixes
 section answers for exactly these — one sentence per action, so nothing is
@@ -973,7 +973,7 @@ stories.
 Everything above is what the *user* could change. A conflict's chain ends
 where a registry statement meets one of the user's own facts —
 *BytePairEncoding 0.5.2 requires DataStructures 0.18.0–0.18.22* against
-*your compat leaves DataStructures 0.19.6* — and the registry side is
+*your compat allows only DataStructures 0.19.6* — and the registry side is
 something a maintainer could change. The page may say so, under a bar high
 enough that what it says is a single, sendable request: the sentence a user
 would put in an issue, and the page has verified would work.
@@ -1008,7 +1008,7 @@ and the witness names that version.
 when all of the following hold.
 
 1. **The bound meets the user's own fact.** `Q` is a package the query
-   narrows — a *your compat leaves Q …* line of this conflict — and `P` is a
+   narrows — a *your compat allows only Q …* line of this conflict — and `P` is a
    package the conflict's lines speak of whose latest version carries a
    bound on `Q` excluding what the user's constraint leaves. A bound
    contradicted only by *another registry package's* bound is not offered:
@@ -1092,7 +1092,7 @@ Rules, not preferences — each guards a truth-condition or an attribution:
 
 * **A side is stated from its support.** The requirements the conflict
   answers for are said by its heading and nowhere else; the reason's other
-  facts print once, as the query's own lines ("your compat leaves A 1.2").
+  facts print once, as the query's own lines ("your compat allows only A 1.2").
   Each side prints as the implication from its support's packages to its
   bound, with its route in parentheses. A conditional side names all of its
   support ("A 1.2 and B ≥ 2 together …"). This is what makes every fix
@@ -1227,16 +1227,19 @@ the package not being installed".
 
 | form | when | what it says |
 | --- | --- | --- |
-| `your ‹kinds› leaves X r` | the line is one of the query's own facts | of `X`, the query's own constraints of those kinds left `r` — and only such a line may say *your* |
+| `your ‹kinds› allows only X r` | the line is one of the query's own facts | of `X`, the query's own constraints of those kinds admit `r` — and only such a line may say *your*, and two or more of them take *allow* |
 | `… requires X r` | `⊥ ∉ S` | `X` is installed, at one of `r` |
 | `… constrains X r` | `⊥ ∈ S`, some version in `S` | if `X` is installed it is at one of `r`; the statement is silent if it is not |
-| `… leaves no version of X` | `S = {⊥}` | `X` is not installed at all |
+| `… allows no version of X` | `S = {⊥}` | `X` is not installed at all |
 
-*Leaves* is the user's; *requires* forces; *constrains* binds only what is
-there; *leaves no version of* is forced-empty. The bare package name is a
-consequent whose range is the package's whole offering, never a consequent
-with nothing in it — the fourth row exists so that a flipped line cannot
-print as the package arriving when what it says is the package's going.
+*Allows only* is the user's; *requires* forces; *constrains* binds only what
+is there; *allows no version of* is forced-empty. For the registry's verbs the
+bare package name is a consequent whose range is the package's whole offering,
+never a consequent with nothing in it — the fourth row exists so that a flipped
+line cannot print as the package arriving when what it says is the package's
+going. The query's own line has no bare form for that: a constraint that
+narrowed nothing says *allows every version of X*, since *allows only X* would
+read as a claim about X rather than about its versions.
 
 A trailing `(through P, Q and R)` is the whole of the difference between a
 statement the registry makes directly and one an elimination composed: the
@@ -1273,7 +1276,7 @@ contradict and no pair stands for the family. ∎
 
 The pivot's own facts are not sides in this counting: a query line about `P`
 is not an implication needing a root, and prints where the chain reaches `P`
-— which is why "the compat leaves `P` `r`, and the one side says `P` `s`"
+— which is why "the compat allows only `P` `r`, and the one side says `P` `s`"
 is a chain of two lines and not a meet at all. So the meet display survives
 exactly at three sides and more, and Proposition 18 says how rare that is:
 in a convex world an irredundant meet has at most three sides, and three of

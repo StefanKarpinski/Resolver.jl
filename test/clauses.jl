@@ -67,11 +67,11 @@ end
     gone = clause([1 => L(3, Int[]; absent = true), 2 => L(2, [1])])
     @test say(gone) == "A requires B 5"
     @test Clauses.clause_phrase(gone, vers, Clauses.letters; subject = 1) ==
-          "B 6 or absent leaves no version of A"
+          "B 6 or absent allows no version of A"
     @test Clauses.clause_phrase(
         clause([1 => L(3, Int[]; absent = true), 2 => L(2, [1]),
                 3 => L(2, [1])]), vers, Clauses.letters; subject = 1) ==
-        "B 6 or absent and C 2 or absent together leave no version of A"
+        "B 6 or absent and C 2 or absent together allow no version of A"
 end
 
 @testset "clauses: subsumption" begin

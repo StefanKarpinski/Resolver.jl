@@ -221,9 +221,45 @@ function heading_fact(c::Conflict{P,V}, l::Line{P}) where {P,V}
     return !absent(m) && all(m[i] for i = 1:nversions(m))
 end
 
-# every line a report's proofs are made of
+# A printed clause, restricted to the versions the universe holds.
+#
+# Every line of a report reads over the universe the *user* sees: what the
+# query left, and the versions redundancy elimination removed because newer
+# ones dominated them. The instance knows nothing of the second kind -- no
+# class, no literal, no variable of its own -- so a question put to it is a
+# question about the restriction, and that is the half of (V8) an oracle can
+# ask: what a line says of the survivors is the clause the diagnosis derived.
+# The other half, that each removed version reads as its dominators leave it,
+# is arithmetic on the page and `report_problems` does it.
+function restricted(c::Conflict{P,V}, cl::Clause{P}) where {P,V}
+    isempty(c.shadows) && return cl
+    lits = Pair{P,Lit}[]
+    for (p, m) in cl.lits
+        sh = get(c.shadows, p, nothing)
+        if sh === nothing
+            push!(lits, p => m)
+            continue
+        end
+        gone = Set{Int}(i for (i, _) in sh)
+        keep = Int[i for i = 1:nversions(m) if i ∉ gone]
+        bits = falses(length(keep) + 1)
+        for (k, i) in enumerate(keep)
+            bits[k] = m[i]
+        end
+        bits[end] = absent(m)
+        push!(lits, p => Lit(bits))
+    end
+    out = Clauses.clause(lits)
+    # a line says something of the survivors: restriction drops disjuncts and
+    # can leave nothing only where the whole of what the line said was about
+    # versions that are gone, which is not a line any derivation produces
+    @assert out !== nothing
+    return out
+end
+
+# every line a report's proofs are made of, over the universe the instance has
 claimed_lines(c::Conflict{P,V}) where {P,V} =
-    Clause{P}[l.clause for l in c.lines if !heading_fact(c, l)]
+    Clause{P}[restricted(c, l.clause) for l in c.lines if !heading_fact(c, l)]
 
 # what the heading says, as clauses: each requirement the conflict answers for,
 # installed at one of the versions it has. The reader has these from the
@@ -267,11 +303,12 @@ end
 # above it, the requirements from the heading.
 function proofs_stand_alone(sat::SAT{P,V}, c::Conflict{P,V}) where {P,V}
     bad = String[]
-    given = Clause{P}[l.clause for l in c.lines
+    given = Clause{P}[restricted(c, l.clause) for l in c.lines
                       if l.given && !heading_fact(c, l)]
     append!(given, heading_premises(sat, c))
     for n in unique!(Int[l.proof for l in c.lines if !l.given])
-        mine = Clause{P}[l.clause for l in c.lines if !l.given && l.proof == n]
+        mine = Clause{P}[restricted(c, l.clause) for l in c.lines
+                         if !l.given && l.proof == n]
         isempty(mine) && continue
         clauses_satisfiable(sat, Clause{P}[given; mine]) || continue
         push!(bad, "proof $n does not contradict on its own: " *

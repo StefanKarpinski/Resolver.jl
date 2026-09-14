@@ -631,11 +631,14 @@ end
 end
 
 # Redundancy elimination deletes a version when a better one has a subset of its
-# constraints. That is the resolver's doing, not the user's -- so a line saying
-# what the user's compat *allows* has to speak of the deleted version too, or it
-# credits the compat with a deletion it did not make. The registry's own
-# statements must not be widened the same way: whatever excludes a class excludes
-# what it shadows, but a bound the class states may be false of them.
+# constraints. That is the resolver's doing, not the user's, so the page has to
+# say so on both sides of the sentence: a line saying what the user's compat
+# *allows* has to speak of the deleted version, or it credits the compat with a
+# deletion it did not make, and every line arguing from that version has to
+# reach it too, or the page rules it out and never says how. One operation does
+# both -- a shadow is admitted by a literal where all of the versions that
+# dominated it are admitted, and excluded where any of them is -- and the two
+# testsets after this one are what each half of that is for.
 @testset "diagnosis: what the compat allows includes what redundancy took" begin
     # :v1 needs what :v2 needs and one package more, so :v2 dominates it and
     # redundancy elimination strikes it -- while the compat below admits both.
@@ -657,9 +660,94 @@ end
     # the compat allows :v2 *and* :v1, so the run reaches the bottom: "≤v2",
     # not the bare "v2" the surviving versions alone would give
     @test occursin("your compat allows only P ≤v2", report)
-    # ... and the registry statement still speaks only for the version that
-    # survived, which is the one it is true of
-    @test occursin("P v2 requires Q w1", report)
+    # ... and the statement arguing from those versions says the same range, so
+    # what the page has just called available is what it goes on to rule out:
+    # :v2 is :v1's only dominator and this line rules :v2 out, so it rules :v1
+    # out with it
+    @test occursin("P ≤v2 requires Q w1", report)
+    @test !occursin("P v2 requires Q w1", report)
+end
+
+# The other half of the same rule, and the reason it is "all of them": a line
+# admits a shadow exactly where it admits every version that dominated it. Here
+# :v1 has the one dominator, :v2, and the bound that admits :v2 admits :v1 with
+# it -- which is the weakest true sentence and not the strongest. The registry
+# may well exclude :v1 where it admits :v2, and saying so would need :v1's own
+# row, which redundancy elimination threw away; what the page can do is say
+# slightly less, never something false.
+@testset "diagnosis: a line admits a shadow where it admits every dominator" begin
+    # :v1 needs what :v2 needs and :R besides, so :v2 dominates it. :X's bound
+    # admits :v2 and :v1 alike and rules out :v3; the query's compat rules out
+    # :v4 and admits the rest -- so each of the two is needed, and neither is
+    # what strikes :v1.
+    data = Dict(
+        :X => PkgData([:x1], Dict(:x1 => [:P]),
+                      Dict(:x1 => Dict(:P => [:v4, :v2, :v1]))),
+        :P => PkgData([:v4, :v3, :v2, :v1],
+                      Dict(:v4 => [:S], :v3 => [:T], :v2 => [:Q],
+                           :v1 => [:Q, :R]), COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :S => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :T => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:X, :P];
+                   compat = Dict(:P => [:v3, :v2, :v1], :Q => Symbol[]))
+    # the fixture only means anything while :v1 is really a shadow
+    univ = prepare_pkg_info(pkg_info(data, prob), prob)
+    @test :v1 ∉ univ.info[:P].versions
+    @test any(:v1 in sh for sh in univ.info[:P].shadows)
+
+    d = check_diagnosis(data, prob)
+    report = sprint(show, MIME("text/plain"), d)
+    # :X's bound admits :v2, which is the whole of what :v1 was deleted for, so
+    # the line reaches :v1 too
+    @test occursin("X x1 requires P ≤v2, v4", report)
+    @test !occursin("X x1 requires P v2, v4", report)
+    # ... and the next statement argues *from* those versions: :v2 wants :Q, so
+    # :v1 wants it too
+    @test occursin("P ≤v2 requires Q w1", report)
+    @test !occursin("P v2 requires Q w1", report)
+end
+
+# (V8) A line that read a deleted version as something other than what the
+# versions dominating it leave is a line claiming more than the page can
+# support, and set arithmetic is all it takes to see that.
+@testset "diagnosis: a mis-widened line is caught" begin
+    data = Dict(
+        :P => PkgData([:v3, :v2, :v1],
+                      Dict(:v3 => [:S], :v2 => [:Q], :v1 => [:Q, :R]), COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :S => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:P]; compat = Dict(:P => [:v2, :v1], :Q => Symbol[]))
+    d = check_diagnosis(data, prob)
+    c = only(d.conflicts)
+    @test c.shadows[:P] == [(3, [2])]
+    @test isempty(report_problems(d))
+
+    # the same report with one line's reading of :v1 flipped -- which is what a
+    # renderer widening only some of its lines, or widening by the wrong
+    # version, would produce
+    function flipped(i::Int)
+        l = c.lines[i]
+        m = l.clause[:P]
+        bits = copy(m.bits)
+        bits[3] = !bits[3]
+        lits = [q => (q == :P ? Clauses.Lit(bits) : n) for (q, n) in l.clause.lits]
+        lines = copy(c.lines)
+        lines[i] = Line{Symbol}(Clauses.clause(lits), l.through, l.given,
+                                l.proof, l.pivot)
+        c′ = Conflict{Symbol,Symbol}(c.reqs, lines, c.versions, c.excluded,
+                                     c.fixes, c.blocks, c.upstream, c.shadows)
+        return Diagnosis(Conflict{Symbol,Symbol}[c′], d.others)
+    end
+    for i in eachindex(c.lines)
+        c.lines[i].clause[:P] === nothing && continue
+        probs = report_problems(flipped(i))
+        @test any(p -> occursin("does not read v1 as v2 leave it", p), probs)
+    end
 end
 
 @testset "diagnosis: a package with a version left over" begin

@@ -53,6 +53,8 @@ Resolver.Diagnostics.with_emptied_packages
 Resolver.Diagnostics.project
 Resolver.Diagnostics.clause_of
 Resolver.Diagnostics.clause_versions
+Resolver.Diagnostics.shadow_dominators
+Resolver.Diagnostics.widened
 Resolver.Diagnostics.clauses_satisfiable
 Resolver.Relation
 ```

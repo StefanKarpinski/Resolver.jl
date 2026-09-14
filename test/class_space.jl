@@ -508,6 +508,57 @@ end
     @test resolve(data, [:P]) == Dict(:P => :v4)
 end
 
+@testset "shadows: every class that dominated a version names it" begin
+    # :v1 needs what :v3 needs and what :v2 needs, and neither of those two
+    # needs what the other does: both dominate it, and neither is the one that
+    # dominates it. What a report may say of :v1 is read off both at once — it
+    # is admitted where each of them is admitted and ruled out where either is
+    # — so both have to be able to name it.
+    data = Dict(
+        :P => PkgData([:v3, :v2, :v1],
+            Dict(:v3 => [:Q], :v2 => [:R], :v1 => [:Q, :R]), NOCOMP),
+        :Q => PkgData([:w1], NODEPS, NOCOMP),
+        :R => PkgData([:w1], NODEPS, NOCOMP),
+    )
+    info = pkg_info(data, [:P]; filter = false)
+    univ, delta = redundancy_delta(info, Problem([:P]))
+    @test univ.info[:P].shadows == [[:v1], [:v1], []]
+    # ... and the version went exactly once, however many classes name it
+    @test delta == Set([(:P, Set([:v1]))])
+end
+
+@testset "shadows: a host that goes hands on what it was holding" begin
+    # A deletion is judged over the classes and columns present at the moment
+    # it is made, so a class can dominate nothing in one round and two things
+    # in the next. :v4 and :v3 each rule out :Z's only version and :v2 does
+    # not, so neither of them dominates :v2 while that column is live; :v2 is
+    # what :v1 needs less :Z, so :v2 dominates :v1 straight away.
+    data = Dict(
+        :P => PkgData([:v4, :v3, :v2, :v1],
+            Dict(:v4 => [:Q], :v3 => [:R], :v2 => [:Q, :R],
+                 :v1 => [:Q, :R, :Z]),
+            Dict(:v4 => Dict(:Z => Symbol[]), :v3 => Dict(:Z => Symbol[]))),
+        :Q => PkgData([:w1], NODEPS, NOCOMP),
+        :R => PkgData([:w1], NODEPS, NOCOMP),
+        :Z => PkgData([:z1], NODEPS, NOCOMP),
+    )
+    info = pkg_info(data, [:P]; filter = false)
+    univ = rank_pkg_info(info, Problem([:P]))
+    mark_installable!(univ.info)
+    mark_necessary!(univ.info, deactivations(univ), univ.ranks)
+    @test univ.info[:P].shadows == [[], [], [:v1], []]
+
+    # Now :Z leaves the universe — which is reachability's business, and all
+    # that matters here is that the column is gone when redundancy next looks.
+    # :v4 and :v3 are then what :v2 needs, each of them a part of it, so :v2
+    # goes and hands over what it was holding: to both of them, since a chain
+    # of deletions ends at every survivor it reaches (Lemma 36), and what one
+    # of them admits the other may refuse.
+    univ.info[:Z].conflicts[1, end] = false
+    mark_necessary!(univ.info, deactivations(univ), univ.ranks)
+    @test univ.info[:P].shadows == [[:v2, :v1], [:v2, :v1], [], []]
+end
+
 @testset "shadows: a shadow is not a member" begin
     # :v1 needs :Q and :v2 does not, so :v2's class dominates :v1's and, with
     # nothing constraining :P, :v1 is deleted and shadowed by it.

@@ -710,6 +710,50 @@ end
     @test !occursin("P v2 requires Q w1", report)
 end
 
+# Two versions can dominate one, neither of them dominating the other, and then
+# there is no such thing as "the version it went for": it is admitted where
+# both of them are admitted and ruled out where either of them is. The user's
+# own line has both, so it names the deleted version; the line that rules one
+# of them out rules it out too, and says so by not naming it.
+@testset "diagnosis: a version two versions dominate" begin
+    # :v1 needs what :v3 needs and what :v2 needs, and each of those two is
+    # ruled out by one of :X and :Y, which rule :v1 out as well -- so both
+    # dominate it, and neither dominates the other. :v4 is what the query's
+    # compat takes away, and it is what the fix gives back.
+    data = Dict(
+        :X => PkgData([:x1], Dict(:x1 => [:P]),
+                      Dict(:x1 => Dict(:P => [:v4, :v2]))),
+        :Y => PkgData([:y1], Dict(:y1 => [:P]),
+                      Dict(:y1 => Dict(:P => [:v4, :v3]))),
+        :P => PkgData([:v4, :v3, :v2, :v1],
+                      Dict(:v3 => [:Q], :v2 => [:R], :v1 => [:Q, :R]),
+                      COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:X, :Y, :P]; compat = Dict(:P => [:v3, :v2, :v1]))
+    # the fixture means nothing unless :v1 is a shadow of both survivors
+    univ = prepare_pkg_info(pkg_info(data, prob), prob)
+    @test univ.info[:P].versions == [:v4, :v3, :v2]
+    @test count(sh -> :v1 in sh, univ.info[:P].shadows) == 2
+
+    d = check_diagnosis(data, prob)
+    c = only(d.conflicts)
+    # the page speaks of :P in all four versions, and says which of them is
+    # there only because two others answer for it
+    @test c.versions[:P] == [:v4, :v3, :v2, :v1]
+    @test c.shadows[:P] == [(4, [2, 3])]
+
+    report = sprint(show, MIME("text/plain"), d)
+    # the compat allows :v3, :v2 and :v1: the last of those is the resolver's
+    # deletion, and saying "≤v3" is what does not claim it for the compat
+    @test occursin("your compat allows only P ≤v3", report)
+    # ... while :X's bound rules out :v3, one of the two :v1 answers to, so it
+    # rules out :v1 and the range it names stops short of it
+    @test occursin("X x1 requires P v2, v4", report)
+    @test !occursin("X x1 requires P ≤v2, v4", report)
+end
+
 # (V8) A line that read a deleted version as something other than what the
 # versions dominating it leave is a line claiming more than the page can
 # support, and set arithmetic is all it takes to see that.

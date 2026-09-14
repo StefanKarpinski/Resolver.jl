@@ -14,7 +14,8 @@ apart — and the partition saying which versions those are is carried with it.
     anything that drops or renumbers classes rebuilds them together.
   * `shadows` — per class, the versions redundancy elimination removed *because
     of* that class, as values rather than indices, since they are no longer in
-    `versions`. See below.
+    `versions`. One version is listed under every class that dominated it, so
+    these lists are not a partition of anything. See below.
   * `depends` — the packages some class depends on, sorted; one matrix column
     each, in that order.
   * `interacts` — per partner package, the offset of its block of *class*
@@ -63,17 +64,26 @@ the shadow may be constrained in ways `c` is not. Folding the two together
 would put a version under a row that does not describe it, and would break the
 moment a constraint excludes `c` while admitting the version it shadows.
 
-So the safe reading of a shadow is one-directional: **whatever excludes the
-class excludes everything it shadows**, and nothing more. A stated bound is not
-one of those things — "class `c` requires `q` at `1.2`" may be false of a
-shadow, which can want `q` more narrowly still.
+A version is listed under **every** class that dominated it, and that is what
+makes it sayable. Read as the implication it is, a bound the class states
+carries over: "at `c`, `q` is at `1.2`" is true of a shadow too, since `c`'s
+constraints are a subset of the shadow's and a shadow wanting `q` more narrowly
+still only makes the consequent truer. What does not carry over is **admission**
+— something else's bound may take `c` and refuse a version `c` shadows, so "`c`
+is one of the versions this allows" says nothing whatever about them. One rule
+covers both once every dominator is known: a shadow is admitted exactly where
+*all* of its dominators are admitted and excluded where *any* of them is
+excluded. That is the widening `ω` of the manual's *Explaining an unsatisfiable
+resolve*, Section 9; these lists are the (D0)–(D3) it rests on, and Lemma 36 is
+the argument that `mark_necessary!` supplies them.
 
 Shadows exist to be reported, not resolved over: they are in no matrix, no SAT
 clause names them, and no solution contains one. A class that leaves the
-universe for any other reason — uninstallable, unreachable — takes its shadows
-with it. That costs a report nothing: a shadow of such a class would have left
-for the same reason on its own, and unlike domination that reason is already
-somewhere a report can say it.
+universe for any other reason — uninstallable, unreachable — takes its own
+copy of the list with it, and a version its other dominators still name is
+still named. That costs a report nothing either way: a shadow of a class that
+left for such a reason would have left for the same reason on its own, and
+unlike domination that reason is already somewhere a report can say it.
 """
 struct PkgInfo{P,V}
     versions  :: Vector{V}

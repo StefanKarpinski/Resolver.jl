@@ -637,8 +637,8 @@ end
 # deletion it did not make, and every line arguing from that version has to
 # reach it too, or the page rules it out and never says how. One operation does
 # both -- a shadow is admitted by a literal where all of the versions that
-# dominated it are admitted, and excluded where any of them is -- and the two
-# testsets after this one are what each half of that is for.
+# dominated it are admitted, and excluded where any of them is -- and the
+# testsets below this one are what the "all of them" in that is for.
 @testset "diagnosis: what the compat allows includes what redundancy took" begin
     # :v1 needs what :v2 needs and one package more, so :v2 dominates it and
     # redundancy elimination strikes it -- while the compat below admits both.

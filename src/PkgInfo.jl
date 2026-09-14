@@ -74,8 +74,12 @@ is one of the versions this allows" says nothing whatever about them. One rule
 covers both once every dominator is known: a shadow is admitted exactly where
 *all* of its dominators are admitted and excluded where *any* of them is
 excluded. That is the widening `ω` of the manual's *Explaining an unsatisfiable
-resolve*, Section 9; these lists are the (D0)–(D3) it rests on, and Lemma 36 is
-the argument that `mark_necessary!` supplies them.
+resolve*, Section 9; these lists are (D0)–(D2) of what it rests on, and Lemma
+36 is the argument that `mark_necessary!` supplies them. (D3) — that the query
+excludes no shadow and no dominator — is only half theirs: an emptied class is
+on neither side of the domination test, but a deleted class is handed over
+whole, members the query excludes and all, and dropping those is the reader's
+to do.
 
 Shadows exist to be reported, not resolved over: they are in no matrix, no SAT
 clause names them, and no solution contains one. A class that leaves the

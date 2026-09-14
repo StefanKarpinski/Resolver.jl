@@ -397,8 +397,14 @@ member the query admits: members are indistinguishable to the registry, so each
 of them dominates whatever the class does, and (D3) wants a dominator the query
 left. A class the query emptied dominates nothing — `mark_necessary!` takes a
 deactivated class off both sides of its test — so no shadow is left without a
-dominator. A shadow the query itself excludes is not one of these either: the
-page reads that version off the query like any other version it took away.
+dominator.
+
+A shadow the query itself excludes is not one of these. The universe hands over
+a deleted class whole, and a class can hold a version the query rules out
+beside one it admits — a constraint is finer than a class, which is the one
+place the two per-class bits are not enough on their own — so the versions the
+query took away are dropped here. Keeping one would have the query's own line
+saying the compat allows a version that compat excludes.
 """
 function shadow_dominators(sat::SAT{P,V}, prob::Problem{P}, p::P) where {P,V}
     out = Tuple{V,Vector{Int}}[]
@@ -3674,7 +3680,7 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
                 continue
             end
             for (i, ds) in sh
-                (i ≤ n && all(d -> 1 ≤ d ≤ n, ds)) || continue
+                (1 ≤ i ≤ n && all(d -> 1 ≤ d ≤ n, ds)) || continue
                 m[i] == all(m[d] for d in ds) && continue
                 push!(bad, "the line " *
                       line_phrase(l, q -> c.versions[q], string) *

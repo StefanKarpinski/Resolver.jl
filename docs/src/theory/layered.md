@@ -255,9 +255,11 @@ does not need it. A reader asking why the resolver would not take ``q@j`` is
 owed the reason, and the reason lives in a different version — ``q@i`` — so a
 pointer to it has to be kept or the deletion becomes unaccountable.
 
-`mark_necessary!` keeps one: when it deletes ``q@j`` it records ``q@j`` in the
-**shadow list** of the class ``q@i`` that dominated it (`PkgInfo.shadows`, one
-list per class, alongside `members`). Nothing else about the universe changes.
+`mark_necessary!` keeps them all: when it deletes ``q@j`` it records ``q@j``
+in the **shadow list** of every class that dominated it (`PkgInfo.shadows`,
+one list per class, alongside `members`; a version can sit in several), and a
+class deleted later hands what it holds to each of its own dominators. Nothing
+else about the universe changes.
 The shadow lists are in no matrix, no clause names them, and no model contains
 one, so every theorem above reads the same before and after: the sets of
 classes, rows and columns the proofs quantify over are exactly the sets they
@@ -269,14 +271,22 @@ deletion. Every constraint of ``q@i`` is a constraint of ``q@j``, so:
 
 - **whatever rules out ``q@i`` rules out ``q@j``.** A statement of the form
   "these versions are excluded, for this reason" is true of a class's shadows
-  whenever it is true of the class.
-- **a stated bound does not carry over.** ``q@j`` may bound a dependency more
-  tightly than ``q@i`` does — that is a superset, and it is the ordinary case
-  — so "``q@i`` requires ``r`` at ``1.2``" may be simply false of ``q@j``. The
-  implication runs one way only.
+  whenever it is true of the class — and so is a stated bound, read as the
+  implication it is: "at ``q@i``, ``r`` is at ``1.2``" holds of ``q@j``, which
+  may bound ``r`` more tightly still, and that only makes the consequent
+  truer.
+- **admission does not carry over.** Something else's bound may take ``q@i``
+  and refuse ``q@j``, so "``q@i`` is one of the versions this allows" says
+  nothing whatever about ``q@j``. The implication runs one way only, and
+  that is why every dominator is recorded: what a report may say of a shadow
+  is read off all of them at once — admitted where every dominator is
+  admitted, excluded where any is — which is the widening of *Explaining an
+  unsatisfiable resolve*, Section 9, and the reason the record is complete
+  rather than a pointer.
 
 A shadow list belongs to a class and lives exactly as long as it does: a class
-deleted for being unreachable or uninstallable takes its shadows with it. That
+deleted for being unreachable or uninstallable takes its own copy of the list
+with it, and a version its other dominators still name is still named. That
 loses a report nothing, because a shadow of such a class would have gone the
 same way on its own account — it depends on whatever made the class
 uninstallable, and its ``\mathrm{key}_\emptyset`` is worse than the class's,

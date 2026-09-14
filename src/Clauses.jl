@@ -390,7 +390,7 @@ be installed, a package a range of which cannot be, and — with two or more
 literals — one package's versions requiring another's, constraining another's,
 or leaving another none at all. Which verb is not a flag: *requires* is a
 consequent that excludes ⊥ and so brings the package in, *constrains* one that
-admits it and so binds only if it is there, and *leaves no version of* one that
+admits it and so binds only if it is there, and *allows no version of* one that
 admits ⊥ alone. So a statement said the other way round re-derives its own
 verb, which is what makes contraposition safe to print.
 """
@@ -422,7 +422,7 @@ function clause_phrase(c::Clause{P}, vers, names = letters;
     # statement leaves the package is nothing, and the bare name would read as
     # the package arriving rather than as its going
     any(selected(m)) ||
-        return "$lead $(plural ? "leave" : "leaves") no version of $(names(s))"
+        return "$lead $(plural ? "allow" : "allows") no version of $(names(s))"
     verb = absent(m) ? (plural ? "constrain" : "constrains") :
                        (plural ? "require" : "requires")
     return "$lead $verb $(consequent_phrase(s, m, vers, names))"

@@ -646,7 +646,7 @@ end
 
         Conflict 1: R
           • R requires P p2
-          • your compat leaves P p1
+          • your compat allows only P p1
           Fix it by any one of:
             1. relax your compat on P
                → allows: P p2, R r1
@@ -673,7 +673,7 @@ end
 
         Conflict 1: A
           • A requires C ≥c2
-          • your compat leaves C c1
+          • your compat allows only C c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a3, C c3
@@ -697,7 +697,7 @@ end
 
         Conflict 1: A
           • A requires C c2
-          • your compat leaves C c1
+          • your compat allows only C c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a1, C c2
@@ -724,7 +724,7 @@ end
     d2 = check_diagnosis(narrowed_run,
         Problem([:A]; compat = Dict(:A => [:a2, :a1], :B => [:b1])))
     report2 = sprint(show, MIME("text/plain"), d2)
-    @test occursin("your compat leaves A ≤a2", report2)
+    @test occursin("your compat allows only A ≤a2", report2)
     @test occursin("A ≤a2 requires B b2", report2)
 end
 
@@ -760,8 +760,8 @@ end
     # arrives at it
     report = sprint(show, MIME("text/plain"), d)
     @test occursin("P constrains W w1", report)
-    @test occursin("your compat leaves W w2", report)
-    @test occursin("W absent leaves no version of S", report)
+    @test occursin("your compat allows only W w2", report)
+    @test occursin("W absent allows no version of S", report)
     # the only dependency stated is the one the registry has: :P's bound on
     # :W permits :W's absence, so nothing on the page says :P brings it in
     @test !occursin("P requires", report)
@@ -930,9 +930,9 @@ end
     @test occursin("Conflict 1: A\n", report)
     # the page tells that reason in full: what the query left of :A, what that
     # forces, and the bound on :C it collides with
-    @test occursin("your compat leaves A a2", report)
+    @test occursin("your compat allows only A a2", report)
     @test occursin("A a2 requires C c2", report)
-    @test occursin("your compat leaves C c1", report)
+    @test occursin("your compat allows only C c1", report)
     # the two actions on :A the page makes tempting and no fix takes, each
     # with the solver's verdict: each lies in a costlier minimal repair — the
     # bound on :A with :B given up, the requirement on :A with :B's bound
@@ -946,7 +946,7 @@ end
                    "relaxed your compat on B.", wrapped)
     # :B's own reason proves the same conflict a second way and prints
     # nothing: one conflict, one story, and no line of it names :B
-    @test !occursin("your compat leaves B b2", report)
+    @test !occursin("your compat allows only B b2", report)
     @test !occursin("B b2 requires C c2", report)
     @test !any(l -> :B in packages(l.clause), c.lines)
     # dropping both requirements repairs it too, and gives up more -- which
@@ -1100,7 +1100,7 @@ end
     # follows states fixes only
     tail = split(report, "Or, to fix without any of the fixes for")[2]
     @test !occursin("requires", tail)
-    @test !occursin("your compat leaves", tail)
+    @test !occursin("your compat allows", tail)
     @test !occursin("Blocked fixes", tail)
     # nothing is outside the cover and nothing costlier exists, so the page
     # has no gap to confess and prints no footer
@@ -1574,7 +1574,7 @@ end
 
         Conflict 1: A and B
           • A requires C v1
-          • C v1 leaves no version of B
+          • C v1 allows no version of B
           Fix it by any one of:
             1. drop requirement A
                → allows: B v1, C v2
@@ -1583,7 +1583,7 @@ end
 
         Conflict 2: E and F
           • E requires G v1
-          • G v1 leaves no version of F
+          • G v1 allows no version of F
           Fix it by any one of:
             1. drop requirement E
                → allows: F v1, G v2
@@ -1608,7 +1608,7 @@ end
 
         Conflict 1: A
           • A requires B
-          • your compat and your pin leaves no version of B
+          • your compat and your pin allow no version of B
           Fix it by any one of:
             1. relax your compat on B
                → allows: A v1, B w2
@@ -1723,7 +1723,7 @@ end
     # the query's own compat is what took every version away, so it is named:
     # "no version of PrettyTables is available" is the other thing that can
     # empty a package, and it is not this
-    @test occursin("your compat leaves no version of PrettyTables", report)
+    @test occursin("your compat allows no version of PrettyTables", report)
     @test occursin("relax your compat on PrettyTables", report)
     @test occursin("requires PrettyTables", report)
 

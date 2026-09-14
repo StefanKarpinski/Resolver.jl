@@ -854,7 +854,7 @@ end
         # the query's own compat is what took every version away, so it is
         # named: "no version of LinearAlgebra is available" is the other thing
         # that can empty a package, and it is not this one
-        @test occursin("your compat leaves no version of LinearAlgebra", msg)
+        @test occursin("your compat allows no version of LinearAlgebra", msg)
         @test occursin("Fix it by any one of:", msg)
         @test occursin("relax your compat on LinearAlgebra", msg)
         @test !occursin(string(LINEAR_ALGEBRA), msg)

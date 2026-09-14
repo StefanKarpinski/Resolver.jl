@@ -2394,9 +2394,9 @@ upstream_fixes(data::AbstractDict{P,<:PkgData{P}}, prob::Problem{P},
 #
 # A proof prints as one chain. The heading names the requirements the conflict
 # answers for, and the body never says them again: the chain starts at the root
-# fact the query narrowed, said as the user's ("your compat leaves A 1.2"), runs
-# through the registry's statements in antecedent-before-use order — each said
-# to the package the one before it left bounded, with the packages an
+# fact the query narrowed, said as the user's ("your compat allows only A 1.2"),
+# runs through the registry's statements in antecedent-before-use order — each
+# said to the package the one before it left bounded, with the packages an
 # elimination reached it through in parentheses — and ends at the fact that
 # contradicts what the chain has accumulated. Where that closing fact is one of
 # the query's own it is printed; where it is a requirement the heading states,
@@ -2574,12 +2574,13 @@ function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     end
     sort!(kinds)
     lead = join(String["your $k" for k in kinds], " and ")
+    verb = length(kinds) > 1 ? "allow" : "allows"
     m = l.clause[p]
     sel = selected(m)
-    any(sel) || return "$lead leaves no version of $p"
+    any(sel) || return "$lead $verb no version of $p"
     r = range_phrase(c.versions[p], sel)
-    isempty(r) && return "$lead leaves $p"
-    return "$lead leaves $p $r"
+    isempty(r) && return "$lead $verb every version of $p"
+    return "$lead $verb only $p $r"
 end
 
 # is this given line the requirement itself, rather than a limit on it?
@@ -2759,10 +2760,11 @@ end
 # preferred to it whatever the query said about either. Among sources, one the
 # reason did NOT narrow is preferred: its root costs nothing to state, and it
 # leaves the narrowed subject's compat line free to close the chain — a chain
-# that ends "your compat leaves X …" names the range that would have worked,
-# where one that ends against the heading's silent premise names nothing. A
-# subject no statement names at all roots nothing, so the choice falls through
-# to whatever package the query narrowed and the statements do reach.
+# that ends "your compat allows only X …" names the range that would have
+# worked, where one that ends against the heading's silent premise names
+# nothing. A subject no statement names at all roots nothing, so the choice
+# falls through to whatever package the query narrowed and the statements do
+# reach.
 function chain_root(c::Conflict{P,V}, order::Vector{P}, con::Dict{P,Line{P}},
                     sources::Set{P}, mentioned::Set{P}) where {P,V}
     heads = heading_reqs(c)
@@ -3040,9 +3042,9 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
 end
 
 # The actions this page makes tempting and leaves out, one sentence each. The
-# page's own lines are what tempt: the reader sees "your compat leaves A 1.2"
-# and asks why relaxing it is not on the menu. So the section is indexed by
-# action, not by reason — nothing is said twice, and nothing tempting goes
+# page's own lines are what tempt: the reader sees "your compat allows only
+# A 1.2" and asks why relaxing it is not on the menu. So the section is indexed
+# by action, not by reason — nothing is said twice, and nothing tempting goes
 # unanswered — and each sentence is a solve's answer rather than a judgement:
 # the action is dead weight in the cheapest repair that carries it, or that
 # repair's remainder is what it would cost.

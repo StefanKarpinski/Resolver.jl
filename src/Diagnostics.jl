@@ -131,13 +131,25 @@ struct Upstream{P,V}
 end
 
 """
-    Conflict(reqs, lines, versions, excluded, fixes, blocks = [], upstream = [])
+    Conflict(reqs, lines, versions, excluded, fixes,
+             blocks = [], upstream = [], shadows = Dict())
 
 One independent thing that is wrong: the requirements it answers for, the lines
 that prove it, the version list each named package is spoken of in, which of
 the query's constraint kinds exclude which of those versions, the menu of fixes
 that settles it, the verdict on each action the page makes tempting, and the
 releases someone else could cut instead.
+
+`versions` is the universe the lines are clauses over, and redundancy
+elimination has already been through it: a version some better version
+dominated is not there. `shadows` carries those, each paired with the index in
+`versions` of a member of the class that dominated it. They are not part of the
+universe -- no literal has a slot for them -- and only one reading is entitled
+to them: what the *user's* constraints leave, since a version redundancy
+elimination removed is one the user's compat did not. A rendering that skips
+them credits the compat with deletions it did not make. A registry statement
+must not be widened by them: whatever excludes a class excludes what it
+shadows, but a bound the class states may be false of them.
 
 A conflict is one **menu**: choose one entry of `fixes` and this conflict is
 settled. An entry may ask for several actions at once, where the family couples
@@ -176,6 +188,12 @@ struct Conflict{P,V}
     fixes    :: Vector{Fix{P,V}}
     blocks   :: Vector{Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}}
     upstream :: Vector{Upstream{P,V}}
+    # per package, the versions redundancy elimination removed and the index in
+    # `versions` of the one that dominated each. Not part of the universe the
+    # lines are clauses over -- a literal has no slot for them -- so they are
+    # carried beside it, for the one reading that is entitled to them: see
+    # `availability_versions`.
+    shadows  :: Dict{P,Vector{Tuple{V,Int}}}
 end
 
 Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
@@ -184,6 +202,9 @@ Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
 Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks) where {P,V} =
     Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks,
                   Upstream{P,V}[])
+Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks, upstream) where {P,V} =
+    Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks, upstream,
+                  Dict{P,Vector{Tuple{V,Int}}}())
 
 """
     selections(c) :: Vector{Vector{Action{P}}}
@@ -2174,8 +2195,13 @@ function diagnose(
             ks = Vector{Symbol}[exclusion_kinds(prob, p, v) for v in versions[p]]
             any(!isempty, ks) && (excluded[p] = ks)
         end
+        shadows = Dict{P,Vector{Tuple{V,Int}}}()
+        for p in pkgs
+            sh = shadow_anchors(sat, p)
+            isempty(sh) || (shadows[p] = sh)
+        end
         push!(conflicts, Conflict{P,V}(plan.reqs[i], lines, versions, excluded,
-                                       fixes, blocks))
+                                       fixes, blocks, Upstream{P,V}[], shadows))
     end
     # Every layer after the leading one is an alternative to the whole of its
     # section's conflicts. Which of them it declines is read off the facts: a
@@ -2378,7 +2404,8 @@ function upstream_fixes(deps::DepsProvider{P,D}, prob::Problem{P},
     (cut || any(!isempty, ups)) || return d
     conflicts = Conflict{P,V}[
         Conflict{P,V}(c.reqs, c.lines, c.versions, c.excluded, c.fixes,
-                      c.blocks, ups[i]) for (i, c) in enumerate(d.conflicts)]
+                      c.blocks, ups[i], c.shadows)
+        for (i, c) in enumerate(d.conflicts)]
     return Diagnosis{P,V}(conflicts, d.alternatives, d.others, d.truncated,
                           d.upstream_cut | cut)
 end
@@ -2567,6 +2594,53 @@ end
 # Which of the query's kinds took versions of `p` away, and what they left.
 # Read straight off the query, so no line here needs a solver's licence; and
 # named as the user's, which nothing else on the page may be.
+# Per package, the versions redundancy elimination removed, each paired with the
+# index in the universe's version list of a member of the class that dominated
+# it -- which is what says whether the user's constraints left it.
+function shadow_anchors(sat::SAT{P,V}, p::P) where {P,V}
+    haskey(sat.info, p) || return Tuple{V,Int}[]
+    info = sat.info[p]
+    out = Tuple{V,Int}[]
+    for (c, vs) in enumerate(info.shadows)
+        isempty(vs) && continue
+        anchor = first(info.members[c])
+        for v in vs
+            push!(out, (v, anchor))
+        end
+    end
+    return out
+end
+
+# The versions an availability line may speak of: the ones the universe still
+# holds, plus the ones redundancy elimination removed because a kept version
+# dominated them.
+#
+# Those are not the same set, and the difference is the user's to know about.
+# Redundancy elimination deletes a version when a better one has a subset of its
+# constraints; the user's compat had nothing to do with it. So a line reading
+# the survivors alone credits the compat with a deletion it did not make -- for
+# `DataFrames = "1.7"` it says "your compat allows only DataFrames >=1.7.1"
+# although 1.7.0 exists and the compat admits it.
+#
+# A shadow takes the selection of the class that dominated it. That direction is
+# the sound one: whatever excludes the class excludes what it shadows, and a
+# version the query itself excludes is never a shadow -- it stays in the list as
+# an unselected entry of an emptied class. The other direction, reading a bound
+# the class states as true of its shadows, is not sound and is not taken: this
+# widening is for availability lines only, never for a registry statement.
+function availability_versions(c::Conflict{P,V}, p::P,
+                               sel::Vector{Bool}) where {P,V}
+    vs = c.versions[p]
+    sh = get(c.shadows, p, nothing)
+    (sh === nothing || isempty(sh)) && return (vs, sel)
+    items = Tuple{V,Bool}[(vs[i], sel[i]) for i in eachindex(vs)]
+    for (v, i) in sh
+        push!(items, (v, sel[i]))
+    end
+    sort!(items; by = first, rev = Clauses.version_order(vs) == -1)
+    return (V[x for (x, _) in items], Bool[b for (_, b) in items])
+end
+
 function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     kinds = Symbol[]
     for ks in c.excluded[p], k in ks
@@ -2578,7 +2652,7 @@ function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     m = l.clause[p]
     sel = selected(m)
     any(sel) || return "$lead $verb no version of $p"
-    r = range_phrase(c.versions[p], sel)
+    r = range_phrase(availability_versions(c, p, sel)...)
     isempty(r) && return "$lead $verb every version of $p"
     return "$lead $verb only $p $r"
 end

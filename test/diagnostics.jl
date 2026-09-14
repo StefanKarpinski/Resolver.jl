@@ -630,6 +630,38 @@ end
     @test d.others === :none
 end
 
+# Redundancy elimination deletes a version when a better one has a subset of its
+# constraints. That is the resolver's doing, not the user's -- so a line saying
+# what the user's compat *allows* has to speak of the deleted version too, or it
+# credits the compat with a deletion it did not make. The registry's own
+# statements must not be widened the same way: whatever excludes a class excludes
+# what it shadows, but a bound the class states may be false of them.
+@testset "diagnosis: what the compat allows includes what redundancy took" begin
+    # :v1 needs what :v2 needs and one package more, so :v2 dominates it and
+    # redundancy elimination strikes it -- while the compat below admits both.
+    data = Dict(
+        :P => PkgData([:v3, :v2, :v1],
+                      Dict(:v3 => [:S], :v2 => [:Q], :v1 => [:Q, :R]), COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :S => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:P]; compat = Dict(:P => [:v2, :v1], :Q => Symbol[]))
+    # the fixture only means anything while :v1 is really a shadow
+    univ = prepare_pkg_info(pkg_info(data, prob), prob)
+    @test :v1 ∉ univ.info[:P].versions
+    @test any(:v1 in sh for sh in univ.info[:P].shadows)
+
+    d = check_diagnosis(data, prob)
+    report = sprint(show, MIME("text/plain"), d)
+    # the compat allows :v2 *and* :v1, so the run reaches the bottom: "≤v2",
+    # not the bare "v2" the surviving versions alone would give
+    @test occursin("your compat allows only P ≤v2", report)
+    # ... and the registry statement still speaks only for the version that
+    # survived, which is the one it is true of
+    @test occursin("P v2 requires Q w1", report)
+end
+
 @testset "diagnosis: a package with a version left over" begin
     # :R@r1 needs :P and rules out :P@p1, and the bound takes :P@p2 away — so
     # :P is left with a version, just not one that works here
@@ -640,12 +672,15 @@ end
     d = check_diagnosis(data, Problem([:R]; compat = Dict(:P => [:p1])))
     # here there is a bound to state: :P has a version left, just not one
     # :R will take. The heading has said the requirement, so the chain opens
-    # with what it forces and ends at the fact that contradicts it
+    # with what it forces and ends at the fact that contradicts it.
+    # :R offers one version, and the line names it: one version is not a range,
+    # so saying which one claims nothing about having selected it -- and the
+    # upstream sentence below already speaks of "r1, its latest"
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
         Conflict 1: R
-          • R requires P p2
+          • R r1 requires P p2
           • your compat allows only P p1
           Fix it by any one of:
             1. relax your compat on P
@@ -692,11 +727,13 @@ end
     # of anything that has introduced :C
     d = check_diagnosis(late_speaker, Problem([:A]; compat = Dict(:C => [:c1])))
     c = only(d.conflicts)
+    # :A offers one version and the line names it, as a lone version is not a
+    # range: saying which one claims nothing about having selected it
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A
-          • A requires C c2
+          • A a1 requires C c2
           • your compat allows only C c1
           Fix it by any one of:
             1. relax your compat on C
@@ -735,8 +772,10 @@ end
     # :B is resolved away, so the line is about the two packages the query
     # named and says which package it reached them through
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("A requires C c2 (through B)", report)
-    @test !occursin("B requires", report)
+    @test occursin("A a1 requires C c2 (through B)", report)
+    # :B is not a subject of any line -- and now that a lone version is named,
+    # the absence has to be asserted against the form a :B line would take
+    @test !occursin("• B ", report)
     # ... and :B is not something the query said anything about: the middle of
     # the story is the part only the registry knows
     # ... and :B is the middle of the story: the query said nothing whatever
@@ -759,12 +798,12 @@ end
     # statement, since a clause has no direction, and the way round the chain
     # arrives at it
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("P constrains W w1", report)
+    @test occursin("P p1 constrains W w1", report)
     @test occursin("your compat allows only W w2", report)
     @test occursin("W absent allows no version of S", report)
     # the only dependency stated is the one the registry has: :P's bound on
     # :W permits :W's absence, so nothing on the page says :P brings it in
-    @test !occursin("P requires", report)
+    @test !occursin("P p1 requires", report)
     # ... and the two lines do not leave :W nothing on their own -- what rules
     # out :w1 is the query -- so the report does not claim that they do
     @test !occursin("all of these", report)
@@ -1573,7 +1612,7 @@ end
         Unsatisfiable — 2 conflicts, pick a fix for each:
 
         Conflict 1: A and B
-          • A requires C v1
+          • A v1 requires C v1
           • C v1 allows no version of B
           Fix it by any one of:
             1. drop requirement A
@@ -1582,7 +1621,7 @@ end
                → allows: A v1, C v1
 
         Conflict 2: E and F
-          • E requires G v1
+          • E v1 requires G v1
           • G v1 allows no version of F
           Fix it by any one of:
             1. drop requirement E
@@ -1607,7 +1646,7 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A
-          • A requires B
+          • A v1 requires B
           • your compat and your pin allow no version of B
           Fix it by any one of:
             1. relax your compat on B
@@ -1790,9 +1829,9 @@ end
     report = sprint(show, MIME("text/plain"), d)
     # each side says what it demands of the package they meet at, and none of
     # them is left to the reader to infer
-    @test occursin("A requires P ≤p2", report)
-    @test occursin("B requires P ≥p2", report)
-    @test occursin("C requires P p1, p3", report)
+    @test occursin("A a1 requires P ≤p2", report)
+    @test occursin("B b1 requires P ≥p2", report)
+    @test occursin("C c1 requires P p1, p3", report)
     @test occursin("incompatible constraints on P:", report)
     # ... and every requirement has a demand on it: none of the three is told
     # only by what it rules out

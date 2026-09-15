@@ -186,25 +186,35 @@ end
     # unconstrained order does not, which is sound for the query it was
     # computed for and is what the resolve path needs; whether it is enough for
     # a later relaxation is a question about relaxation, not about this pass.
-    protected = reordered = 0
-    for (m, n) in ((2, 2), (2, 3), (3, 2), (3, 3), (2, 4), (4, 2), (2, 5))
-        make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
-        for _ = 1:25
-            fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
-            reqs = collect(make_reqs(rand(1:2^m-1)))
-            info = pkg_info(data, keys(data); filter = false)
-            base = struck(redundancy_only(info, Problem(reqs)))
-            for _ = 1:4
-                compat, pin = random_constraints(m, n)
-                prob = Problem(reqs; compat, pin)
-                univ = redundancy_only(info, prob)
-                gone = struck(univ)
-                @test isempty(gone ∩ emptied(univ))
-                protected += length(emptied(univ) ∩ base)
-                if last(class_ranking(info, prob)) === nothing
-                    @test gone ⊆ base
-                else
-                    reordered += 1
+    #
+    # A query reorders the classes only when a constraint forbids the best
+    # member of a class that has several, which the tiny grids produce about
+    # once in a hundred draws — so one pass of the sweep can miss the branch
+    # outright (it did, on CI, twice in one run). The sweep is repeated until
+    # both branches have run, under a cap that makes never seeing one a
+    # certainty of a bug rather than bad luck.
+    protected = reordered = attempts = 0
+    while (protected == 0 || reordered == 0) && attempts < 8
+        attempts += 1
+        for (m, n) in ((2, 2), (2, 3), (3, 2), (3, 3), (2, 4), (4, 2), (2, 5))
+            make_deps, make_comp, data, d, c = tiny_data_makers(m, n)
+            for _ = 1:25
+                fill_data!(m, n, make_deps(randbits(d)), make_comp(randbits(c)), data)
+                reqs = collect(make_reqs(rand(1:2^m-1)))
+                info = pkg_info(data, keys(data); filter = false)
+                base = struck(redundancy_only(info, Problem(reqs)))
+                for _ = 1:4
+                    compat, pin = random_constraints(m, n)
+                    prob = Problem(reqs; compat, pin)
+                    univ = redundancy_only(info, prob)
+                    gone = struck(univ)
+                    @test isempty(gone ∩ emptied(univ))
+                    protected += length(emptied(univ) ∩ base)
+                    if last(class_ranking(info, prob)) === nothing
+                        @test gone ⊆ base
+                    else
+                        reordered += 1
+                    end
                 end
             end
         end

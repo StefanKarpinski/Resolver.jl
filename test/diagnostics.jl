@@ -659,7 +659,7 @@ end
     report = sprint(show, MIME("text/plain"), d)
     # the compat allows :v2 *and* :v1, so the run reaches the bottom: "≤v2",
     # not the bare "v2" the surviving versions alone would give
-    @test occursin("your compat allows only P ≤v2", report)
+    @test occursin("your compat restricts P to ≤v2", report)
     # ... and the statement arguing from those versions says the same range, so
     # what the page has just called available is what it goes on to rule out:
     # :v2 is :v1's only dominator and this line rules :v2 out, so it rules :v1
@@ -747,7 +747,7 @@ end
     report = sprint(show, MIME("text/plain"), d)
     # the compat allows :v3, :v2 and :v1: the last of those is the resolver's
     # deletion, and saying "≤v3" is what does not claim it for the compat
-    @test occursin("your compat allows only P ≤v3", report)
+    @test occursin("your compat restricts P to ≤v3", report)
     # ... while :X's bound rules out :v3, one of the two :v1 answers to, so it
     # rules out :v1 and the range it names stops short of it
     @test occursin("X x1 requires P v2, v4", report)
@@ -813,11 +813,11 @@ end
 
         Conflict 1: R
           • R r1 requires P p2
-          • your compat allows only P p1
+          • your compat restricts P to p1
           Fix it by any one of:
             1. relax your compat on P
                → allows: P p2, R r1
-            2. drop requirement R
+            2. drop dependency R
           Upstream fix: a release of R supporting P p1 would fix this; r1, its latest,
             supports only p2.
             → would allow: P p1
@@ -840,11 +840,11 @@ end
 
         Conflict 1: A
           • A requires C ≥c2
-          • your compat allows only C c1
+          • your compat restricts C to c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a3, C c3
-            2. drop requirement A
+            2. drop dependency A
           Upstream fix: a release of A supporting C c1 would fix this; a3, its latest,
             supports only c3.
             → would allow: C c1
@@ -866,11 +866,11 @@ end
 
         Conflict 1: A
           • A a1 requires C c2
-          • your compat allows only C c1
+          • your compat restricts C to c1
           Fix it by any one of:
             1. relax your compat on C
                → allows: A a1, C c2
-            2. drop requirement A
+            2. drop dependency A
           Upstream fix: a release of A supporting C c1 would fix this; a1, its latest,
             supports only c2.
             → would allow: C c1
@@ -893,7 +893,7 @@ end
     d2 = check_diagnosis(narrowed_run,
         Problem([:A]; compat = Dict(:A => [:a2, :a1], :B => [:b1])))
     report2 = sprint(show, MIME("text/plain"), d2)
-    @test occursin("your compat allows only A ≤a2", report2)
+    @test occursin("your compat restricts A to ≤a2", report2)
     @test occursin("A ≤a2 requires B b2", report2)
 end
 
@@ -930,8 +930,8 @@ end
     # statement, since a clause has no direction, and the way round the chain
     # arrives at it
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("P p1 constrains W w1", report)
-    @test occursin("your compat allows only W w2", report)
+    @test occursin("P p1 constrains W to w1", report)
+    @test occursin("your compat restricts W to w2", report)
     @test occursin("W absent allows no version of S", report)
     # the only dependency stated is the one the registry has: :P's bound on
     # :W permits :W's absence, so nothing on the page says :P brings it in
@@ -981,7 +981,7 @@ end
     report = sprint(show, MIME("text/plain"), d)
     @test occursin("no version of A is available", report)
     # one thing to do reads as one thing to do, not as a menu of one
-    @test occursin("The only fix: drop requirement A", report)
+    @test occursin("The only fix: drop dependency A", report)
     @test !occursin("any one of", report)
 end
 
@@ -1013,9 +1013,9 @@ end
     # the page answers for it: dropping :A alone settles nothing, but it does
     # lie in the costlier minimal repair {:A, :B}, so the verdict names its
     # price rather than dismissing it
-    @test occursin("Blocked fixes:", report)
-    @test occursin("dropping requirement A would not help unless you also " *
-                   "dropped requirement B.", replace(report, r"\n\s+" => " "))
+    @test occursin("Note:", report)
+    @test occursin("dropping dependency A would not help unless you also " *
+                   "dropped dependency B.", replace(report, r"\n\s+" => " "))
     # that entry is itself the costlier fix, named, so the abstract footer has
     # nothing left to add
     @test !occursin("Costlier fixes also exist.", report)
@@ -1052,8 +1052,8 @@ end
     # costlier minimal repair, so the verdict states its price, and being a
     # named costlier fix it leaves the abstract footer nothing to say
     report = replace(sprint(show, MIME("text/plain"), d), r"\n\s+" => " ")
-    @test occursin("dropping requirement A would not help unless you also " *
-                   "dropped requirement B and dropped requirement F.", report)
+    @test occursin("dropping dependency A would not help unless you also " *
+                   "dropped dependency B and dropped dependency F.", report)
     @test !occursin("Costlier fixes also exist.", report)
 
     # the same shape of menu over a query where every repair is a smallest one:
@@ -1101,9 +1101,9 @@ end
     @test occursin("Conflict 1: A\n", report)
     # the page tells that reason in full: what the query left of :A, what that
     # forces, and the bound on :C it collides with
-    @test occursin("your compat allows only A a2", report)
+    @test occursin("your compat restricts A to a2", report)
     @test occursin("A a2 requires C c2", report)
-    @test occursin("your compat allows only C c1", report)
+    @test occursin("your compat restricts C to c1", report)
     # the two actions on :A the page makes tempting and no fix takes, each
     # with the solver's verdict: each lies in a costlier minimal repair — the
     # bound on :A with :B given up, the requirement on :A with :B's bound
@@ -1112,12 +1112,12 @@ end
     @test c.blocks == [([[Action(:compat, :A)]], [Action(:drop, :B)]),
                        ([[Action(:drop, :A)]], [Action(:compat, :B)])]
     @test occursin("relaxing your compat on A would not help unless you " *
-                   "also dropped requirement B.", wrapped)
-    @test occursin("dropping requirement A would not help unless you also " *
+                   "also dropped dependency B.", wrapped)
+    @test occursin("dropping dependency A would not help unless you also " *
                    "relaxed your compat on B.", wrapped)
     # :B's own reason proves the same conflict a second way and prints
     # nothing: one conflict, one story, and no line of it names :B
-    @test !occursin("your compat allows only B b2", report)
+    @test !occursin("your compat restricts B to b2", report)
     @test !occursin("B b2 requires C c2", report)
     @test !any(l -> :B in packages(l.clause), c.lines)
     # dropping both requirements repairs it too, and gives up more -- which
@@ -1204,15 +1204,15 @@ end
     @test all(length(unique(l.proof for l in c.lines)) == 1 for c in d.conflicts)
     @test !occursin("  and also:\n", report)
     wrapped = replace(report, r"\n\s+" => " ")
-    @test occursin("One fix: drop requirement A", wrapped)
-    @test occursin("1. drop requirement B", wrapped)
-    @test occursin("2. drop requirement C", wrapped)
-    @test occursin("Or, to fix without dropping requirement A: drop " *
-                   "requirement B and drop requirement D", wrapped)
+    @test occursin("One fix: drop dependency A", wrapped)
+    @test occursin("1. drop dependency B", wrapped)
+    @test occursin("2. drop dependency C", wrapped)
+    @test occursin("Or, to fix without dropping dependency A: drop " *
+                   "dependency B and drop dependency D", wrapped)
     # ... and the alternative states fixes only: reasons do not layer
     tail = split(report, "Or, to fix without")[2]
     @test !occursin("requires", tail)
-    @test !occursin("Blocked fixes", tail)
+    @test !occursin("Note", tail)
     # nothing is left over, so the page has no residue to announce
     @test !occursin("If none of the fixes above suits", report)
     @test !occursin("also exist", report)
@@ -1256,9 +1256,9 @@ end
     @test startswith(report, "Unsatisfiable — 2 conflicts, pick a fix for each:")
     wrapped = replace(report, r"\n\s+" => " ")
     @test occursin("1. relax your compat on C", wrapped)
-    @test occursin("2. drop requirement A", wrapped)
-    @test occursin("1. drop requirement L", wrapped)
-    @test occursin("2. drop requirement T", wrapped)
+    @test occursin("2. drop dependency A", wrapped)
+    @test occursin("1. drop dependency L", wrapped)
+    @test occursin("2. drop dependency T", wrapped)
     # It relaxes the compat on C, which the first menu also offers, so there is
     # no single thing it does without there — what it declines whole is the
     # second menu, and the label names that conflict rather than a fix
@@ -1272,7 +1272,7 @@ end
     tail = split(report, "Or, to fix without any of the fixes for")[2]
     @test !occursin("requires", tail)
     @test !occursin("your compat allows", tail)
-    @test !occursin("Blocked fixes", tail)
+    @test !occursin("Note", tail)
     # nothing is outside the cover and nothing costlier exists, so the page
     # has no gap to confess and prints no footer
     @test d.others === :none
@@ -1405,7 +1405,7 @@ end
                          line(other("B", "E"); pivot = "E")])
     @test !occursin("incompatible constraints", two)
     @test occursin("A 1 requires E 1", two)
-    @test occursin("E 1 constrains B 2", two)
+    @test occursin("E 1 constrains B to 2", two)
     # ... and where the lines do not leave the package nothing, there is
     # nothing to say
     @test !occursin("incompatible constraints",
@@ -1515,11 +1515,11 @@ end
     # with a choice numbered like a conflict's, one witness under each entry
     two = page((conflict(fix("A")), conflict(fix("B"), fix("C"))),
                (alt([1, 2], [1], menu(fix("D", "E")), menu(fix("F"), fix("G"))),))
-    @test occursin("Or, to fix without dropping requirement A:\n" *
-                   "  drop requirement D and drop requirement E, and one of:\n" *
-                   "    1. drop requirement F\n" *
+    @test occursin("Or, to fix without dropping dependency A:\n" *
+                   "  drop dependency D and drop dependency E, and one of:\n" *
+                   "    1. drop dependency F\n" *
                    "       → allows: X 1\n" *
-                   "    2. drop requirement G\n" *
+                   "    2. drop dependency G\n" *
                    "       → allows: X 1\n", two)
     @test !occursin("•", split(two, "Or, to fix")[2])
     # ... and it prints after the last conflict, not inside either of them
@@ -1527,29 +1527,29 @@ end
     # a layer that is one menu with a choice, and nothing else, is that choice
     pick = page((conflict(fix("A")), conflict(fix("B"))),
                 (alt([1, 2], [1], menu(fix("F"), fix("G"))),))
-    @test occursin("Or, to fix without dropping requirement A:\n  any one of:\n" *
-                   "    1. drop requirement F\n", pick)
+    @test occursin("Or, to fix without dropping dependency A:\n  any one of:\n" *
+                   "    1. drop dependency F\n", pick)
     # ... and several menus with a choice are settled each, as bullets
     several = page((conflict(fix("A")), conflict(fix("B"))),
                    (alt([1, 2], [1], menu(fix("D")), menu(fix("F"), fix("G")),
                         menu(fix("H"), fix("I"))),))
-    @test occursin("  drop requirement D, and settle each of these:\n" *
-                   "  • drop requirement F, or drop requirement G\n", several)
-    @test occursin("  • drop requirement H, or drop requirement I\n", several)
+    @test occursin("  drop dependency D, and settle each of these:\n" *
+                   "  • drop dependency F, or drop dependency G\n", several)
+    @test occursin("  • drop dependency H, or drop dependency I\n", several)
 
     # an alternative that leaves no choice at all is one thing to do, and
     # prints as the line it is
     one = page((conflict(fix("A")), conflict(fix("B"))),
                (alt([1, 2], [1, 2], menu(fix("C", "D"))),))
-    @test occursin("Or, to fix without dropping requirement A or dropping " *
-                   "requirement B:\n  drop requirement C and drop " *
-                   "requirement D\n  → allows: X 1", one)
+    @test occursin("Or, to fix without dropping dependency A or dropping " *
+                   "dependency B:\n  drop dependency C and drop " *
+                   "dependency D\n  → allows: X 1", one)
     # ... and so does one whose several menus each hold a single entry: they
     # are all to be settled, and bulleted they would read as the choice they
     # are not
     both = page((conflict(fix("A")), conflict(fix("B"))),
                 (alt([1, 2], [1, 2], menu(fix("C")), menu(fix("D"))),))
-    @test occursin("  drop requirement C and drop requirement D\n" *
+    @test occursin("  drop dependency C and drop dependency D\n" *
                    "  → allows: X 1", both)
     @test !occursin("•", split(both, "Or, to fix")[2])
 
@@ -1573,15 +1573,15 @@ end
     # that block, and its menu of one may say so; one whose block has an
     # alternative may not
     plain = page((conflict(fix("A")), conflict(fix("B"), fix("C"))), ())
-    @test occursin("The only fix: drop requirement A", plain)
+    @test occursin("The only fix: drop dependency A", plain)
     @test occursin("Fix it by any one of:", plain)
     @test !occursin("Or,", plain)
     # ... and the claim is block-local: the first conflict here is settled by
     # its own menu whatever the second block's alternative offers
     split_blocks = page((conflict(fix("A")), conflict(fix("B"))),
                         (alt([2], [2], menu(fix("C", "D"))),))
-    @test occursin("The only fix: drop requirement A", split_blocks)
-    @test occursin("One fix: drop requirement B", split_blocks)
+    @test occursin("The only fix: drop dependency A", split_blocks)
+    @test occursin("One fix: drop dependency B", split_blocks)
 end
 
 @testset "diagnosis: the headline tells the reader what to do" begin
@@ -1607,7 +1607,7 @@ end
                                        Vector{Fix{P,V}}[Fix{P,V}[fix("D")]])
     @test head((conflict(fix("A")), conflict(fix("B"), fix("C"))), (alt,)) ==
         "Unsatisfiable — 2 conflicts, pick a fix for each:"
-    @test occursin("\nOr, to fix without dropping requirement A:\n",
+    @test occursin("\nOr, to fix without dropping dependency A:\n",
         sprint(show, MIME("text/plain"),
                Diagnosis(Conflict{P,V}[conflict(fix("A")), conflict(fix("B"), fix("C"))],
                          Diagnostics.Alternative{P,V}[alt], :none)))
@@ -1634,17 +1634,17 @@ end
 
     idle = entries(([[Action(:compat, "A")]], Action{P}[]))
     out = page(idle)
-    @test occursin("Blocked fixes:", out)
+    @test occursin("Note: relaxing your compat on A", out)
     @test occursin("relaxing your compat on A does not help.", out)
     # the body stays above it: the reader meets the argument and the offer
     # first, and the roads not taken second
     @test first(findfirst("A 1 requires B 1", out)) <
-          first(findfirst("Blocked fixes:", out))
+          first(findfirst("Note:", out))
 
     # a completion turns the flat refusal into what the road would cost
     outu = page(entries(([[Action(:compat, "A")]], [Action(:drop, "B")])))
     @test occursin("relaxing your compat on A would not help unless you " *
-                   "also dropped requirement B.",
+                   "also dropped dependency B.",
                    replace(outu, r"\n\s+" => " "))
 
     # ... named in full while it is short enough to act on, and counted once
@@ -1654,11 +1654,11 @@ end
     outl = page(entries(([[Action(:compat, "A")]], long)))
     @test occursin("relaxing your compat on A would not help without 5 " *
                    "other changes.", replace(outl, r"\n\s+" => " "))
-    @test !occursin("dropped requirement B", outl)
+    @test !occursin("dropped dependency B", outl)
     outf = page(entries(([[Action(:compat, "A")]], long[1:4])))
-    @test occursin("would not help unless you also dropped requirement B, " *
-                   "dropped requirement C, dropped requirement D and dropped " *
-                   "requirement E.", replace(outf, r"\n\s+" => " "))
+    @test occursin("would not help unless you also dropped dependency B, " *
+                   "dropped dependency C, dropped dependency D and dropped " *
+                   "dependency E.", replace(outf, r"\n\s+" => " "))
     outgl = page(entries(([[Action(:compat, "A")], [Action(:drop, "G")]], long)))
     @test occursin("would only help if you do both and 5 other changes.",
                    replace(outgl, r"\n\s+" => " "))
@@ -1668,7 +1668,7 @@ end
     # the repair once from both its ends
     outg = page(entries(([[Action(:compat, "A")], [Action(:drop, "B")]],
                          Action{P}[])))
-    @test occursin("relaxing your compat on A or dropping requirement B " *
+    @test occursin("relaxing your compat on A or dropping dependency B " *
                    "would only help if you do both.",
                    replace(outg, r"\n\s+" => " "))
     # lifting several kinds is one edit of the reader's, so it is one bundle,
@@ -1683,7 +1683,19 @@ end
     @test occursin("Conflict 1: A and B\n", page(idle, 1))
 
     # a conflict with nothing tempting says nothing about blocked fixes
-    @test !occursin("Blocked fixes", page(entries()))
+    @test !occursin("Note", page(entries()))
+
+    # one verdict is a remark and reads as one, with no list to be the only
+    # item of; several are a list, under the one lead
+    @test occursin("  Note: relaxing your compat on A does not help.\n", out)
+    @test !occursin("•", split(out, "Note:")[2])
+    two = page(entries(([[Action(:compat, "A")]], Action{P}[]),
+                       ([[Action(:drop, "E")]], [Action(:drop, "B")])))
+    @test occursin("  Note:\n", two)
+    @test occursin("    • relaxing your compat on A does not help.\n", two)
+    @test occursin("• dropping dependency E would not help unless you " *
+                   "also dropped dependency B.",
+                   replace(two, r"\n\s+" => " "))
 end
 
 
@@ -1747,18 +1759,18 @@ end
           • A v1 requires C v1
           • C v1 allows no version of B
           Fix it by any one of:
-            1. drop requirement A
+            1. drop dependency A
                → allows: B v1, C v2
-            2. drop requirement B
+            2. drop dependency B
                → allows: A v1, C v1
 
         Conflict 2: E and F
           • E v1 requires G v1
           • G v1 allows no version of F
           Fix it by any one of:
-            1. drop requirement E
+            1. drop dependency E
                → allows: F v1, G v2
-            2. drop requirement F
+            2. drop dependency F
                → allows: E v1, G v1
         """
     # the one-line summary counts the ways of repairing the whole query
@@ -1779,11 +1791,11 @@ end
 
         Conflict 1: A
           • A v1 requires B
-          • your compat and your pin allow no version of B
+          • your compat and your pin eliminate all versions of B
           Fix it by any one of:
             1. relax your compat on B
                → allows: A v1, B w2
-            2. drop requirement A
+            2. drop dependency A
         """
     @test sprint(show, d) == "Diagnosis: 1 conflict, 2 fixes"
 end
@@ -1809,7 +1821,7 @@ end
     end
     # an action reads as something the user could carry out, whatever the kind
     # of the constraint it lifts is called
-    @test action_phrase(Action(:drop, :A)) == "drop requirement A"
+    @test action_phrase(Action(:drop, :A)) == "drop dependency A"
     @test action_phrase(Action(:compat, :A)) == "relax your compat on A"
     @test action_phrase(Action(:pin, :A)) == "unpin A"
     @test action_phrase(Action(:prerelease, :A)) ==
@@ -1894,7 +1906,7 @@ end
     # the query's own compat is what took every version away, so it is named:
     # "no version of PrettyTables is available" is the other thing that can
     # empty a package, and it is not this
-    @test occursin("your compat allows no version of PrettyTables", report)
+    @test occursin("your compat eliminates all versions of PrettyTables", report)
     @test occursin("relax your compat on PrettyTables", report)
     @test occursin("requires PrettyTables", report)
 

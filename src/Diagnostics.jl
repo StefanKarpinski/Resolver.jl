@@ -366,8 +366,8 @@ clause_versions(sat::SAT{P,V}, p) where {P,V} =
 # of Section 9 of the theory page — and no line of a report can say why those
 # are gone. Two things go wrong if they stay gone. A line reading the query
 # over the survivors alone credits the user's compat with the resolver's
-# deletions ("your compat allows only DataFrames ≥1.7.1", when 1.7.0 exists and
-# the compat admits it); and once a line does name 1.7.0, every statement
+# deletions ("your compat restricts DataFrames to ≥1.7.1", when 1.7.0 exists
+# and the compat admits it); and once a line does name 1.7.0, every statement
 # arguing from DataFrames has to reach it, or the page rules out a version it
 # has just called available and never says how.
 #
@@ -2591,13 +2591,13 @@ upstream_fixes(data::AbstractDict{P,<:PkgData{P}}, prob::Problem{P},
 #
 # A proof prints as one chain. The heading names the requirements the conflict
 # answers for, and the body never says them again: the chain starts at the root
-# fact the query narrowed, said as the user's ("your compat allows only A 1.2"),
-# runs through the registry's statements in antecedent-before-use order — each
-# said to the package the one before it left bounded, with the packages an
-# elimination reached it through in parentheses — and ends at the fact that
-# contradicts what the chain has accumulated. Where that closing fact is one of
-# the query's own it is printed; where it is a requirement the heading states,
-# the heading has already said it.
+# fact the query narrowed, said as the user's ("your compat restricts A to
+# 1.2"), runs through the registry's statements in antecedent-before-use
+# order — each said to the package the one before it left bounded, with the
+# packages an elimination reached it through in parentheses — and ends at the
+# fact that contradicts what the chain has accumulated. Where that closing
+# fact is one of the query's own it is printed; where it is a requirement the
+# heading states, the heading has already said it.
 #
 # A clause has no direction, so which way a line is said is chosen when it is
 # said, and a line that continues through a package is said to the package it
@@ -2647,7 +2647,7 @@ One action, said as something the reader could carry out. Whatever a constraint
 kind is called inside the resolver, what it reads as here is an edit.
 """
 function action_phrase(a::Action)
-    a.kind === :drop && return "drop requirement $(a.pkg)"
+    a.kind === :drop && return "drop dependency $(a.pkg)"
     a.kind === :compat && return "relax your compat on $(a.pkg)"
     a.kind === :pin && return "unpin $(a.pkg)"
     return "allow $(a.kind) versions of $(a.pkg)"
@@ -2659,7 +2659,7 @@ join_or(xs) = join(xs, ", ", " or ")
 # the same action, said as the thing tried rather than the thing to do: a
 # blocked entry reports on a road not taken
 function action_gerund(a::Action)
-    a.kind === :drop && return "dropping requirement $(a.pkg)"
+    a.kind === :drop && return "dropping dependency $(a.pkg)"
     a.kind === :compat && return "relaxing your compat on $(a.pkg)"
     a.kind === :pin && return "unpinning $(a.pkg)"
     return "allowing $(a.kind) versions of $(a.pkg)"
@@ -2668,7 +2668,7 @@ end
 # ... and as the thing that would have had to happen as well: the completion
 # an "unless you also" names
 function action_past(a::Action)
-    a.kind === :drop && return "dropped requirement $(a.pkg)"
+    a.kind === :drop && return "dropped dependency $(a.pkg)"
     a.kind === :compat && return "relaxed your compat on $(a.pkg)"
     a.kind === :pin && return "unpinned $(a.pkg)"
     return "allowed $(a.kind) versions of $(a.pkg)"
@@ -2692,7 +2692,7 @@ function conflict_heading(c::Conflict, also = nothing)
     rs = heading_reqs(c)
     isempty(c.lines) && length(rs) == 1 &&
         return "no version of $(only(rs)) is available."
-    isempty(rs) && return "the requirements"
+    isempty(rs) && return "the dependencies"
     parts = String[string(r) for r in rs]
     also === nothing || push!(parts, string(also))
     return join_and(parts)
@@ -2771,7 +2771,7 @@ end
 # shadow's dominators are versions the query left and `ω` admits a shadow
 # wherever all of them are admitted. A line reading the survivors alone would
 # credit the compat with the resolver's deletions: for `DataFrames = "1.7"` it
-# says "your compat allows only DataFrames >=1.7.1", although 1.7.0 exists and
+# says "your compat restricts DataFrames to >=1.7.1", although 1.7.0 exists and
 # that compat admits it.
 function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     kinds = Symbol[]
@@ -2780,16 +2780,17 @@ function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     end
     sort!(kinds)
     lead = join(String["your $k" for k in kinds], " and ")
-    verb = length(kinds) > 1 ? "allow" : "allows"
+    # every verb below is regular, so agreement is one suffix
+    s = length(kinds) > 1 ? "" : "s"
     m = l.clause[p]
     sel = selected(m)
-    any(sel) || return "$lead $verb no version of $p"
+    any(sel) || return "$lead eliminate$s all versions of $p"
     @assert all(sel[i] for (i, _) in get(c.shadows, p, ())) """
         the line saying what the query allows $p does not allow a version \
         redundancy elimination took"""
     r = range_phrase(c.versions[p], sel)
-    isempty(r) && return "$lead $verb every version of $p"
-    return "$lead $verb only $p $r"
+    isempty(r) && return "$lead allow$s every version of $p"
+    return "$lead restrict$s $p to $r"
 end
 
 # is this given line the requirement itself, rather than a limit on it?
@@ -2969,7 +2970,7 @@ end
 # preferred to it whatever the query said about either. Among sources, one the
 # reason did NOT narrow is preferred: its root costs nothing to state, and it
 # leaves the narrowed subject's compat line free to close the chain — a chain
-# that ends "your compat allows only X …" names the range that would have
+# that ends "your compat restricts X to …" names the range that would have
 # worked, where one that ends against the heading's silent premise names
 # nothing. A subject no statement names at all roots nothing, so the choice
 # falls through to whatever package the query narrowed and the statements do
@@ -3251,8 +3252,8 @@ function print_conflict(io::IO, c::Conflict{P,V}, index = nothing;
 end
 
 # The actions this page makes tempting and leaves out, one sentence each. The
-# page's own lines are what tempt: the reader sees "your compat allows only
-# A 1.2" and asks why relaxing it is not on the menu. So the section is indexed
+# page's own lines are what tempt: the reader sees "your compat restricts A to
+# 1.2" and asks why relaxing it is not on the menu. So the section is indexed
 # by action, not by reason — nothing is said twice, and nothing tempting goes
 # unanswered — and each sentence is a solve's answer rather than a judgement:
 # the action is dead weight in the cheapest repair that carries it, or that
@@ -3261,12 +3262,20 @@ end
 # Printed after the menu: the reader meets the offer first and the roads not
 # taken second. No proof prints here — why a fix is not offered is a
 # second-order question, and the verdict has already answered it.
+#
+# Said as a note rather than under a heading of its own. "Blocked fixes" named
+# these for what the resolver did with them, which left the reader asking what
+# blocked them; nothing did, and there is nothing to unblock — they are fixes
+# that do not work, and a note is what a page calls an aside that stops a
+# reader acting on something it has just made look plausible.
 # how many further actions an unless-sentence names before it counts them
 const UNLESS_NAMED = 4
 
 function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
     isempty(c.blocks) && return
-    println(io, "  Blocked fixes:")
+    # one verdict is a remark and reads as one; several want the list they are
+    single = length(c.blocks) == 1
+    single || println(io, "  Note:")
     for (bundles, unless) in c.blocks
         acts = Action{P}[a for b in bundles for a in b]
         tried = join_and(String[action_gerund(a) for a in acts])
@@ -3295,7 +3304,8 @@ function print_blocked(io::IO, c::Conflict{P,V}) where {P,V}
             also = join_and(String[action_past(a) for a in unless])
             "$tried would not help unless you also $also."
         end
-        print_wrapped(io, lead, "    • ", "      ")
+        single ? print_wrapped(io, lead, "  Note: ", "    ") :
+                 print_wrapped(io, lead, "    • ", "      ")
     end
 end
 

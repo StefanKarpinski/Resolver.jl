@@ -324,10 +324,17 @@ end
 The versions `sel` picks out of `vs`, low to high. The empty string where `sel`
 is everything: a range that is the package's whole offering prints as the bare
 package name, since naming it in full reads as a narrowing that never happened.
+
+One version is not a range, and the same reasoning does not reach it. Where the
+offering is a single version, saying which one identifies what the line speaks
+of and claims nothing about having selected it -- and the line is otherwise left
+naming no version at all, which is the harder thing to read: "julia constrains
+Statistics" leaves the reader to work out which julia.
 """
 function range_phrase(vs, sel::AbstractVector{Bool}, dir::Int = version_order(vs))
     rs = selected_runs(sel)
-    (isempty(rs) || (length(rs) == 1 && first(rs) == 1:length(vs))) && return ""
+    isempty(rs) && return ""
+    length(rs) == 1 && first(rs) == 1:length(vs) && length(vs) > 1 && return ""
     dir == -1 && reverse!(rs)
     return join((run_phrase(vs, r, dir) for r in rs), ", ")
 end

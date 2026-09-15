@@ -554,7 +554,12 @@ function named(d::Resolver.Diagnosis, name::Function)
                   for b in bs],
                  [Diagnostics.Action(a.kind, name(a.pkg)) for a in us])
                 for (bs, us) in c.blocks],
-            named(c.upstream, name))
+            named(c.upstream, name),
+            # the shadows travel with the conflict: they are indices into the
+            # version lists above, which a rename does not move, and without
+            # them nothing downstream can check what the lines were widened by
+            Dict{String,Vector{Tuple{Int,Vector{Int}}}}(
+                name(p) => sh for (p, sh) in c.shadows))
          for c in d.conflicts],
         [Diagnostics.Alternative{String,VersionNumber}(
             a.conflicts, a.avoided,

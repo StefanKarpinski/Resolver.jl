@@ -630,6 +630,170 @@ end
     @test d.others === :none
 end
 
+# Redundancy elimination deletes a version when a better one has a subset of its
+# constraints. That is the resolver's doing, not the user's, so the page has to
+# say so on both sides of the sentence: a line saying what the user's compat
+# *allows* has to speak of the deleted version, or it credits the compat with a
+# deletion it did not make, and every line arguing from that version has to
+# reach it too, or the page rules it out and never says how. One operation does
+# both -- a shadow is admitted by a literal where all of the versions that
+# dominated it are admitted, and excluded where any of them is -- and the
+# testsets below this one are what the "all of them" in that is for.
+@testset "diagnosis: what the compat allows includes what redundancy took" begin
+    # :v1 needs what :v2 needs and one package more, so :v2 dominates it and
+    # redundancy elimination strikes it -- while the compat below admits both.
+    data = Dict(
+        :P => PkgData([:v3, :v2, :v1],
+                      Dict(:v3 => [:S], :v2 => [:Q], :v1 => [:Q, :R]), COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :S => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:P]; compat = Dict(:P => [:v2, :v1], :Q => Symbol[]))
+    # the fixture only means anything while :v1 is really a shadow
+    univ = prepare_pkg_info(pkg_info(data, prob), prob)
+    @test :v1 ∉ univ.info[:P].versions
+    @test any(:v1 in sh for sh in univ.info[:P].shadows)
+
+    d = check_diagnosis(data, prob)
+    report = sprint(show, MIME("text/plain"), d)
+    # the compat allows :v2 *and* :v1, so the run reaches the bottom: "≤v2",
+    # not the bare "v2" the surviving versions alone would give
+    @test occursin("your compat allows only P ≤v2", report)
+    # ... and the statement arguing from those versions says the same range, so
+    # what the page has just called available is what it goes on to rule out:
+    # :v2 is :v1's only dominator and this line rules :v2 out, so it rules :v1
+    # out with it
+    @test occursin("P ≤v2 requires Q w1", report)
+    @test !occursin("P v2 requires Q w1", report)
+end
+
+# The other half of the same rule, and the reason it is "all of them": a line
+# admits a shadow exactly where it admits every version that dominated it. Here
+# :v1 has the one dominator, :v2, and the bound that admits :v2 admits :v1 with
+# it -- which is the weakest true sentence and not the strongest. The registry
+# may well exclude :v1 where it admits :v2, and saying so would need :v1's own
+# row, which redundancy elimination threw away; what the page can do is say
+# slightly less, never something false.
+@testset "diagnosis: a line admits a shadow where it admits every dominator" begin
+    # :v1 needs what :v2 needs and :R besides, so :v2 dominates it. :X's bound
+    # admits :v2 and :v1 alike and rules out :v3; the query's compat rules out
+    # :v4 and admits the rest -- so each of the two is needed, and neither is
+    # what strikes :v1.
+    data = Dict(
+        :X => PkgData([:x1], Dict(:x1 => [:P]),
+                      Dict(:x1 => Dict(:P => [:v4, :v2, :v1]))),
+        :P => PkgData([:v4, :v3, :v2, :v1],
+                      Dict(:v4 => [:S], :v3 => [:T], :v2 => [:Q],
+                           :v1 => [:Q, :R]), COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :S => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :T => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:X, :P];
+                   compat = Dict(:P => [:v3, :v2, :v1], :Q => Symbol[]))
+    # the fixture only means anything while :v1 is really a shadow
+    univ = prepare_pkg_info(pkg_info(data, prob), prob)
+    @test :v1 ∉ univ.info[:P].versions
+    @test any(:v1 in sh for sh in univ.info[:P].shadows)
+
+    d = check_diagnosis(data, prob)
+    report = sprint(show, MIME("text/plain"), d)
+    # :X's bound admits :v2, which is the whole of what :v1 was deleted for, so
+    # the line reaches :v1 too
+    @test occursin("X x1 requires P ≤v2, v4", report)
+    @test !occursin("X x1 requires P v2, v4", report)
+    # ... and the next statement argues *from* those versions: :v2 wants :Q, so
+    # :v1 wants it too
+    @test occursin("P ≤v2 requires Q w1", report)
+    @test !occursin("P v2 requires Q w1", report)
+end
+
+# Two versions can dominate one, neither of them dominating the other, and then
+# there is no such thing as "the version it went for": it is admitted where
+# both of them are admitted and ruled out where either of them is. The user's
+# own line has both, so it names the deleted version; the line that rules one
+# of them out rules it out too, and says so by not naming it.
+@testset "diagnosis: a version two versions dominate" begin
+    # :v1 needs what :v3 needs and what :v2 needs, and each of those two is
+    # ruled out by one of :X and :Y, which rule :v1 out as well -- so both
+    # dominate it, and neither dominates the other. :v4 is what the query's
+    # compat takes away, and it is what the fix gives back.
+    data = Dict(
+        :X => PkgData([:x1], Dict(:x1 => [:P]),
+                      Dict(:x1 => Dict(:P => [:v4, :v2]))),
+        :Y => PkgData([:y1], Dict(:y1 => [:P]),
+                      Dict(:y1 => Dict(:P => [:v4, :v3]))),
+        :P => PkgData([:v4, :v3, :v2, :v1],
+                      Dict(:v3 => [:Q], :v2 => [:R], :v1 => [:Q, :R]),
+                      COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:X, :Y, :P]; compat = Dict(:P => [:v3, :v2, :v1]))
+    # the fixture means nothing unless :v1 is a shadow of both survivors
+    univ = prepare_pkg_info(pkg_info(data, prob), prob)
+    @test univ.info[:P].versions == [:v4, :v3, :v2]
+    @test count(sh -> :v1 in sh, univ.info[:P].shadows) == 2
+
+    d = check_diagnosis(data, prob)
+    c = only(d.conflicts)
+    # the page speaks of :P in all four versions, and says which of them is
+    # there only because two others answer for it
+    @test c.versions[:P] == [:v4, :v3, :v2, :v1]
+    @test c.shadows[:P] == [(4, [2, 3])]
+
+    report = sprint(show, MIME("text/plain"), d)
+    # the compat allows :v3, :v2 and :v1: the last of those is the resolver's
+    # deletion, and saying "≤v3" is what does not claim it for the compat
+    @test occursin("your compat allows only P ≤v3", report)
+    # ... while :X's bound rules out :v3, one of the two :v1 answers to, so it
+    # rules out :v1 and the range it names stops short of it
+    @test occursin("X x1 requires P v2, v4", report)
+    @test !occursin("X x1 requires P ≤v2, v4", report)
+end
+
+# (V8) A line that read a deleted version as something other than what the
+# versions dominating it leave is a line claiming more than the page can
+# support, and set arithmetic is all it takes to see that.
+@testset "diagnosis: a mis-widened line is caught" begin
+    data = Dict(
+        :P => PkgData([:v3, :v2, :v1],
+                      Dict(:v3 => [:S], :v2 => [:Q], :v1 => [:Q, :R]), COMP_NONE),
+        :Q => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :R => PkgData([:w1], DEPS_NONE, COMP_NONE),
+        :S => PkgData([:w1], DEPS_NONE, COMP_NONE),
+    )
+    prob = Problem([:P]; compat = Dict(:P => [:v2, :v1], :Q => Symbol[]))
+    d = check_diagnosis(data, prob)
+    c = only(d.conflicts)
+    @test c.shadows[:P] == [(3, [2])]
+    @test isempty(report_problems(d))
+
+    # the same report with one line's reading of :v1 flipped -- which is what a
+    # renderer widening only some of its lines, or widening by the wrong
+    # version, would produce
+    function flipped(i::Int)
+        l = c.lines[i]
+        m = l.clause[:P]
+        bits = copy(m.bits)
+        bits[3] = !bits[3]
+        lits = [q => (q == :P ? Clauses.Lit(bits) : n) for (q, n) in l.clause.lits]
+        lines = copy(c.lines)
+        lines[i] = Line{Symbol}(Clauses.clause(lits), l.through, l.given,
+                                l.proof, l.pivot)
+        c′ = Conflict{Symbol,Symbol}(c.reqs, lines, c.versions, c.excluded,
+                                     c.fixes, c.blocks, c.upstream, c.shadows)
+        return Diagnosis(Conflict{Symbol,Symbol}[c′], d.others)
+    end
+    for i in eachindex(c.lines)
+        c.lines[i].clause[:P] === nothing && continue
+        probs = report_problems(flipped(i))
+        @test any(p -> occursin("does not read v1 as v2 leave it", p), probs)
+    end
+end
+
 @testset "diagnosis: a package with a version left over" begin
     # :R@r1 needs :P and rules out :P@p1, and the bound takes :P@p2 away — so
     # :P is left with a version, just not one that works here
@@ -640,12 +804,15 @@ end
     d = check_diagnosis(data, Problem([:R]; compat = Dict(:P => [:p1])))
     # here there is a bound to state: :P has a version left, just not one
     # :R will take. The heading has said the requirement, so the chain opens
-    # with what it forces and ends at the fact that contradicts it
+    # with what it forces and ends at the fact that contradicts it.
+    # :R offers one version, and the line names it: one version is not a range,
+    # so saying which one claims nothing about having selected it -- and the
+    # upstream sentence below already speaks of "r1, its latest"
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
         Conflict 1: R
-          • R requires P p2
+          • R r1 requires P p2
           • your compat allows only P p1
           Fix it by any one of:
             1. relax your compat on P
@@ -692,11 +859,13 @@ end
     # of anything that has introduced :C
     d = check_diagnosis(late_speaker, Problem([:A]; compat = Dict(:C => [:c1])))
     c = only(d.conflicts)
+    # :A offers one version and the line names it, as a lone version is not a
+    # range: saying which one claims nothing about having selected it
     @test sprint(show, MIME("text/plain"), d) == """
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A
-          • A requires C c2
+          • A a1 requires C c2
           • your compat allows only C c1
           Fix it by any one of:
             1. relax your compat on C
@@ -735,8 +904,10 @@ end
     # :B is resolved away, so the line is about the two packages the query
     # named and says which package it reached them through
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("A requires C c2 (through B)", report)
-    @test !occursin("B requires", report)
+    @test occursin("A a1 requires C c2 (through B)", report)
+    # :B is not a subject of any line -- and now that a lone version is named,
+    # the absence has to be asserted against the form a :B line would take
+    @test !occursin("• B ", report)
     # ... and :B is not something the query said anything about: the middle of
     # the story is the part only the registry knows
     # ... and :B is the middle of the story: the query said nothing whatever
@@ -759,12 +930,12 @@ end
     # statement, since a clause has no direction, and the way round the chain
     # arrives at it
     report = sprint(show, MIME("text/plain"), d)
-    @test occursin("P constrains W w1", report)
+    @test occursin("P p1 constrains W w1", report)
     @test occursin("your compat allows only W w2", report)
     @test occursin("W absent allows no version of S", report)
     # the only dependency stated is the one the registry has: :P's bound on
     # :W permits :W's absence, so nothing on the page says :P brings it in
-    @test !occursin("P requires", report)
+    @test !occursin("P p1 requires", report)
     # ... and the two lines do not leave :W nothing on their own -- what rules
     # out :w1 is the query -- so the report does not claim that they do
     @test !occursin("all of these", report)
@@ -1573,7 +1744,7 @@ end
         Unsatisfiable — 2 conflicts, pick a fix for each:
 
         Conflict 1: A and B
-          • A requires C v1
+          • A v1 requires C v1
           • C v1 allows no version of B
           Fix it by any one of:
             1. drop requirement A
@@ -1582,7 +1753,7 @@ end
                → allows: A v1, C v1
 
         Conflict 2: E and F
-          • E requires G v1
+          • E v1 requires G v1
           • G v1 allows no version of F
           Fix it by any one of:
             1. drop requirement E
@@ -1607,7 +1778,7 @@ end
         Unsatisfiable — 1 conflict:
 
         Conflict 1: A
-          • A requires B
+          • A v1 requires B
           • your compat and your pin allow no version of B
           Fix it by any one of:
             1. relax your compat on B
@@ -1790,9 +1961,9 @@ end
     report = sprint(show, MIME("text/plain"), d)
     # each side says what it demands of the package they meet at, and none of
     # them is left to the reader to infer
-    @test occursin("A requires P ≤p2", report)
-    @test occursin("B requires P ≥p2", report)
-    @test occursin("C requires P p1, p3", report)
+    @test occursin("A a1 requires P ≤p2", report)
+    @test occursin("B b1 requires P ≥p2", report)
+    @test occursin("C c1 requires P p1, p3", report)
     @test occursin("incompatible constraints on P:", report)
     # ... and every requirement has a demand on it: none of the three is told
     # only by what it rules out

@@ -1079,6 +1079,13 @@ What a checker checks, and what it need not.
   the user's constraint on `P`, if any, admits `P`'s latest. Membership
   tests against the registry's own data; no solver.
 
+* **(V8) Widened lines.** Every line prints over the widened universe
+  `V'` (Section 9, *Shadows*). For each printed line: its restriction to `V`
+  is the clause the diagnosis derived, and each shadow's membership in each
+  literal is the conjunction of its dominators' — admitted where all are,
+  excluded where any is. Set arithmetic per line; no solver. And (D3),
+  asserted: no shadow and no dominator is a version the query excludes.
+
 **Every check is per-explanation, never against a union.** Where two
 explanations' line-sets are `S₁ ∪ S₂` and `S₂` alone is contradictory, the
 union stays contradictory whatever is deleted from `S₁` — a union-level
@@ -1116,6 +1123,18 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   reader was about to hold against another. A line that *continues* a chain
   overrides all of this: it is said to the package the chain has not
   reached, whichever that is.
+* **Every line prints over the universe the user sees.** The universe the
+  diagnosis ran over is missing versions the resolver removed as redundant,
+  and no line of the page can say why they are gone. So every printed line is
+  the widening `ω` of the clause behind it (*Shadows*, below): each such
+  version is admitted by a literal exactly where all the versions that
+  dominate it are, which puts it in a range a line rules out whenever one of
+  them is there, and in a range a line admits only when all of them are.
+  The user's own line then says what the compat really allows, and the lines
+  arguing from a package reach every version that line names, so the
+  syllogism closes over what the reader can see. Theorem 35 says the widened
+  line is true; the same operation on every literal is what keeps
+  contraposition safe, since a flipped line is the same widened clause.
 * **A range is printed when something narrowed it.** An antecedent that is a
   package's entire offering prints as the bare package name; naming the full
   range reads as a narrowing that never happened.
@@ -1218,6 +1237,145 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   gap in the page's own vocabulary — fixes, not solutions.
 * **Menu wording.** Exactly the three-state table of Section 4.
 
+### Shadows: the versions the resolver removed
+
+The universe of Section 1 is the one the diagnosis ran over, and it is not
+the registry's. Before any solve the resolver deletes versions it can prove
+it will never need, and one kind of deletion has no reason a page can state:
+**redundancy elimination** removes a version when a newer version of the
+same package has a subset of its constraints. Write `Sh(p)` for the versions
+of `p` removed this way — the **shadows** — and `V'(p) = V(p) ∪ Sh(p)`;
+write `ℛ'` and `Q'` for the registry and the query over `V'`. A version
+deleted for any other reason — uninstallable, unreachable — is outside `V'`
+too, and stays outside: it is in no solution of anything, so its absence
+never needs saying.
+
+A shadow is the user's business twice over. The line "your compat allows
+only `P` `r`" is read off the query over `V(P)`, so where the compat
+admitted a shadow the line credits the compat with a deletion the resolver
+made. And once the line names the shadow, every statement arguing from `P`
+has to reach it, or the page has ruled out a version it has just called
+available and never said how. Both are met by printing every line over
+`V'`, and that is sound because of what a shadow is.
+
+**Substrate.** For each `s ∈ Sh(p)` the resolver supplies its
+**dominators** `D(s)` and guarantees:
+
+* **(D0)** `D(s)` is a nonempty subset of `V(p)`, every member newer than
+  `s`.
+* **(D1)** For `c ∈ D(s)`, any package `x` and any `y ∈ V⊥(x)`: if `(c, y)`
+  is forbidden then `(s, y)` is forbidden. A pair of values at two packages
+  is *forbidden* when some clause of `ℛ'` denies both — a conflict, or with
+  `y = ⊥` a dependency.
+* **(D2)** For `c ∈ D(s)`, `y ∈ Sh(x)` and `y' ∈ D(y)`: if `(c, y')` is
+  forbidden then `(s, y)` is forbidden.
+* **(D3)** The query's constraints admit every shadow and every dominator:
+  `s ∈ L(p)` and `D(s) ⊆ L(p)`.
+
+(D1) is domination itself, restricted to the versions that survive; (D2)
+says it reaches the versions that did not, whichever order they left in;
+Lemma 36 says the resolver's elimination provides both. (D3) is what keeps
+a query line honest, and it is a matter of what `Sh` and `D` are taken to
+be. Redundancy is judged between *classes* — sets of versions the registry
+cannot tell apart — and a class the query emptied is on neither side of the
+test; but a constraint is finer than a class, so a class the query admits a
+member of may hold members it excludes, and a dominated class is deleted
+whole. `Sh(p)` is therefore the versions of dominated classes the query
+admits, and `D(s)` the members of the dominating classes the query admits —
+nonempty, since a class with no admitted member is emptied. A dominated
+class's excluded members are outside `V'` like any version the query took
+away, and cost the page nothing: the query's own line is the account of
+them, and would be false if it named them.
+
+**Definition (widening).** For a clause `C` over `V`, the clause `ω(C)` over
+`V'` has
+
+```
+ω(C)(p) = C(p) ∪ { s ∈ Sh(p) : D(s) ⊆ C(p) }.
+```
+
+A shadow is admitted where every dominator is admitted and excluded where any
+dominator is excluded. That is one operation, and the page's two kinds of
+range are its two faces: a shadow joins what a line rules out — an
+antecedent, or what the user's constraints took away — whenever one of its
+dominators is there, and joins what a line admits only when all of them are.
+Recording a single dominator is the special case `|D(s)| = 1`; it is sound by
+the same proofs and coarser, since it admits a shadow that another dominator
+would have excluded.
+
+**Lemma 33 (widening and resolution).** `Res_q(ω(C₁), …, ω(Cₙ))` subsumes
+`ω(Res_q(C₁, …, Cₙ))`.
+
+*Proof.* At `q`: `s ∈ ω(⋂ᵢ Cᵢ)(q)` iff `D(s) ⊆ ⋂ᵢ Cᵢ(q)` iff
+`D(s) ⊆ Cᵢ(q)` for every `i` iff `s ∈ ⋂ᵢ ω(Cᵢ)(q)`; the literals are
+equal. At any other `p`: if `D(s) ⊆ Cᵢ(p)` for some `i` then
+`D(s) ⊆ ⋃ᵢ Cᵢ(p)`, so `⋃ᵢ ω(Cᵢ)(p) ⊆ ω(⋃ᵢ Cᵢ)(p)`. ∎
+
+The inclusion is strict only when a shadow's dominators are split across the
+clauses resolved: the widened resolvent may then admit a shadow the
+resolvent of the widened clauses excludes. Both are sound. The page prints
+`ω` of what it derived.
+
+**Lemma 34 (a widened premise is entailed).** For every clause of `ℛ`
+restricted to `V` and every fact of `Q`, `ℛ' ∪ Q' ⊨ ω(C)` over `V'`.
+
+*Proof.* A requirement `⟨p : V(p)⟩` widens to `⟨p : V'(p)⟩`, the
+requirement over `V'`. A constraint `⟨p : L(p) ∪ {⊥}⟩` widens to
+`⟨p : L(p) ∪ Sh(p) ∪ {⊥}⟩` by (D3), which is the constraint over `V'`, again
+by (D3). A registry clause `C` has support `{r, x}`. Let `ι` model
+`ℛ' ∪ Q'` over `V'` and suppose `ι ⊭ ω(C)`: `a = ι(r) ∉ ω(C)(r)` and
+`b = ι(x) ∉ ω(C)(x)`. If `a ∈ V(r)` put `a⁺ = a`, which `C` denies;
+otherwise `a ∈ Sh(r)` and some `a⁺ ∈ D(a)` has `a⁺ ∉ C(r)`. Choose `b⁺`
+likewise. `C` denies both `a⁺` and `b⁺`, so `(a⁺, b⁺)` is forbidden, and
+by (D1) or (D2), according to which of `a` and `b` are shadows, so is
+`(a, b)`. But `ι` takes both and models `ℛ'`. ∎
+
+**Theorem 35 (every line widens).** Let `C` be derived by resolution from
+`ℛ` restricted to `V` and the facts of `Q` — any line the page prints. Then
+`ℛ' ∪ Q' ⊨ ω(C)` over `V'`.
+
+*Proof.* By induction on the derivation. A premise is Lemma 34. For a
+resolvent, the widened premises are entailed by hypothesis, their resolvent
+is entailed by Lemma 1, and it subsumes the widened resolvent by Lemma 33.
+∎
+
+**Corollary (the meet still closes).** Sides that meet emptily over `V`
+meet emptily over `V'`: if `s ∈ ⋂ᵢ ω(σᵢ)(P)` then `D(s) ⊆ ⋂ᵢ σᵢ(P) = ∅`,
+against (D0). So (V2) holds of the printed page as it holds of the derived
+one, and a chain that ruled out every version of `V(P)` has ruled out every
+version of `V'(P)`.
+
+**Lemma 36 (redundancy elimination provides (D0)–(D2)).** Let versions be
+deleted one at a time; let each `s` be deleted at its own moment with a
+nonempty set of newer versions of its package each of which, over the values
+present at that moment, is forbidden with `y` only if `s` is; let a
+dominator deleted later hand its role to its own dominators; and let `D(s)`
+be the survivors so reached. Then (D0)–(D2) hold.
+
+*Proof.* (D0) is by construction. For (D1) and (D2) it suffices to show: if
+`s = s₀, …, sₖ = c` and `y = y₀, …, yₘ = y'` are chains in which each
+element was deleted with the next as one of its dominators at that moment,
+`c` and `y'` survive, and `(c, y')` is forbidden, then `(s, y)` is forbidden
+— (D1) being the case `m = 0`. Along a chain the moments of deletion
+increase, since a dominator is present when what it dominates goes. Walk the
+pair down from `(sₖ, yₘ)`, keeping the invariant that each chain's current
+element outlives the other chain's next element or survives outright, which
+holds at the start. At `(sᵢ, yⱼ)`, of the two next elements `sᵢ₋₁` and
+`yⱼ₋₁` take the one deleted *later*, say `sᵢ₋₁`: `yⱼ` was present when it
+went, by the invariant, so `(sᵢ, yⱼ)` forbidden gives `(sᵢ₋₁, yⱼ)`
+forbidden; and the invariant holds at `(sᵢ₋₁, yⱼ)`, since `yⱼ` outlives
+`sᵢ₋₁` which outlives `sᵢ₋₂`, and `sᵢ₋₁` outlives `yⱼ₋₁` by the choice
+made. When only one chain has a next element the choice is forced and the
+invariant licenses it the same way. The walk ends at `(s₀, y₀)`. ∎
+
+What the theorem does not give is tightness. Where every dominator of a
+shadow is admitted, `ω` admits the shadow, and the registry may not: the
+widened line is then the weakest true statement, not the strongest, and the
+strongest would need the shadow's own row, which the resolver threw away.
+That is the whole of what a shadow's deletion costs the page, and it is
+paid in the one currency the page can afford — a line that says slightly
+less — never in a line that says something false.
+
 ### The verbs
 
 Four forms, and which one is printed is data in the clause rather than a
@@ -1308,6 +1466,11 @@ constrains how.
   constraint kinds exclude which versions — readable without any solver.
 * **(S6) The version order**, per package, for rendering ranges and for
   Proposition 18's convexity talk.
+* **(S7) Shadows.** Per package, the versions redundancy elimination
+  removed, and for each of them every surviving version that dominated it,
+  with (D0)–(D3) of Section 9 guaranteed: dominance over the survivors,
+  dominance reaching the other shadows whatever order they left in, and no
+  shadow or dominator among the versions the query excludes.
 
 ## 11. Boundaries and honesty
 

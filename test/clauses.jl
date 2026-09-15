@@ -4,7 +4,7 @@
 # both, `1 1 requires 2 1` is unreadable and a wrong assertion looks right.
 
 using Resolver.Clauses
-using Resolver.Clauses: clause, Lit, absent, present, version_order
+using Resolver.Clauses: clause, Lit, absent, present, version_order, range_phrase
 
 const L = Clauses.literal
 # three packages: A with versions 10,20,30; B with 5,6; C with 1,2
@@ -112,4 +112,18 @@ end
     @test Clauses.letters(26) == "Z"
     @test Clauses.letters(27) == "AA"
     @test Clauses.letters("Flux") == "Flux"
+end
+
+# A range covering every version the package offers is suppressed: naming it
+# reads as a narrowing that never happened. One version is not a range, and the
+# same reasoning does not reach it -- "julia constrains Statistics" leaves the
+# reader to work out which julia, where "julia 1.6.7 constrains Statistics"
+# identifies what is spoken of and still claims nothing about selection.
+@testset "clauses: a lone version is named, a whole range is not" begin
+    @test range_phrase(["1.6.7"], Bool[true]) == "1.6.7"
+    @test range_phrase(["1.0", "1.1", "1.2"], Bool[true, true, true]) == ""
+    @test range_phrase(["1.0", "1.1", "1.2"], Bool[false, true, true]) == "≥1.1"
+    # nothing selected still says nothing, whatever the offering
+    @test range_phrase(["1.6.7"], Bool[false]) == ""
+    @test range_phrase(["1.0", "1.1"], Bool[false, false]) == ""
 end

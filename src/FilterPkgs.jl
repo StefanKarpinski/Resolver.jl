@@ -893,7 +893,6 @@ function mark_necessary!(
     D = UInt64[]        # per-class domination candidate masks
     T = UInt64[]        # mask of classes still tracked by the sweep
     R = Int[]           # redundant indices vector
-    dom = Int[]         # per class, the class that dominates it (0: none)
     F = Bool[]          # per class, whether its shadow list is ours to grow
     # scratch: suffix masks of the classes
     # ordered by key_∅, so "the classes whose best possible rank is worse than
@@ -1087,13 +1086,8 @@ function mark_necessary!(
                 end
             end
         end
-        # union of all candidate sets = the dominated classes, and along with
-        # it the class each one is dominated by: the classes are visited in
-        # ascending order, so the first to claim a class is the best one that
-        # can, and the claim is what a report will attribute the deletion to
+        # union of all candidate sets = the dominated classes
         fill!(T, UInt64(0)) # reuse as the union accumulator
-        resize!(dom, m)
-        fill!(dom, 0)
         @inbounds for w = 1:W
             c = A[w]
             while !iszero(c)
@@ -1101,13 +1095,7 @@ function mark_necessary!(
                 c &= c - 1
                 o = (i - 1) * W
                 for w′ = 1:W
-                    fresh = D[o + w′] & ~T[w′]
                     T[w′] |= D[o + w′]
-                    while !iszero(fresh)
-                        j = ((w′ - 1) << 6) + trailing_zeros(fresh) + 1
-                        fresh &= fresh - 1
-                        dom[j] = i
-                    end
                 end
             end
         end
@@ -1120,35 +1108,74 @@ function mark_necessary!(
             end
         end
         isempty(R) && continue
-        # follow each claim to a class that survives the round. Transitivity
-        # says it already is one — a dominator of the claimant would have
-        # claimed first, so the claimant is undominated — but what a shadow
-        # list needs is a host that is really still here, and a comparison per
-        # deletion is cheaper than resting on the argument
-        for j in R
-            d = dom[j]
-            while !iszero(dom[d])
-                d = dom[d]
-            end
-            dom[j] = d
-        end
+        # (D3) of the theory page's *Shadows*: a class this query emptied is on
+        # neither side of the domination test. `candidates!` takes it out of
+        # `A`, and every `D[i]` is a subset of `A`, so the dominator side holds
+        # by construction; the deleted side is worth asserting, since a
+        # deactivated class deleted here is one the relaxation that emptied it
+        # would find gone
+        dp = deacts[p]
+        dp === nothing || @assert !any(dp[j] for j in R if j ≤ length(dp))
         # hand each deleted class's versions, and whatever it was already
-        # shadowing, to the class that dominates it. the lists are replaced
-        # rather than grown in place: `copy_ranked!` shares them with the
-        # artifact it copied, which must not learn about this query
+        # shadowing, to *every* surviving class that dominates it — not to one
+        # claimant. What a report may say about a deleted version is read off
+        # its dominators together (the widening ω of the theory page's
+        # *Shadows*): it joins a range a line rules out where one of them is
+        # there and a range a line admits only where all of them are, so a
+        # shadow list that remembered one dominator would be admitting the
+        # version wherever that one is admitted, which another dominator may
+        # refuse. Recording every dominator is what (D0)–(D2) ask of the
+        # substrate, and Lemma 36 is the argument that this loop provides them.
+        #
+        # A dominator deleted in this same round needs no chasing: `j ∈ D[i]`
+        # is "every active column i has a bit in, j has too", which is
+        # transitive (and the rank side of it is transitive as well, since
+        # key_∅ ≤ key_Q pointwise), so the survivors that dominate a deleted
+        # claimant already dominate everything the claimant does. A host
+        # deleted in a *later* round is the case the `sh[j]` append covers: it
+        # hands what it was shadowing to each of its own dominators, which is
+        # the chain of deletions Lemma 36 walks.
+        #
+        # the lists are replaced rather than grown in place: `copy_ranked!`
+        # shares them with the artifact it copied, which must not learn about
+        # this query
         sh = info_p.shadows
         vers = info_p.versions
         mem = info_p.members
         resize!(F, m)
         fill!(F, false)
         nosh = V[] # one empty list for every class on its way out
-        for j in R
-            d = dom[j]
-            F[d] || (sh[d] = copy(sh[d]); F[d] = true)
-            for k in mem[j]
-                push!(sh[d], vers[k])
+        @inbounds for w = 1:W
+            c = A[w] & ~T[w] # the candidates this round leaves standing
+            while !iszero(c)
+                i = ((w - 1) << 6) + trailing_zeros(c) + 1
+                c &= c - 1
+                o = (i - 1) * W
+                for w′ = 1:W
+                    d = D[o + w′]
+                    iszero(d) && continue
+                    if !F[i]
+                        sh[i] = copy(sh[i])
+                        F[i] = true
+                    end
+                    while !iszero(d)
+                        j = ((w′ - 1) << 6) + trailing_zeros(d) + 1
+                        d &= d - 1
+                        for k in mem[j]
+                            push!(sh[i], vers[k])
+                        end
+                        # what `j` was holding may have reached `i` already, by
+                        # another host going with it: a version is named by
+                        # every class that dominated it, and two of those can
+                        # be deleted in the same round
+                        for v in sh[j]
+                            v in sh[i] || push!(sh[i], v)
+                        end
+                    end
+                end
             end
-            append!(sh[d], sh[j])
+        end
+        for j in R
             sh[j] = nosh
         end
         # deactivate redundant classes
@@ -1266,8 +1293,8 @@ function drop_unmarked!(
             i′ += 1
             M′[i′] = mem = Int[index[j] for j in M[i]]
             # a surviving class keeps what it shadows; a deleted one's shadows
-            # went to its dominator when `mark_necessary!` deleted it, and are
-            # simply gone when another pass did
+            # went to each of its dominators when `mark_necessary!` deleted it,
+            # and are simply gone when another pass did
             S′[i′] = S[i]
             for j in mem
                 C′[j] = i′

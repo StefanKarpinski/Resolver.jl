@@ -32,7 +32,7 @@ using ..Resolver: Resolver, SAT, Problem, PkgInfo, Universe, PicoSAT, Relation,
     is_excluded
 using ..Resolver.Clauses: Clauses, Clause, Lit, literal, clause, packages,
     isbottom, subsumes, absent, present, resolve_raw, resolve_on, clause_phrase,
-    range_phrase, selected, unselected, nversions
+    range_phrase, selected, unselected, nversions, version_order
 using ..Resolver.UnsatCores: sat_mus
 
 export Diagnosis, Conflict, Alternative, Fix, Action, Line, Upstream,
@@ -131,13 +131,28 @@ struct Upstream{P,V}
 end
 
 """
-    Conflict(reqs, lines, versions, excluded, fixes, blocks = [], upstream = [])
+    Conflict(reqs, lines, versions, excluded, fixes,
+             blocks = [], upstream = [], shadows = Dict())
 
 One independent thing that is wrong: the requirements it answers for, the lines
 that prove it, the version list each named package is spoken of in, which of
 the query's constraint kinds exclude which of those versions, the menu of fixes
 that settles it, the verdict on each action the page makes tempting, and the
 releases someone else could cut instead.
+
+`versions` is the universe the user sees: what the query's universe still
+holds, together with the versions redundancy elimination removed because a
+newer version of the same package dominated them. `shadows` says which entries
+those are — one `(index, dominator indices)` pair each, into `versions[p]` —
+and every literal of every line already reads over them: a shadow is admitted
+by a literal exactly where all of its dominators are, and excluded where any of
+them is. That is the widening `ω` of the manual's *Shadows*, done once here so
+that nothing downstream has to know about it; Theorem 35 is why each widened
+line is true, and (D3) is why the query's own line allows every shadow.
+
+A rendering that reads the survivors alone credits the user's compat with the
+resolver's deletions, and one that widens only that line names a version as
+available and never says what rules it out.
 
 A conflict is one **menu**: choose one entry of `fixes` and this conflict is
 settled. An entry may ask for several actions at once, where the family couples
@@ -176,6 +191,10 @@ struct Conflict{P,V}
     fixes    :: Vector{Fix{P,V}}
     blocks   :: Vector{Tuple{Vector{Vector{Action{P}}},Vector{Action{P}}}}
     upstream :: Vector{Upstream{P,V}}
+    # per package, which entries of `versions` redundancy elimination removed
+    # and, for each, the entries that dominated it: the record a checker needs
+    # to recompute the widening every line is printed over (V8).
+    shadows  :: Dict{P,Vector{Tuple{Int,Vector{Int}}}}
 end
 
 Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
@@ -184,6 +203,9 @@ Conflict{P,V}(reqs, lines, versions, excluded, fixes) where {P,V} =
 Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks) where {P,V} =
     Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks,
                   Upstream{P,V}[])
+Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks, upstream) where {P,V} =
+    Conflict{P,V}(reqs, lines, versions, excluded, fixes, blocks, upstream,
+                  Dict{P,Vector{Tuple{Int,Vector{Int}}}}())
 
 """
     selections(c) :: Vector{Vector{Action{P}}}
@@ -335,6 +357,184 @@ query was run against still holds. A literal has one more slot than this, for
 """
 clause_versions(sat::SAT{P,V}, p) where {P,V} =
     haskey(sat.info, p) ? sat.info[p].versions : V[]
+
+## the universe the page prints over
+#
+# Every line prints over the universe the *user* sees, and that is not the one
+# the diagnosis ran over: before any solve, redundancy elimination removed each
+# version of a package that a newer version of it dominated — the **shadows**
+# of Section 9 of the theory page — and no line of a report can say why those
+# are gone. Two things go wrong if they stay gone. A line reading the query
+# over the survivors alone credits the user's compat with the resolver's
+# deletions ("your compat allows only DataFrames ≥1.7.1", when 1.7.0 exists and
+# the compat admits it); and once a line does name 1.7.0, every statement
+# arguing from DataFrames has to reach it, or the page rules out a version it
+# has just called available and never says how.
+#
+# So a conflict is extended to `V′ = V ∪ Sh` before anything prints, and every
+# literal in it becomes the widening
+#
+#     ω(C)(p) = C(p) ∪ { s ∈ Sh(p) : D(s) ⊆ C(p) }
+#
+# of the literal the diagnosis derived: a shadow is admitted exactly where all
+# of the versions that dominated it are admitted, and excluded where any of
+# them is. That is one operation, applied to every literal on whichever side of
+# a sentence it lands, so the printer knows nothing about shadows at all — the
+# availability line is the query's own fact widened the same way, and admits
+# every shadow because (D3) says the query left every dominator. Theorem 35 is
+# that the widened line is entailed by the registry and the query over `V′`,
+# and its corollary that a meet which closed over `V` closes over `V′` too.
+
+"""
+    shadow_dominators(sat, prob, p) :: Vector{Tuple{V,Vector{Int}}}
+
+The versions of `p` redundancy elimination removed, each with the versions that
+dominated it, as indices into [`clause_versions`](@ref
+Resolver.Diagnostics.clause_versions).
+
+The universe records domination by *class*, and a class speaks here for every
+member the query admits: members are indistinguishable to the registry, so each
+of them dominates whatever the class does, and (D3) wants a dominator the query
+left. A class the query emptied dominates nothing — `mark_necessary!` takes a
+deactivated class off both sides of its test — so no shadow is left without a
+dominator.
+
+A shadow the query itself excludes is not one of these. The universe hands over
+a deleted class whole, and a class can hold a version the query rules out
+beside one it admits — a constraint is finer than a class, which is the one
+place the two per-class bits are not enough on their own — so the versions the
+query took away are dropped here. Keeping one would have the query's own line
+saying the compat allows a version that compat excludes.
+"""
+function shadow_dominators(sat::SAT{P,V}, prob::Problem{P}, p::P) where {P,V}
+    out = Tuple{V,Vector{Int}}[]
+    haskey(sat.info, p) || return out
+    info = sat.info[p]
+    any(!isempty, info.shadows) || return out
+    vs = info.versions
+    at = Dict{V,Int}()
+    admitted = Int[]
+    for (c, sh) in enumerate(info.shadows)
+        isempty(sh) && continue
+        empty!(admitted)
+        for j in info.members[c]
+            isempty(exclusion_kinds(prob, p, vs[j])) && push!(admitted, j)
+        end
+        @assert !isempty(admitted) """
+            a shadow of $p is hosted by a class this query emptied — and an \
+            emptied class dominates nothing, which is (D3)"""
+        for v in sh
+            isempty(exclusion_kinds(prob, p, v)) || continue
+            k = get(at, v, 0)
+            if iszero(k)
+                push!(out, (v, copy(admitted)))
+                at[v] = length(out)
+            else
+                append!(out[k][2], admitted)
+            end
+        end
+    end
+    for (_, ds) in out
+        unique!(sort!(ds))
+    end
+    return out
+end
+
+# Where the widened version list puts each version: the survivors keep the
+# order they were in and each shadow takes the place the version order gives
+# it. Where there is no order to take — versions with no `isless`, or a
+# provider order that is not monotone — the shadows go at the end, which costs
+# the page nothing, since a range over such a list is printed by naming its
+# versions and a name claims nothing about order.
+#
+# Returns the list, the new index of each old version, and the new index of
+# each shadow.
+function merge_shadows(vs::Vector{V}, svs::Vector{V}) where {V}
+    n = length(vs)
+    isempty(svs) && return vs, collect(1:n), Int[]
+    dir = version_order(vs)
+    # one version is in order whichever way the list is read
+    dir == 0 && n ≤ 1 && hasmethod(isless, Tuple{V,V}) && (dir = 1)
+    items = Tuple{V,Int}[(v, k) for (k, v) in enumerate(vs)]
+    for (t, v) in enumerate(svs)
+        push!(items, (v, -t))
+    end
+    # the survivors are monotone where there is a direction at all, so sorting
+    # the whole of it leaves their order alone
+    dir == 0 || sort!(items; by = first, rev = dir == -1)
+    pos = zeros(Int, n)
+    spos = zeros(Int, length(svs))
+    for (i, (_, k)) in enumerate(items)
+        k > 0 ? (pos[k] = i) : (spos[-k] = i)
+    end
+    return V[v for (v, _) in items], pos, spos
+end
+
+# One literal, widened: the survivors where they have moved to, and each shadow
+# where all of its dominators are — `ω` at one package. ⊥ is a value like any
+# other and no shadow of it exists, so it carries over as it is.
+function widen_lit(m::Lit, pos::Vector{Int}, sh::Vector{Tuple{Int,Vector{Int}}},
+                   n::Int)
+    bits = falses(n + 1)
+    for (k, i) in enumerate(pos)
+        bits[i] = m[k]
+    end
+    for (i, ds) in sh
+        bits[i] = all(bits[d] for d in ds)
+    end
+    bits[n+1] = absent(m)
+    return Lit(bits)
+end
+
+"""
+    widened(sat, prob, pkgs, lines)
+
+One conflict over the universe the user sees: the version list of each of
+`pkgs` with the shadows in it, which of the query's kinds exclude which of
+those versions, the shadows as `(index, indices of its dominators)` into that
+list, and `lines` with every literal widened by `ω`.
+"""
+function widened(sat::SAT{P,V}, prob::Problem{P}, pkgs::Vector{P},
+                 lines::Vector{Line{P}}) where {P,V}
+    versions = Dict{P,Vector{V}}()
+    excluded = Dict{P,Vector{Vector{Symbol}}}()
+    shadows = Dict{P,Vector{Tuple{Int,Vector{Int}}}}()
+    maps = Dict{P,Vector{Int}}() # the new index of each old version
+    for p in pkgs
+        sh = shadow_dominators(sat, prob, p)
+        vs, pos, spos = merge_shadows(clause_versions(sat, p), V[v for (v, _) in sh])
+        versions[p] = vs
+        if !isempty(sh)
+            maps[p] = pos
+            shadows[p] = Tuple{Int,Vector{Int}}[
+                (spos[t], Int[pos[d] for d in ds]) for (t, (_, ds)) in enumerate(sh)]
+        end
+        ks = Vector{Symbol}[exclusion_kinds(prob, p, v) for v in vs]
+        # (D3): the query admits every shadow, so the line saying what the
+        # query left is one the widening may speak in
+        @assert all(isempty(ks[i]) for (i, _) in get(shadows, p, ())) """
+            a shadow of $p is a version this query excludes — and the query's \
+            constraints are in force where redundancy is judged, which is (D3)"""
+        any(!isempty, ks) && (excluded[p] = ks)
+    end
+    isempty(maps) && return versions, excluded, shadows, lines
+    wide = Line{P}[]
+    for l in lines
+        pairs = Pair{P,Lit}[]
+        for (p, m) in l.clause.lits
+            pos = get(maps, p, nothing)
+            push!(pairs, p => (pos === nothing ? m :
+                  widen_lit(m, pos, shadows[p], length(versions[p]))))
+        end
+        cl = clause(pairs)
+        # a literal that admitted everything would have made the clause a
+        # tautology before it was widened: `ω` adds to a literal, never to the
+        # versions it leaves out
+        @assert cl !== nothing "widening left a line saying nothing"
+        push!(wide, Line{P}(cl, l.through, l.given, l.proof, l.pivot))
+    end
+    return versions, excluded, shadows, wide
+end
 
 """
     clause_of(sat, r::Relation) :: Union{Clause{P}, Nothing}
@@ -2168,14 +2368,10 @@ function diagnose(
         for l in lines, p in packages(l.clause)
             p in pkgs || push!(pkgs, p)
         end
-        versions = Dict{P,Vector{V}}(p => clause_versions(sat, p) for p in pkgs)
-        excluded = Dict{P,Vector{Vector{Symbol}}}()
-        for p in pkgs
-            ks = Vector{Symbol}[exclusion_kinds(prob, p, v) for v in versions[p]]
-            any(!isempty, ks) && (excluded[p] = ks)
-        end
+        # over the universe the user sees, lines and all (`widened`)
+        versions, excluded, shadows, lines = widened(sat, prob, pkgs, lines)
         push!(conflicts, Conflict{P,V}(plan.reqs[i], lines, versions, excluded,
-                                       fixes, blocks))
+                                       fixes, blocks, Upstream{P,V}[], shadows))
     end
     # Every layer after the leading one is an alternative to the whole of its
     # section's conflicts. Which of them it declines is read off the facts: a
@@ -2378,7 +2574,8 @@ function upstream_fixes(deps::DepsProvider{P,D}, prob::Problem{P},
     (cut || any(!isempty, ups)) || return d
     conflicts = Conflict{P,V}[
         Conflict{P,V}(c.reqs, c.lines, c.versions, c.excluded, c.fixes,
-                      c.blocks, ups[i]) for (i, c) in enumerate(d.conflicts)]
+                      c.blocks, ups[i], c.shadows)
+        for (i, c) in enumerate(d.conflicts)]
     return Diagnosis{P,V}(conflicts, d.alternatives, d.others, d.truncated,
                           d.upstream_cut | cut)
 end
@@ -2567,6 +2764,15 @@ end
 # Which of the query's kinds took versions of `p` away, and what they left.
 # Read straight off the query, so no line here needs a solver's licence; and
 # named as the user's, which nothing else on the page may be.
+#
+# The line is the query's own fact widened like every other (`widened`), so it
+# speaks of the versions redundancy elimination removed as well as the ones the
+# universe still holds -- and by (D3) it allows every one of them, since a
+# shadow's dominators are versions the query left and `ω` admits a shadow
+# wherever all of them are admitted. A line reading the survivors alone would
+# credit the compat with the resolver's deletions: for `DataFrames = "1.7"` it
+# says "your compat allows only DataFrames >=1.7.1", although 1.7.0 exists and
+# that compat admits it.
 function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     kinds = Symbol[]
     for ks in c.excluded[p], k in ks
@@ -2578,6 +2784,9 @@ function constraint_phrase(c::Conflict{P,V}, p::P, l::Line{P}) where {P,V}
     m = l.clause[p]
     sel = selected(m)
     any(sel) || return "$lead $verb no version of $p"
+    @assert all(sel[i] for (i, _) in get(c.shadows, p, ())) """
+        the line saying what the query allows $p does not allow a version \
+        redundancy elimination took"""
     r = range_phrase(c.versions[p], sel)
     isempty(r) && return "$lead $verb every version of $p"
     return "$lead $verb only $p $r"
@@ -3233,6 +3442,14 @@ Everything Section 8's checker can decide without asking the solver:
     its own withdrawal leaves standing, in the conflicts' menus and the
     alternatives alike. Silent breakage here is invisible to every other
     check, which is exactly why this one exists;
+  * **(V8) widened lines** — every line is read over the versions redundancy
+    elimination removed as well as the ones the universe kept, and each such
+    version's membership in each literal is the conjunction of its dominators'
+    — admitted where all of them are, excluded where any of them is. With
+    (D3) beside it: no shadow and no dominator is a version the query
+    excludes. What is not asked here is that a line's restriction to the
+    survivors is the clause the diagnosis derived, which nothing but the
+    construction ever held;
   * **(Theorem 29) an exact, once-only cover** — a block's conflicts and its
     alternatives present that block's share of the cheapest repairs and
     nothing else, so no two of its selections ask for the same thing and none
@@ -3423,6 +3640,54 @@ function conflict_problems(c::Conflict{P,V}, rest::Set{P} = Set{P}()) where {P,V
             (closed || !any(acc)) && continue
             push!(bad,
                 "proof $n leaves $pivot something every one of its lines admits")
+        end
+    end
+
+    # (V8) every line prints over the universe the user sees. A shadow -- a
+    # version redundancy elimination removed -- is admitted by a literal
+    # exactly where all the versions that dominated it are admitted, so the
+    # check is to recompute that bit and compare, which is set arithmetic and
+    # no solver. What cannot be asked here is the other half of (V8), that a
+    # line's restriction to the survivors is the clause the diagnosis derived:
+    # nothing but the construction ever held that clause. And (D3) with it: a
+    # shadow and its dominators are versions the query left, since the query's
+    # constraints are in force when redundancy is judged.
+    for (p, sh) in c.shadows
+        n = length(get(c.versions, p, V[]))
+        ks = get(c.excluded, p, nothing)
+        for (i, ds) in sh
+            said = "$p $(1 ≤ i ≤ n ? string(c.versions[p][i]) : "#$i")"
+            if !(1 ≤ i ≤ n) || any(d -> !(1 ≤ d ≤ n), ds)
+                push!(bad, "the shadow $said is outside the version list")
+                continue
+            end
+            isempty(ds) &&
+                push!(bad, "the shadow $said has nothing that dominated it")
+            ks === nothing && continue
+            isempty(ks[i]) ||
+                push!(bad, "the shadow $said is a version the query excludes")
+            for d in ds
+                isempty(ks[d]) || push!(bad, "the shadow $said is dominated " *
+                    "by $(c.versions[p][d]), which the query excludes")
+            end
+        end
+        for l in c.lines
+            m = l.clause[p]
+            m === nothing && continue
+            if nversions(m) != n
+                push!(bad, "a line reads $p over $(nversions(m)) versions " *
+                      "where the page speaks of $n")
+                continue
+            end
+            for (i, ds) in sh
+                (1 ≤ i ≤ n && all(d -> 1 ≤ d ≤ n, ds)) || continue
+                m[i] == all(m[d] for d in ds) && continue
+                push!(bad, "the line " *
+                      line_phrase(l, q -> c.versions[q], string) *
+                      " does not read $(c.versions[p][i]) as " *
+                      join_and(String[string(c.versions[p][d]) for d in ds]) *
+                      " leave it")
+            end
         end
     end
 

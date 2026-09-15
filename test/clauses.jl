@@ -59,7 +59,7 @@ end
     # ... and which way it is said is chosen when it is said
     @test say(fwd) == "A 10 requires B 5"
     @test Clauses.clause_phrase(fwd, vers, Clauses.letters; subject = 1) ==
-          "B 6 or absent constrains A ≥20"
+          "B 6 or absent constrains A to ≥20"
     # A consequent admitting absence alone is the package's going, not its
     # arrival: the bare name reads as the statement bringing it in, so what the
     # flipped reading says is that it leaves no version. The verb follows the
@@ -87,7 +87,7 @@ end
     @test say(clause([1 => L(3, [1], true; absent = true), 2 => L(2, [1])])) ==
           "A 10 requires B 5"
     @test say(clause([1 => L(3, [1], true; absent = true),
-                      2 => L(2, [1]; absent = true)])) == "A 10 constrains B 5"
+                      2 => L(2, [1]; absent = true)])) == "A 10 constrains B to 5"
     # a clause about one package is a verdict, said as what it rules out
     @test say(clause([1 => L(3, [1,2], true; absent = true)])) ==
           "A ≤20 cannot be installed"

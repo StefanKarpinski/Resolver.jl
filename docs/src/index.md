@@ -15,23 +15,23 @@ query:
 Unsatisfiable — 2 conflicts, pick a fix for each:
 
 Conflict 1: DataFrames
-  • your compat allows only DataFrames ≥1.0.0
+  • your compat restricts DataFrames to ≥1.0.0
   • DataFrames 1.0.0–1.8.2 requires PrettyTables
-  • your compat allows no version of PrettyTables
+  • your compat eliminates all versions of PrettyTables
   Fix it by any one of:
     1. relax your compat on DataFrames
        → allows: DataFrames 0.21.8
     2. relax your compat on PrettyTables
        → allows: DataFrames 1.8.2, PrettyTables 3.4.8
-    3. drop requirement DataFrames
+    3. drop dependency DataFrames
 
 Conflict 2: Plots
   • Plots requires RecipesBase
-  • your compat allows no version of RecipesBase
+  • your compat eliminates all versions of RecipesBase
   Fix it by any one of:
     1. relax your compat on RecipesBase
        → allows: Plots 1.41.0, RecipesBase 1.3.4
-    2. drop requirement Plots
+    2. drop dependency Plots
 ```
 
 Where a conflict turns on a bound only a maintainer can lift, the report says
@@ -50,7 +50,7 @@ Between them the conflicts reach every fix as cheap as the cheapest, so nothing
 is left over: where a group of conflicts that stand or fall together has
 cheapest fixes that taking one entry from each of their menus does not reach,
 those print after the last conflict as the alternatives they are — "Or, to fix
-without dropping requirement Knet:", and then what to do instead. Whatever is
+without dropping dependency Knet:", and then what to do instead. Whatever is
 outside the page even so is confessed: "Costlier fixes also exist." when what
 was left out gives up more, "There are more minimal fixes than are shown." when
 the search for them was cut short. When the menus are the whole of it, the

@@ -913,11 +913,16 @@ what is chosen.
 ### Blocked fixes: which, and how
 
 The page's own lines make some actions tempting: the reader sees "your
-compat allows only QuantumLattices 0.15.4" and asks why relaxing it is not
+compat restricts QuantumLattices to 0.15.4" and asks why relaxing it is not
 offered. A **tempting action** is an action on a package a conflict's lines
-or heading name that appears nowhere in the cover. The blocked-fixes
-section answers for exactly these — one sentence per action, so nothing is
-said twice and nothing tempting goes unanswered.
+or heading name that appears nowhere in the cover. The note answers for
+exactly these — one sentence per action, so nothing is said twice and
+nothing tempting goes unanswered.
+
+It prints as a note, not under a heading of its own: these are fixes that do
+not work, and there is nothing holding them back to be released. One verdict
+reads as the remark it is, *"Note: «x» does not help."*; several take the
+lead once and bullet beneath it.
 
 What the sentence says is decided by solves, not judged, and the question
 must be *well posed*: `x` is **load-bearing** when it lies in **some**
@@ -973,7 +978,7 @@ stories.
 Everything above is what the *user* could change. A conflict's chain ends
 where a registry statement meets one of the user's own facts —
 *BytePairEncoding 0.5.2 requires DataStructures 0.18.0–0.18.22* against
-*your compat allows only DataStructures 0.19.6* — and the registry side is
+*your compat restricts DataStructures to 0.19.6* — and the registry side is
 something a maintainer could change. The page may say so, under a bar high
 enough that what it says is a single, sendable request: the sentence a user
 would put in an issue, and the page has verified would work.
@@ -1008,7 +1013,7 @@ and the witness names that version.
 when all of the following hold.
 
 1. **The bound meets the user's own fact.** `Q` is a package the query
-   narrows — a *your compat allows only Q …* line of this conflict — and `P` is a
+   narrows — a *your compat restricts Q to …* line of this conflict — and `P` is a
    package the conflict's lines speak of whose latest version carries a
    bound on `Q` excluding what the user's constraint leaves. A bound
    contradicted only by *another registry package's* bound is not offered:
@@ -1099,7 +1104,7 @@ Rules, not preferences — each guards a truth-condition or an attribution:
 
 * **A side is stated from its support.** The requirements the conflict
   answers for are said by its heading and nowhere else; the reason's other
-  facts print once, as the query's own lines ("your compat allows only A 1.2").
+  facts print once, as the query's own lines ("your compat restricts A to 1.2").
   Each side prints as the implication from its support's packages to its
   bound, with its route in parentheses. A conditional side names all of its
   support ("A 1.2 and B ≥ 2 together …"). This is what makes every fix
@@ -1181,9 +1186,9 @@ Rules, not preferences — each guards a truth-condition or an attribution:
   Nothing prints for a conflict that fails the bar: the sentence is a
   request the user can send as it stands, and a page that offered vaguer
   ones would be training its readers to ignore them.
-* **Blocked fixes answer for actions, one sentence each.** For every
+* **The note answers for actions, one sentence each.** For every
   tempting action — named by the conflict's lines or heading, in no fix of
-  the cover — the section prints its solve-decided verdict (Section 7): an
+  the cover — the note prints its solve-decided verdict (Section 7): an
   idle action gets *"«x» does not help."*, a load-bearing one gets
   *"«x» would not help unless you also «W ∖ {x}»."*, or *"«x» would not help
   without «n» other changes."* once the completion is more than a few
@@ -1204,7 +1209,7 @@ Rules, not preferences — each guards a truth-condition or an attribution:
 * **An alternative prints after the conflicts, as fixes and not as a
   conflict.** Where a block's cover has more than one layer, each layer after
   the leading one prints after the last conflict, introduced by what it
-  declines: *"Or, to fix without dropping requirement Knet:"* where every
+  declines: *"Or, to fix without dropping dependency Knet:"* where every
   menu it avoids offers a single fix (their gerunds joined by *or*: without
   either), *"Or, to fix without any of the fixes for Conflicts 1 and 3:"*
   where one of them offers a choice, and *"Or, to fix another way:"* in the
@@ -1385,19 +1390,33 @@ the package not being installed".
 
 | form | when | what it says |
 | --- | --- | --- |
-| `your ‹kinds› allows only X r` | the line is one of the query's own facts | of `X`, the query's own constraints of those kinds admit `r` — and only such a line may say *your*, and two or more of them take *allow* |
+| `your ‹kinds› restricts X to r` | the line is one of the query's own facts | of `X`, the query's own constraints of those kinds admit `r` — and only such a line may say *your* |
 | `… requires X r` | `⊥ ∉ S` | `X` is installed, at one of `r` |
-| `… constrains X r` | `⊥ ∈ S`, some version in `S` | if `X` is installed it is at one of `r`; the statement is silent if it is not |
+| `… constrains X to r` | `⊥ ∈ S`, some version in `S` | if `X` is installed it is at one of `r`; the statement is silent if it is not |
 | `… allows no version of X` | `S = {⊥}` | `X` is not installed at all |
 
-*Allows only* is the user's; *requires* forces; *constrains* binds only what
-is there; *allows no version of* is forced-empty. For the registry's verbs the
+*Restricts* is the user's; *requires* forces; *constrains* binds only what is
+there; *allows no version of* is forced-empty. For the registry's verbs the
 bare package name is a consequent whose range is the package's whole offering,
 never a consequent with nothing in it — the fourth row exists so that a flipped
 line cannot print as the package arriving when what it says is the package's
-going. The query's own line has no bare form for that: a constraint that
-narrowed nothing says *allows every version of X*, since *allows only X* would
-read as a claim about X rather than about its versions.
+going.
+
+The query's line takes two further forms, because *restricts X to* describes
+only a constraint that narrowed `X` to something. Where it narrowed `X` to
+nothing the line reads *your ‹kinds› eliminates all versions of X*, and where
+it narrowed nothing at all, *allows every version of X* — *restricts X to*
+every version it has would contradict itself, and the bare `X` the registry's
+verbs use would read as a claim about `X` rather than about its versions. Two
+or more kinds agree in the plural: *your compat and your pin restrict X to r*.
+
+So the query and the registry share no verb: *restricts* against *constrains*,
+*eliminates all versions of* against *allows no version of*, *allows every
+version of* against the bare name. The split is not decoration. A query line
+says what the reader chose and can choose again, a registry line what a
+package states about another, and only the first kind is a fix — *your* marks
+them, and a verb of their own keeps a flipped registry line from reading as
+one.
 
 A trailing `(through P, Q and R)` is the whole of the difference between a
 statement the registry makes directly and one an elimination composed: the
@@ -1434,7 +1453,7 @@ contradict and no pair stands for the family. ∎
 
 The pivot's own facts are not sides in this counting: a query line about `P`
 is not an implication needing a root, and prints where the chain reaches `P`
-— which is why "the compat allows only `P` `r`, and the one side says `P` `s`"
+— which is why "the compat restricts `P` to `r`, and the one side says `P` `s`"
 is a chain of two lines and not a meet at all. So the meet display survives
 exactly at three sides and more, and Proposition 18 says how rare that is:
 in a convex world an irredundant meet has at most three sides, and three of

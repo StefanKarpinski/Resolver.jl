@@ -359,11 +359,13 @@ function antecedent_phrase(q, m::Lit, vers, names)
 end
 
 # "the package, held where the literal does reach" — what the statement leaves
-# it, printed with no verb: the verb is read off ⊥ by the caller
-function consequent_phrase(s, m::Lit, vers, names)
+# it, printed with no verb: the verb is read off ⊥ by the caller, which also
+# says how it joins. A bare name takes no joiner: there is no range for it to
+# reach, and *constrains B to* with nothing after it is not a sentence.
+function consequent_phrase(s, m::Lit, vers, names, joiner = " ")
     vs = vers(s)
     r = range_phrase(vs, selected(m))
-    return isempty(r) ? names(s) : "$(names(s)) $r"
+    return isempty(r) ? names(s) : "$(names(s))$joiner$r"
 end
 
 # Which package a two-or-more-package statement is said *to*. A clause has no
@@ -430,9 +432,13 @@ function clause_phrase(c::Clause{P}, vers, names = letters;
     # the package arriving rather than as its going
     any(selected(m)) ||
         return "$lead $(plural ? "allow" : "allows") no version of $(names(s))"
+    # *constrains* takes "to", as the query's *restricts* does: both name a
+    # bound on a package rather than a version of it to install, which is what
+    # *requires* names and why that one reads right with no preposition
     verb = absent(m) ? (plural ? "constrain" : "constrains") :
                        (plural ? "require" : "requires")
-    return "$lead $verb $(consequent_phrase(s, m, vers, names))"
+    joiner = absent(m) ? " to " : " "
+    return "$lead $verb $(consequent_phrase(s, m, vers, names, joiner))"
 end
 
 end # module Clauses
